@@ -1,0 +1,519 @@
+IRS INSTRUCTIONS REFERENCE
+
+Tax Year 2025 & 2024 — All Forms and Schedules
+
+For use by the Tax Review AI Agent — click any link to access official IRS instructions
+
+
+
+HOW TO USE THIS DOCUMENT
+
+Upload this file alongside the tax return being reviewed. The agent will read the URLs and access the relevant IRS instructions directly to verify each line item, threshold, limitation, and required attachment for the specific tax year.
+
+
+
+Instructions for the agent:
+
+Identify the return type and tax year from the return being reviewed.
+
+Fetch the corresponding TY 2025 or TY 2024 instructions URL from the table below.
+
+Apply the instructions for that exact tax year — never use a different year's instructions.
+
+For any line where treatment appears incorrect, cite the specific instruction section by name and page.
+
+Check the 'Post-Release Changes' URL at the bottom of the table for any late corrections to the instructions.
+
+
+
+IRS INSTRUCTIONS — DIRECT LINKS
+
+All links point to official IRS.gov PDFs or HTML pages. PDF links open the instruction booklet directly. HTML links open the browser-friendly version.
+
+
+
+Form / Schedule
+
+TY 2025 — PDF Link
+
+TY 2024 — PDF Link
+
+── INCOME TAX RETURNS ──
+
+Form 1040 — U.S. Individual Income Tax Return
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1040 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1040-NR — Nonresident Alien Income Tax Return
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1040-PR — Puerto Rico Self-Employment Tax
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1040-SS — U.S. Territories Self-Employment Tax
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1040-SR — Tax Return for Seniors (same instructions as 1040)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1041 — Estates and Trusts
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1041 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1065 — Partnership Income
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1065 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1120 — C Corporation
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1120 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1120-S — S Corporation
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1120-S (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── EXEMPT ORGANIZATIONS ──
+
+Form 990 — Exempt Organizations
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 990 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 990-EZ — Short Form Exempt Organizations
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 990-T — Unrelated Business Income
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 990-PF — Private Foundations
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── ESTATE & GIFT TAX ──
+
+Form 706 — Estate Tax Return
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 706 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 709 — Gift Tax Return
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 709 (HTML — browser-friendly)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── EXCISE TAX ──
+
+Form 720 — Quarterly Federal Excise Tax
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 2290 — Heavy Highway Vehicle Use Tax
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── SCHEDULES — FORM 1040 ──
+
+Schedule A — Itemized Deductions
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule B — Interest and Dividends
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule C — Business Income/Loss
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule D — Capital Gains and Losses
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule E — Supplemental Income (Rents, K-1s)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule SE — Self-Employment Tax
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── SCHEDULES — FORM 1065 ──
+
+Schedule K-1 (Form 1065) — Partner's Share
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule K-2 / K-3 (Form 1065) — International
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── SCHEDULES — FORM 1120-S ──
+
+Schedule K-1 (Form 1120-S) — Shareholder's Share
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule K-2 / K-3 (Form 1120-S) — International
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── SCHEDULES — FORM 990 ──
+
+Schedule A (Form 990) — Public Charity Status
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule B (Form 990) — Schedule of Contributors
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule D (Form 990) — Supplemental Financial Statements
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule F (Form 990) — Foreign Activities
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule L (Form 990) — Transactions with Interested Persons
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Schedule O (Form 990) — Supplemental Information
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── COMMONLY REFERENCED FORMS ──
+
+Form 4562 — Depreciation and Amortization
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 4797 — Sales of Business Property
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 6765 — Research & Development Credit
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 7203 — S Corp Stock and Debt Basis
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 7004 — Extension of Time to File (Business)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8582 — Passive Activity Loss Limitations
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8949 — Sales and Dispositions of Assets
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8990 — Business Interest Limitation (§163j)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8992 — GILTI
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 5471 — Info Return for Foreign Corporations
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 5472 — Info Return (25%+ Foreign-Owned Corp)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8865 — Foreign Partnership
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 8938 — FATCA / Foreign Financial Assets
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 3520 — Foreign Trusts / Gifts
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 2210 — Underpayment of Estimated Tax (Individual)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 2220 — Underpayment of Estimated Tax (Corp)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1116 — Foreign Tax Credit (Individual)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1118 — Foreign Tax Credit (Corporate)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Form 1374 — Built-In Gains Tax (S Corp)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+── IRS REFERENCE PAGES ──
+
+All IRS Instructions (HTML index)
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+All IRS Forms and Publications
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Prior Year Forms and Instructions
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+Post-Release Changes to Current Forms
+
+TY 2025 Instructions →
+
+TY 2024 Instructions →
+
+
+
+QUICK REFERENCE — KEY THRESHOLDS & DEADLINES (TY 2025)
+
+Verify these against the fetched instructions — amounts may change annually.
+
+
+
+Filing Deadlines
+
+Form 1040: April 15, 2026 / Extended: October 15, 2026 (Form 4868)
+
+Form 1041: April 15, 2026 / Extended: September 30, 2026 (Form 7004)
+
+Form 1065: March 15, 2026 / Extended: September 15, 2026 (Form 7004)
+
+Form 1120: April 15, 2026 / Extended: October 15, 2026 (Form 7004)
+
+Form 1120-S: March 15, 2026 / Extended: September 15, 2026 (Form 7004)
+
+Form 990: May 15, 2026 / Extended: November 15, 2026 (Form 8868)
+
+Form 706: 9 months from date of death / +6 months (Form 4768)
+
+Form 720: Last day of month following end of each quarter
+
+Form 2290: August 31, 2025 (July 1 vehicles); last day of month following first use month
+
+
+
+Key 2025 Thresholds (verify against fetched instructions)
+
+Standard deduction — Single: $15,000 | MFJ: $30,000 | MFS: $15,000 | HOH: $22,500
+
+Standard deduction — 65+/blind add-on: $2,000 (single) | $1,600 (MFJ each)
+
+SALT deduction cap: $10,000 (unchanged)
+
+QBI deduction phase-in — MFJ: $394,600–$494,600 | Others: $197,300–$247,300
+
+Gift tax annual exclusion: $19,000 per donee
+
+Estate/gift tax lifetime exclusion: $13,990,000
+
+Social Security wage base (SE tax): $176,100
+
+Section 179 expensing limit: $1,250,000 | Phase-out begins: $3,130,000
+
+Bonus depreciation: 40% (2025 phase-down)
+
+NOL deduction: 80% of taxable income (post-2017 NOLs)
+
+FBAR threshold: $10,000 aggregate balance at any point during year
+
+FATCA Form 8938: $50,000 (single year-end) / $75,000 (year high) — Single; double for MFJ
+
+Form 5472 — 25%+ foreign-owned US corporation: $10,000/year penalty if missing
+
+Form 5471 — 10%+ ownership foreign corp: $10,000/year penalty if missing
+
+
+
+Schedule L / M-2 Triggers
+
+Schedule M-3 required (instead of M-1): total assets ≥ $10M at year-end
+
+Schedule B-1 (Form 1065): any partner owns 50%+ of profits or capital
+
+Schedule K-2 / K-3: required if any foreign activity, foreign partners, or foreign income — check instructions for domestic filing exceptions
+
+
+
+
+
+Source: All links point to official publications at irs.gov. Always verify you are using the instruction version for the exact tax year shown on the return.

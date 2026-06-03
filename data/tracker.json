@@ -1,0 +1,140 @@
+﻿{
+    "globalStatuses":  [
+                           {
+                               "id":  "not_ready",
+                               "label":  "Not Ready",
+                               "color":  "#94a3b8",
+                               "bg":  "#f1f5f9",
+                               "order":  1,
+                               "isDefault":  true,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "waiting_client",
+                               "label":  "Waiting for Client",
+                               "color":  "#f59e0b",
+                               "bg":  "#fffbeb",
+                               "order":  2,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "ready_to_prep",
+                               "label":  "Ready to Prep",
+                               "color":  "#3b82f6",
+                               "bg":  "#eff6ff",
+                               "order":  3,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "on_prep",
+                               "label":  "On Prep",
+                               "color":  "#8b5cf6",
+                               "bg":  "#f5f3ff",
+                               "order":  4,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "on_review",
+                               "label":  "On Review",
+                               "color":  "#06b6d4",
+                               "bg":  "#ecfeff",
+                               "order":  5,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "manager_review",
+                               "label":  "Manager Review",
+                               "color":  "#f97316",
+                               "bg":  "#fff7ed",
+                               "order":  6,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "final_review",
+                               "label":  "Final Review",
+                               "color":  "#ec4899",
+                               "bg":  "#fdf2f8",
+                               "order":  7,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "ready_to_send",
+                               "label":  "Ready to Send",
+                               "color":  "#10b981",
+                               "bg":  "#f0fdf4",
+                               "order":  8,
+                               "isDefault":  false,
+                               "isFinal":  false
+                           },
+                           {
+                               "id":  "completed",
+                               "label":  "Completed",
+                               "color":  "#1B3A6B",
+                               "bg":  "#eff6ff",
+                               "order":  9,
+                               "isDefault":  true,
+                               "isFinal":  true
+                           }
+                       ],
+    "sectionStatuses":  {
+
+                        },
+    "sections":  {
+                     "tax_returns":  {
+                                         "id":  "tax_returns",
+                                         "name":  "Tax Returns",
+                                         "color":  "#2563eb",
+                                         "icon":  "ðŸ“‹",
+                                         "order":  1,
+                                         "createdAt":  "2026-06-01T18:20:54.028Z"
+                                     },
+                     "estimates":  {
+                                       "id":  "estimates",
+                                       "name":  "Estimates",
+                                       "color":  "#06b6d4",
+                                       "icon":  "ðŸ“…",
+                                       "order":  2,
+                                       "createdAt":  "2026-06-01T18:20:54.028Z"
+                                   },
+                     "extensions":  {
+                                        "id":  "extensions",
+                                        "name":  "Extensions",
+                                        "color":  "#8b5cf6",
+                                        "icon":  "â³",
+                                        "order":  3,
+                                        "createdAt":  "2026-06-01T18:20:54.028Z"
+                                    },
+                     "deliverables":  {
+                                          "id":  "deliverables",
+                                          "name":  "Deliverables",
+                                          "color":  "#10b981",
+                                          "icon":  "ðŸ“¨",
+                                          "order":  4,
+                                          "createdAt":  "2026-06-01T18:20:54.028Z"
+                                      }
+                 },
+    "tasks":  {
+
+              },
+    "users":  {
+
+              },
+    "pto":  {
+                "entries":  {
+
+                            },
+                "settings":  {
+                                 "requireApproval":  false,
+                                 "maxDaysPerYear":  null,
+                                 "ptoDaysAllotted":  {
+
+                                                     }
+                             }
+            }
+}

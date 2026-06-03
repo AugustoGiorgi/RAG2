@@ -1,0 +1,3027 @@
+Match point Enterprise LLC:
+
+
+
+WP: 
+
+
+
+2024 wp do not have Interests and charitable contributions in the book to tax tab. Why?
+
+
+
+We did have amounts on the P&L report for both.
+
+
+
+Proconnect: 
+
+
+
+Why is bonus included in line 13 rents?
+
+
+
+Ask about build cost numbers.
+
+
+
+M1 line 1 should match net income per books in book to tax reconciliation tab.
+
+
+
+Form 4562, why we do not have it?
+
+Since there where no new assets in 2025, 4562 is not required.
+
+
+
+
+
+Penalties should be taken to non deductible expenses.
+
+Moove guaranteed payments to line 10 page 1 1065
+
+
+
+Champion media 
+
+
+
+Not do autoware
+
+
+
+
+
+
+
+Do jxl creative after match point.
+
+
+
+
+
+JXL CREATIVE LLC:
+
+
+
+7203 form: how do I review it? Line 1 should match the last line from PY adn the rest of the amounts are the same from the return but apportioned by ownership.
+
+
+
+Why no 4562 depreciation form last year?
+
+
+
+should this be completed? NY form ; keep it as last year and then ask for ther client to check the info.
+
+
+
+
+
+Form ct-60: 
+
+
+
+Address does not match PY, where can I check it? Keep the one that is in the form.
+
+
+
+
+
+Form ct-399 must be attached to resolve efile errors. Who should ask that form to whom? 
+
+
+
+
+
+
+
+Venty fan (in poor taste):
+
+
+
+Changed address to 6900 Westcliff Drive #503    Las Vegas, Nevada 89145
+
+
+
+Should we classify a part of matt´s salary as R&D expense? ( per client notes)
+
+
+
+In sch K1 for matt we are assigning 120k w-2 wage but, on form 1125-E we inform total 
+
+compensation for 150k only to Matt. Should we add philip to 1125-E? And divide the compensation or should we only reduce 1125-E amount of compensation to 120k matching matt´s k1?
+
+
+
+Should interest income be moved from 1120 page 1 to sch k line 4? Hay que moverlo LISTO
+
+
+
+
+
+What about the TX franchise texas return?
+
+
+
+6765 en el buscador y los pingo en wages for qualified research expenses. Sch k credits.
+
+
+
+
+
+Champion media solutions:
+
+
+
+Change Bradley's address on k1
+
+
+
+
+
+Auditaware:
+
+
+
+Federal:
+
+
+
+Completed R&D Study
+
+Calculated the Total Qualified Research & Development Expense
+
+Added to wp the total qualified expense and the calculation of the amortization.
+
+Fixed book to tax tab to match PY.
+
+Added NOL tracking tab updated with 2023 and 2024 carryforwards.
+
+Added forms 3800(not released by IRS already), 4562 and 6765 to proconnect return.
+
+
+
+CA:
+
+updated form 8453-C part II and part V
+
+
+
+NY:
+
+
+
+Where can I check if there were employees paid in NY?
+
+
+
+Other Questions and concerns:
+
+
+
+Should we move the item R&D Tax credit From other income?
+
+
+
+Have doubts with m1 and m2, please let me know if they are ok or if they need to be corrected.
+
+
+
+Do we have the sch g updated %?
+
+
+
+
+
+Mooved R&D tax credit from income to sch m1 line 7.
+
+
+
+BRADRY´s review: 
+
+Removed unrealized gain/loss from the other income section. Since it's unrealized it won't be reported until the investment is sold or "realized"
+
+Made some adjustments to the M-1/reconciliation, take a look and let me know if you have any questions on it!
+
+
+
+
+
+
+
+Vital Pet Life:
+
+
+
+Reviewed P&L and Balance Sheet reports from quickbooks matching WP.
+
+Client notes: Leasing Tesla Model Y starting in 2025 – need to see on business use / deductibility – charging 100% to business, and then need to addback personal component on tax return - AP - Moved to “Vehicles” Account on P&L?. I do not know how to check this.
+
+Checked informational items.
+
+Client notes: NO OVERPAYMENT CARRYFORWARD IN CA FOR VITAL PET
+
+ LIFE – Overpayment was refunded. Removed carrforward as client notes said.
+
+It seems client will have to pay penalties due to not paying during estimates. That is why we have form 5806.
+
+
+
+
+
+Psychedelic games inc:
+
+
+
+Is it correct to have loan payments in deductions?
+
+Why is TY 2024 sch L was blank?
+
+
+
+Aubrie Notes: 
+
+moved the loan payment from other expenses to interest expense and cleared the diagnostic for the date of the return. For every return the date return is being filed generally (checkbox). This is done by checking this box under Electronic Filing → Paperless Filing Signature
+
+Computer date as PIN signature date [Override]
+
+
+
+
+
+What Converts (Icon Digital LLC):
+
+
+
+Mooved interest income from other income to sch K
+
+Mooved penalties and settlements to sch K line16
+
+Should PTE payments be mooved from income? It is uploaded as State payments but how can we check there were actually state payments?
+
+Should we have form 1125-E?
+
+Went through Proconnect-Input return-general-miscellaneous information and match settings to PY state returns.
+
+Do not know how to solve this problem related to owner compensation: North Carolina Ending Balance Sheet Out of Balance By $24,006. Assets = $2,804,675 Liabilities and Equity = $2,780,669. NC
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CPH International:
+
+
+
+Other income is from 2 credit card credits, should these be classified as other income or as a credit?
+
+Added Depreciation to sch M1 (please let me know if this is correct)
+
+Added Bank information to CA form 8453-LLC
+
+Dont we have PTE for TY 2025? (CA)
+
+Part 2:
+
+
+
+
+
+
+
+Campbell corp:
+
+
+
+Hey Mark, Campbell´s return is ready for your review, here are my final comments:
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Moved Vehicle Registration Taxes & license from other deduction to 1120 line 17
+
+Added CA book to tax segment in the workpaper
+
+Added the correct amount on depreciation item in sch L 
+
+Calculated the charitable contributions for CA reconciliation
+
+All NOL was used on PY state return.
+
+Added Bank info to CA Form 8453-C
+
+
+
+Please let me know if I should change something or if I could help you with anything!
+
+
+
+Manaus LLC:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Form 7203 ty 2024 ending balance matching ty 2025 beginning balance
+
+Schedule L ty 2024 ending balance matching ty 2025 beginning balance
+
+Why do we have in other deductions an amount for -15235 named as retirement? Shouldnt this be in line 17 and in positive?
+
+Added bank information to CA return.
+
+
+
+
+
+Aika Carding Photografy Studio:
+
+
+
+Hey Aubrie, return is ready for your review. Here are my comments
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Added Credit card fee to deductions pre client notes
+
+Added bank info to form CA 8453-C
+
+All efile errors are related to forms that have not been released yet.
+
+Can't find any document to check address, date incorporated and S election effective date information.
+
+Please let me know if I can help with anything else!
+
+
+
+
+
+
+
+
+
+Astra Transportation:
+
+
+
+Hey Brady, return is ready for your review, here are my comments:
+
+Added the 180k capital loss to the workpaper.
+
+Added loan payment to other deductions
+
+Where is the 543 distribution amount coming from?
+
+Added NJ ID number and custodians address
+
+I was not able to find the phone number. No info about it on py return or client notes.
+
+
+
+Magellan Security (bleep security):
+
+
+
+1065 form is ok.
+
+M2 beginning balance match py ending balance
+
+No modifications for M1
+
+Just a question about Sch L, don't we have to add anything about partner capital and distributions related to what we see in the workpaper balance sheet?
+
+Added bank information to NY TR-579-PT form
+
+
+
+Wednesday meeting:
+
+
+
+Prepared FR-COA form for data privacy litigation group. Changing de EIN
+
+Prepared the California Annual Renewal for vital pet life.
+
+Finished my return review on CPH Internatioal after a call with Steve.
+
+Prepared Lang.ai Annual report for the state of Delaware.
+
+Prepared a workpaper with the invoices information for the NYS fuel tax filing, for astra transportation.
+
+
+
+
+
+
+
+Blueberry Fence LLC:
+
+
+
+Hey Brady, return is ready for your review, here are my comments:
+
+Cleared all 13 efile errors
+
+Reviewed informational items: PArtners information, EIN, Address.
+
+NEED TO UPDATE PSHIP REPRESENTATIVE BEFORE FILING
+
+Why we do have only 1 K1 form for NY? Shouldn´t we have 1 for each partner?
+
+
+
+
+
+
+
+
+
+JCLewis Advisory LLC:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Sch L not balanced
+
+Review NY bank info
+
+
+
+
+
+Uptalent:
+
+
+
+Hi Steve, I will move this to manager review but let me know if there is anything I should change!
+
+Here are my comments on the return:
+
+Informational Items are correct
+
+Can´t access to QBO repots (BS and P&L)
+
+Cleared form 8879-CORP efile error
+
+Not able to clear Foreign-owned corp info efile errors, I believe it is related to the amount paid to both owners (form 5472). I am not able to find that info. For PY return it was on the workpaper.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Vedic Psychology Institute Inc:
+
+
+
+Hi Steve, the return is ready for your review, here are my comments:
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Contractor services are included as a deduction and not as a cost of good sold, does not change the taxable income but let me know if you would prefer to move it.
+
+Sch L beginning matches PY ending.
+
+Form 7203 beginning balance matches PY ending balance.
+
+Why do we have an ATM withdrawal as a deduction? Is that correct?
+
+Is not a Florida State return needed?
+
+
+
+
+
+Rapide Fitnes: 
+
+Difference between workpaper and QBO (P&L ans BS)
+
+Should we move Contractor deduction from other deductions to salaries and wages?
+
+Sch L beginning matches PY ending.
+
+
+
+
+
+
+
+The Hive:
+
+Hi Aubrie, the return is ready for your review. Here are my comments on it:
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Mooved Interest income form other income to sch k.
+
+The difference between workpaper income per books and sch M1 is the Credit for Employer Social Security and Medicare. Form 8846.
+
+Added amortization and depreciation amounts to sch M1
+
+Addresses changed to Hoboken, EIN/SSN and dates are correct.
+
+I was not able to find the new bank account information.
+
+I do not know where to find o how to calculate the depreciation override for NJ
+
+I do not know where to take form o how to do Form PTE-150
+
+Please let me know if there is anything I can help you with!
+
+
+
+
+
+
+
+Langa.ai return:
+
+
+
+Brady, here is all information we need to ask for:
+
+NY/NYC and CA apportionment info. (dose not match with financial report)READY
+
+Maximum value of deposits in foreign accounts for form 8938. Use highest balance we can see on the monthly balance sheet for the foreign entity (5471 info)
+
+FBAR details
+
+Officer compensation details. Brady uploaded W3/W2 info to Gdrive
+
+ALso should ask Howard about this item in client notes: ONLY state filings needs - NY, NYC, and CA
+
+File FINAL state and city returns in NY and NYC – and only file CA going forward – may even file FINAL CA and switch to Delaware if sold?  Need to confirm.
+
+Also we need the payroll information and the R&D time percentage for each employee in order to perform the R&D study.
+
+I believe this is all we need but if you have any doubts or questions please let me know.
+
+
+
+
+
+Brady uploaded to the revenue by state to Gdrive, it does not match the financial report amount but Howard said we can use it to calculate the percentage and then apply it to the workpaper amounts.
+
+Then for Maximum value of deposits in foreign accounts for form 8938, use highest balance we can see on the monthly balance sheet for the foreign entity (Gdrive Folder: 5471 info).
+
+Then for officer compensation, Brady uploaded W3 and W2 files to Gdrive.
+
+Please let me know if there is anything else I can help you with!
+
+
+
+
+
+Brady McKennaReturn is ready for your review! Here are my comments:
+
+Used PY return exchange rate in form 8938.
+
+Added Apportionment info
+
+Added form CT-399
+
+Cleared efile errors
+
+Added bank info to NY forms
+
+Added officer compensation and took the same amount out of salaries and wages line
+
+Added sales information as override to NY forms because it was not flowing from federal information (same as PY)
+
+Please let me know if I can help with anything else!
+
+
+
+Wisdom  of age (Pamela):
+
+
+
+Hi Steve, return is ready for your review. Here are my comments:
+
+Howard said it has only a W2 but I was not able to find it to check the information.
+
+Informational items are ok.
+
+Only 2 efile errors left related to Drivers licence info. Per PY return we know it expired during 2025. We need the new information.
+
+Please elt me know where to rake from the drivers licence info to update the return and let me know if you need me to change anything else!
+
+
+
+
+
+
+
+Stabile Nicholas:
+
+
+
+Hi Brady, return is ready for your review. Here are my comments:
+
+W2 info correct but i think that 1 W2 is missing. The $31,699 from M  BOOYH & ASSOCIATES LLC.
+
+SSN, Addres, names, correct.
+
+I was not able to find the NY state-issued pin to solve the efile errors.
+
+This is one of my first times reviewing 1040 so I would realy appreciate any comment you have on this! Let me know if there is anything I can help with.
+
+
+
+
+
+
+
+
+
+Bradley Rausch:
+
+
+
+Added estimated payment information. Need confirmation about 1Q and 4Q payment.
+
+Hey Aubrie, return is ready for your review.Here are my comments:
+
+I did not add the IA payment since we are not filling an IA Return but my doubt is if we should add the IA forms so we can add the payments. 
+
+Added federal estimated payments
+
+Added share of business alternative income tax from Champion media solutions LLC return.
+
+Solved the payment voucher issue.
+
+The tax payer is underpaid for both federal and state.
+
+In the estimated payments files it is mentioned that there were some payments to NJ. I understand that since they were made by PTE we do not have to add them here.
+
+Please let me know if I can help with anything!
+
+
+
+
+
+
+
+
+
+
+
+Optimally LLC:
+
+
+
+
+
+Hey steve, return is ready for your review. Here are my comments:
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Form 7203, Sch L and M2 beginning balance matches PY ending balance.
+
+Where is the charitable contribution amount coming from? It is not on the workpaper
+
+Sch L is balanced
+
+I do have some doubts about M! Beginning balance. Would be great to schedule a call and review it together. 
+
+Added CA form 3804
+
+Added first Q estimated payment that was missing
+
+Please let me know if there is anything I can help with.
+
+
+
+
+
+Perry Story:
+
+Hi aubrie, return is ready for your review. Not a lot to mention, just that form 4797 was included with the company sale information and return was marked as final per client notes/clickup.
+
+Let me know if I can help with anything else!
+
+
+
+
+
+Groovy Bean Company:
+
+Ask Aubri where can I find Income and expense details for form 8825  SHE WILL TALK WITH HOWARD ABOUT THIS
+
+Same for NM Corporation Commission. LO AGREGO AUBRY. GOOGLE NM COMMISION NUMBER Y LO BUSCO POR EL NBOMBRE DE LA EMPRESA
+
+7203 ending balance from PY does not match CY beginning balance
+
+
+
+Hey Rohan, just for you to know. Aubrie showed me how to look for the NM Corp Commission number. You just have to google “NM Corp Commission number” and you will reach a web page that allows you to search it by the corporation name. Aubrie added it to porconnect so it is fine now. Then, about form 8825 she will be talking to Howard about this and let us know how to continue!
+
+
+
+
+
+Coda Capital:
+
+
+
+We should claim the distributions as income and then offset it via other deductions
+
+
+
+
+
+
+
+
+
+CPH International:
+
+
+
+Other income is from 2 credit card credits, should these be classified as other income or as a credit?
+
+Added Depreciation to sch M1 (please let me know if this is correct)
+
+Added Bank information to CA form 8453-LLC
+
+Dont we have PTE for TY 2025? (CA)
+
+Part 2:
+
+
+
+Changed LA and Federal Bank information from Bank of Hope to Chase Bank.(Per client notes)
+
+Sch L PY ending balance matches CY beginning balance
+
+Sch M2  ending balance matches CY beginning balance
+
+
+
+Finished Optimumly, CPH and CODA Capital. 
+
+Actually working in Food source (evolution group)
+
+
+
+
+
+RapideFitnes ( Alexandre Folacci):
+
+Hi Aubrie, the return is ready for your review. Here are my notes:
+
+
+
+W2 info is correct
+
+Do not have any info for 3D photography business expenses.
+
+Tax Excempt interest is correct
+
+IRA distributions correct
+
+SCH D is aligned with Stock Investments aand Crypto Investments.
+
+The reason we are seeing payment vouchers for State returns is because we did not select the electronic payment option following PY return. Maybe this was because of the loss position of last year.
+
+Added 2Q and 3Q estimated payments.
+
+No estimated tax payments for states. (per Gdrive)
+
+Please let me know about any comments you have on this return. I would really appreciate it because I do not have a lot of experience with individuals!
+
+
+
+
+
+
+
+
+
+
+
+Bradley Rausch rejection:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Evolution Group:
+
+
+
+Hey Brady, return is ready for your review. Only this 2 notes.
+
+Added SCH D (1099 info)
+
+Added 89449 form (1099 info)
+
+Let me know if I can help with anything else!
+
+
+
+
+
+
+
+Chaudhuri, Tarasankar: 
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Added Drivers licence information for both (solved efile error)
+
+Changed from payment voucher to electronic payment of balance due (same as PY)
+
+SCH D matches 1099 forms
+
+Pensions, IRA distributions matches files uploaded
+
+
+
+Please let me know if I can help with anything else!
+
+
+
+
+
+Barun Corp:
+
+
+
+Hi Brady, return is ready for your review!  Here are my notes:
+
+
+
+Form 7203, Sch L and M2 beginning balance matches PY ending balance.
+
+Sch L is balanced
+
+Informational items correct
+
+Need to ask for Payroll info to prepare the R&D study and with that we can complete the form 6765
+
+Selected electronic payment of the balance due.
+
+Form 1125 compensation of officers is correct
+
+Amortization amount correct per workpaper
+
+
+
+Please let me know if I can help with anything else and let me know when we do get the info for R&D study so I can complete it!
+
+
+
+
+
+
+
+
+
+Kim, Chris H:
+
+
+
+Hey brady, the return is ready for your review. Here are my notes:
+
+
+
+Address, SSNs and names are correct
+
+W2 info correct
+
+Interest amount correct
+
+Dividends amount correct
+
+To select electronic payment of balance due we need to add a telephone number
+
+Interactive brokers info correctly completed on sch d for short and long term capital gains
+
+Added estimated payments per client notes info.
+
+7203 beginning balance matches TY 2024 ending balance
+
+
+
+Please let me know if there is anything I can help with!
+
+
+
+Robinson Family trust:
+
+
+
+
+
+Hey brady, return is ready for your review! Here are my notes:
+
+
+
+Address, SSNs and names are correct
+
+Interest income matches Evolution group 1099
+
+Dividend income matches Evolution group 1099
+
+SCH C information correct 
+
+SCH D information correct. Matches 1099
+
+No estimated payments
+
+No balance due so no voucher for payment
+
+
+
+Please let me know if there is anything I can help with!
+
+
+
+
+
+
+
+Thuy Diep LLC:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Added taxable income reconciliation to workpaper
+
+Ordinary Business Income correct (per workpaper)
+
+Taxable Income correct (per workpaper)
+
+SCH L and M-2 beginning balance matches TY 2024 ending balance
+
+Addresses, EIN and dates are correct
+
+SCH D matches both 1099 Schwab and 1099 Vanguard
+
+Could not find information about foreign dividends, so, as there are no foreign dividends, there is no K2/K3
+
+Need to get the W2 to complete the 1125-E Compensation of officers
+
+Form 7203 beginning balance matches TY 2024 ending balance
+
+Attached form CT-399 to NY return
+
+Please let me know if I can help with anything!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CT Cellar Doors -CCD Holdings:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Is it ok to have Unapplied Cash bill Payment Expense as a negative deduction in the “other deductions” line?
+
+Should we move the payroll tax penalty to sch K?
+
+Fixed workpaper book to tax reconciliation tab.
+
+Informational Items correct ( cellphone numbers, EIN, Address, Name)
+
+I could not find the way to get the Amortization info flowing to form 4562
+
+I believe information is not flowing to CT-1065 Part 1 SCH A because of the loss position.
+
+Please let me know if I could help with anything!
+
+
+
+
+
+OmniRT Inc:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Informational Items correct ( cellphone numbers, EIN, Address, Name)
+
+Form 7203 beginning balance matches TY 2024 ending balance
+
+Added business income to SC form I-435 column C. I am not sure if this is correct, so please let me know if I should change that.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Ace Travel:
+
+
+
+Hey brady, return is ready for your review. Here are some notes:
+
+
+
+Giuseppe Ventures LLC EIN was already updated (client notes)
+
+Ace Travel address was already updated (client notes)
+
+Moved the 2k misc deduction to distributions
+
+Should we adjust the 2k distribution amount on books?
+
+Added bank information to TR-579-PT and solved efile error
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+Giuseppe Ventures:
+
+
+
+Hey brady, return is ready for your review. Here are some notes:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+No SCH D this year since the amounts there were coming from Ace Logistics which was filed as Final return on TY 2024.
+
+Form 7203 Beginning balance matches TY 2024 ending balance
+
+Distributions amount matches workpaper
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+BHB Rogers Ave LLC:
+
+
+
+Hey @aub return is ready for your review. Here are some notes:
+
+
+
+Marked “yes” on question 4 to blank SCH L, M1, M2.
+
+Changed Bank Account info per client notes. Need to check if this is Chase Bank or other bank.
+
+Solved efile errors regarding bank info
+
+Added  Restaurant Supplies to other deductions
+
+Names, addresses, EIN/SSN correct
+
+Efile errors cleared.
+
+Could you please let me know where I can find FICA details so I can add them to the return?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Van Eeden, Marcel J:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Following up on Rohan´s note, could you kindly ask for the missing W2 to the client?
+
+Selected electronic payment of balance due for federal return as PY
+
+SCH D matches 1099 forms.
+
+Child and dependant credit correct
+
+Fixed OmniRT Income to match return
+
+Added estimated payments.
+
+Cleared efile errors, only remaining one related to the W2 comment.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+Suresh Kumar:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Pension amount correct
+
+Tax paid amount correct
+
+Informational items correct
+
+Could you kindly ask for the Visa status of last day of the tax year to the client?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Vijay:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+1099s matching SCH D
+
+SCH C matches different forms uploaded to proconnect
+
+Interest and dividend income correct
+
+Selected electronic payment of balance due for both federal and state
+
+Could not find information about NJ property deduction from TY 2024
+
+Could not find information about estimated payments mentioned on client notes for Q 1,3 and 4.
+
+Informational items are correct
+
+Please let me know where can I find information about estimated payments and property tax deduction and I will add that to the return! The file named as “Taxes - expenses for deduction” only contains “food and drinks” and “Equipment” information.
+
+
+
+
+
+Juarez Aguilar, Thalia Y:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Names, addresses, SSNs are correct
+
+W2 income match line 1a
+
+SCH C correctly matches
+
+The $58,336 reducing the qualified business income is the NOL from PY
+
+Need Work telephone number and taxpayer's date of birth to select electronic payment of balance due
+
+No Information found for estimated payments
+
+ 
+
+Please let me know if I could help with anything!
+
+
+
+Also wanted to ask, why do we not have a form 4562 this year? Should I add that form?
+
+
+
+
+
+Madre Nature LLC:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Names, addresses, SSNs are correct
+
+No Information found for estimated payments
+
+Need the Payroll info for the R&D credit to be calculated.
+
+SCH L beginning balance matches TY 2024 ending balance
+
+Apportionment to Texas is 100% but last year it was only 8%, we do need information to check the apportioned amount and get the correct apportioned rate.
+
+Is M2 beginning balance difference from 2024 ending balance related to Rohan's comment? 
+
+Telephone number of the signing officer is required
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Ebite Inc:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Names, address and EIN correct
+
+Balance sheet and P&L are not matching QBO. Is there a reason for that? Or should we update the info?
+
+No information of estimated payments
+
+SCH L and M2 beginning balance matches TY 2024 ending balance
+
+I believe we do need sales information to complete the apportionment section on DE return. On TY 2024 an override was made on sales of tangible property but it should be on the following line “Gross receipts and gross income from within and without DE”
+
+Regarding the efile error please provide guidance on how to approach it, should we do whats recommended on the comment or should we paperfile this return?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Palmisano, Angleo Jr:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+W2 amount correct
+
+Dividend amount correct
+
+Interest amount correct
+
+Pension amount correct
+
+Capital Gain amount correct
+
+No information found about estimated payments
+
+Names, Phone number, SSNs, correct
+
+Selected electronic payment of balance due and electronic payment of estimates. Please let me know if thats correct
+
+Do we have any information regarding property taxes paid? Should be included in NJ return as last year.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+JJ &CJ Enterprises:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Names, Addresses, EIN, correct
+
+SCH L information needs to be checked with bank statements.
+
+SCH L and M2 beginning balance matches TY 2024 ending balance
+
+Income and deductions are correct.
+
+SCH K correct
+
+SCH M1 Correct
+
+
+
+Apart from the notes, here are the items we need to request:
+
+
+
+W2 and employer tax details 
+
+Balance sheet information – Bank statement 12/31/2025
+
+Apportionment information?
+
+
+
+Please let me know when we got that information so I can complete the return and move it forward to manager review.
+
+
+
+Howard, here is whatI found:
+
+
+
+FIBI Vacantion rentals were taken out from deduction but only the $10,331.5 shown in the Chase report.
+
+
+
+Regarding Mortage and AIRBNB Payments, those were not included in Chase report so they were not taken into consideration for the workpaper and return.
+
+
+
+Is there anything else I should Check? I am not able to see the client email or maybe I am not seeing it.
+
+
+
+Also had to adjust balance sheet through cash amount.
+
+
+
+NO W2 this year
+
+Check apportionment last year
+
+Ask for balance sheet info
+
+
+
+
+
+
+
+Matthew Slack:
+
+
+
+Hi brady, the return is ready for your review. Here are my notes:
+
+
+
+Names, Addresses, SSN, correct.
+
+SCH D correct.
+
+Adjusted interest income only by dollar 0.83 from 1 morgan stanley document and 6.23 from other.
+
+Adjusted dividend income adding information from this link (morgan stanley document).
+
+Adjusted Scorp K1 info to match what's on In Poor Taste LLC return.
+
+Estimated payments amounts are correct.
+
+Selected electronic payments of balance due.
+
+Form 7203 beginning balance matches TY 2024 ending balance.
+
+Should we take out the exempt dividends amount to solve the efile error?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Helms, Jeremy:
+
+
+
+Hi brady, the return is ready for your review. Here are my notes:
+
+
+
+W2 amounts correct
+
+Mortage info correctly uploaded
+
+Selected electronic payment of balance due and estimated payments.
+
+Names, SSNs and Addresses correct
+
+Icon Digital income correct
+
+7203 beginning balance matches TY 2024 ending balance.
+
+Estimated payment information is correct and can be found in this folder
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Joseph Caputo:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Names, SSNs and Addresses correct
+
+Selected electronic payment of balance due 
+
+W2s amounts correct
+
+SCH E correct
+
+No SCH C from Grace Caputo this year. (Yoga) Should we take out NJ SCH C which is all in 0?
+
+Interest and pensions correct
+
+No information found about estimated payments
+
+Added State income tax withheld from W2 for NJ-1040 reducing balance due from $11585 to $171 overpayment.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+KT´s BBQ:
+
+
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Form 7203 and SCH M2 beginning balance is not matching TY 2024 ending balance
+
+No information found about estimated payments
+
+P&L info is correctly uploaded 
+
+Fixed SCH L by moving the 104k from other current assets to Loan to shareholders.
+
+M1 correct
+
+Names, EIN and address and dates correct
+
+Apportionment 100% to Colorado
+
+
+
+
+
+
+
+Jamison Kirk:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Names, SSN and address are correct
+
+W2 amount correct
+
+Donations amount correct
+
+Health insurance info correct
+
+Child Care donation was added to itemized deduction, shouldn´t it be on the credits section?
+
+Could not find where the tip amount on form SCH 1-A is coming from
+
+Underpayment for federal return, overpayment for state return. Amount paid are all from W2 and 1099 withholdings.
+
+Could we ask for the daughters birth date to solve the efile error?
+
+Could not find the way to solve 7203 efile error, Please let me know how this is done and I will fix it!
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Organic Bunny:
+
+
+
+Hi brady, the return is ready for your review. Here are my notes:
+
+
+
+Work paper Statement of activity: matches quickbooks
+
+Work paper Statement of financial Positions: matches quickbooks
+
+Is it correct to have “payroll expenditures” as a negative deduction?
+
+I believe Net assets ending balance should be $149,320 instead of $149,135
+
+EIN, address, telephone number and website are correct
+
+
+
+I would really appreciate any comment you have on this review since it is my first time reviewing a 990 return type.
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Cashably LLC:
+
+
+
+Hi Brady, the return is ready for your review. Here are my notes:
+
+
+
+Work paper Balance sheet: matches quickbooks
+
+Work paper P&L: matches quickbooks
+
+Why are we filling an extension form with the return?
+
+Names, address and EIN correct. Match with W9
+
+No information found about estimated taxes paid
+
+SCH L matches balance sheets
+
+Income and deductions are correct
+
+Attached form CBT-160-A
+
+New Jersey ID is needed to solve the efile error, could you kindly ask Howard or the client to provide that information?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Jason Berry:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Selected electronic payment of balance due
+
+Selected electronic payment of estimated taxes
+
+Both W2 amounts are correctly uploaded
+
+I was not able to find the Dispositions amount 5311 and 3067 in the tax documents but I also see that file 2025-taxdocuments-3132 amounts are not included on the sch D. was there an error or this should be included? I believe this is because the files are under Vivi Dynamucs LLC name but I am not sure.
+
+Updated SCH K-1 information to match 1120s
+
+Could not find any property tax information. Could you kindly tell where to find that, or if we should ask for this info to the client.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Patrick Nicolas:
+
+
+
+Hi Brady, the return is ready for your review. Here are my notes:
+
+
+
+Names, SSNs, addresses and phone numbers are correct.
+
+Added dividend income that was not included from this file. (Spouse)
+
+Pensions amount correct
+
+W2 amount correct
+
+Interest income amount correct
+
+Sch D correct
+
+Sch E correct
+
+Tax refund/Unemployed compensation amounts correct (1099-G)
+
+For sch C: in the gross receipts section we have negative “WIP sales” for 34k and negative “financier fees” for 1.5 million. Shouldn't financier fees be in the cost of goods sold section? Also, is it correct to have negative sales? Or is this like an accounting adjustment.
+
+As there is an overpayment, please provide guidance to decide if we need to select electronic/automatic refund to the bank account.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Swulius Amanda:
+
+
+
+Hi Brady, the return is ready for your review. Here are my notes:
+
+
+
+Names, SSNs, addresses and phone numbers are correct.
+
+Pensions amount correct
+
+W2 amount correct
+
+Interest income amount correct
+
+Sch D correct
+
+Dividend amount correct
+
+Mortgage amount correct
+
+As there is an overpayment, please provide guidance to decide if we need to select electronic/automatic refund to the bank account.
+
+Regarding Rohan´s comment on form 7203, the beginning stock basis have been updated and do not match either ty 2024 ending balance and ty 2025 form 7203 on The organic Bunny Inc return. Please provide guidance on what should we do. Either change it back to the 1120s return amount or maybe change the 1120s return.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Martin Challinor:
+
+
+
+Hi Brady, the return is ready for your review. Here are my notes:
+
+
+
+Name, address and SSN are correct
+
+Interest income correct
+
+W2 amount correct
+
+Dividend income correct
+
+SCH C correct (from file “2025 1099 Consulting and Acting Income and Expenses”)
+
+Mortgage amount correct
+
+Estimated payments info also on file “2025 1099 Consulting and Acting Income and Expenses”
+
+Need property taxes for NJ-1040
+
+Should the $300 donation (value of clothe) be included in the noncash contributions section? Or does this need to be included in other section?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Credit from NY should be in state and local as a deductions (File: City of New York 1127.jpg)
+
+
+
+Henry Wojtunik:
+
+
+
+Hi Aubrie, the return is ready for your review. Here are my notes:
+
+
+
+Name, address and SSN are correct
+
+W2, interest incom, dividend income, pensions, SCH D and SCH E are correct. Information matches files uploaded.
+
+Contributions amount correct
+
+Selected electronic payment of balance due and electronic payment of tax due with extension following choices made on PY.
+
+Why don't we have form 7203 this year?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Landi, Michael:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Names, Address, SSN and Phone number are correct
+
+Where is the W2 form? The info shown in the return flows from TGC Elite Management SCH K1.
+
+For SCH D we also have only the info from SCH K1 and there is not any 1099 form as support of that info.
+
+No SCH C info for Elite business management LLC but the return is generating a blank form for NJ return.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Lazy Cow Media LLC:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Name, address, EIN and dates correct
+
+There is an R&D expense in other deductions. Shouldn’t this be used as R&D credit?
+
+SCH L and M2 ty 2024 ending balance matches TY 2025 beginning balance.
+
+The shareholder's identifying number changed from 392-11-1969 to 843-44-1020.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Varsha Kumar:
+
+
+
+Hi Mark, the return is ready for your review. Here are my notes:
+
+
+
+Dividend income is correct 
+
+Interest income: could not find amounts for Axis Bank NRO, Karnataka Bank and State Bank Of India.
+
+Solved efile error regarding foreign bank account.
+
+Selected electronic payment of balance due for federal and state returns.
+
+Solved efile error regarding Bank information.
+
+Address, SSN and names are correct
+
+Hidden Grounds K1 for Varsha has a different amount for ordinary income but I do not know if that return is correct or not.
+
+Difference between 7203 from varsha and Hidden Grounds coming from the differences in the K1
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Muse Aestethic:
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+1120s Amended return:
+
+
+
+Updated P&L
+
+Only difference with P&L is officer compensation amount $74,200.
+
+Please provide guidance for efile error on distributions amount
+
+Georgia Withholding Tax Account Number is needed
+
+Georgia Sales Tax Registration Number is needed
+
+Updated Georgia gross receipts override
+
+Marked Amended return option
+
+
+
+1040:
+
+
+
+
+
+
+
+Simply Nova LLC:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Moved interest income from other income to SCH K
+
+What should we do with the negative deductions “ Worker’s Compensation” and “Payroll Expenses”.
+
+Selected Electronic payment of LLC/LLP filing fee for NY and added bank information.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Profound Platform Inc (Finch):
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+There is R&D credit expense on the deductions but we do not have the information to calculate R&D credit. Need to request this to the client. Also saw this comment on client notes “No longer doing R&D study for now since no current benefit – to re-explore in 3 years and potentially do catch up study then”.  If no R&D where is that expense coming from? Should we remove that?
+
+Address, EIN and dates are correct
+
+Unrealized gain inmaterial to be included
+
+Both SCH L and SCH M2 beginning balance matches TY 2024 ending balance.
+
+Should we move “benefits” $20,126 and “Employee Experience” $5,000 from other deductions to employee benefit programs?
+
+Also on the employee benefit program we have a negative deduction, please provide guidance on how should we treat that.
+
+Same question on negative Sales tax -$267
+
+Selected Electronic payment of balance due for all states (except for GA and IL as that result in efile errors) please tell me if something needs to be changed.
+
+Allocated the $374,124 gross receipts to CA per workpaper
+
+GA no apportionment since single sales factor
+
+Could not find the attachment needed for AZ
+
+Added form CT-399 for NY and form CBT-160-A For NJ
+
+For critical diagnostics, the one for district of columbia can be ignored, the one for NY I could not find the solution and the one for form REV-860 is the same as last year and was ignored, should we do the same?
+
+
+
+This return is huge so please let me know if I could help with anything!
+
+
+
+
+
+Ken Papile:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Address, SSN and names are correct
+
+W2 amounts correct
+
+Interest and dividend amounts are correct
+
+Estimated Payments correct
+
+No quantum labs K1 since it was final on 2024
+
+Overrided NOL to limit it to 80% per critical diagnostics. Please review it
+
+Cleared 5 diagnostics, only remaining the same taht was eft on PY (pensilvania)
+
+Could not find Health Savings Accounts and IRA info as last year.
+
+Selected electronic payment of balance due for all states and federal except PA (same as last year)
+
+Could not find the real state taxes “principal residence” amount
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Marrero Michael:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+QBO P&N and BS matches workpaper
+
+Names, address and SSNs correct
+
+Need to ask for birth dates to clear diagnostics
+
+W2 correct
+
+Pensions, IRA: correct
+
+Doubts on SCH C, Mortgage amount is in this Gdrive file, not on proconnect.
+
+No estimated payments information so need to decide if we are selecting electronic payment of balance due. Also if we do, we need the bank information.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Barun Missiom:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+Names, address, phone number, email and EIN correct
+
+What about the $10,382 from “trip to Hanksamel Mission in S. Korea”. Shouldn’t this be included in expenses?
+
+The $405,00are recorded as investment, this matches last year treatment (Correctly added to assets)
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Fleek Lab Inc:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+QBO BS and P&L matches workpaper.
+
+Name, EIN and dates are correct. 
+
+Address changed, correctly marked on the return. (per client notes and Rohan’s notes).
+
+Need to ask the client for the percentage of the payroll related to R&D in order to calculate the R&D credit.
+
+Selected electronic payment of balance due for NY.
+
+Regarding  the  -2,800,750 gain on sale and -1,292,452 for unrealized gain/loss. Rohan mentioned he added this on other income until we ask for details. We need to ask the client for this information.
+
+Could not solve the M3 efile error. I believe it is that we are including twice the PY amortization amount but I can not find the way to eliminate that and make it balance.
+
+Added pdf form CT-399 for NY.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+Aika Cardin:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Added W2 info from payroll workpaper
+
+Removed SCH C
+
+Corrected the amounts for SCH D
+
+Corrected dividend amounts
+
+Added estimated payments for federal and state returns
+
+7 diagnostics cleared
+
+Added Aika Cardin Photography Studio LL address, Zip code and CA business code
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Kevin Kimick:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+W2 info correct
+
+Interest income is correct
+
+Dividend amount correct, Vanguard amount is on this file
+
+Pension amount correct
+
+SCH D correct
+
+Do not know how to treat the FPD NY PTE extension payment for $7,000 for federal return and $1,500 for NY.
+
+Moved estimated payment from Q2 to Q3 per Gdrive payment file.
+
+Completed the Five points digital K1, Alexa group one was correct.
+
+Selected electronic payment of balance due for federal and state return.
+
+Added Bank information for NY return
+
+Could not solve the remaining diagnostics
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Reverse Aesthetic Group LLC:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Name in return is “REVERSE AESTHETIC GROUP LLCupper”. On Prio return it was “REVERSE AESTHETIC GROUP LLC”. Should I change that?
+
+Added Corporation’s and shareholder’s  total number of shares 100 ( both sch K1 )
+
+Did not find information about estimated payments
+
+
+
+Please let me know if I could help with anything!
+
+
+
+Reverse By Lisa:
+
+
+
+Hi Christina, return is ready for your review. Here are my notes:
+
+
+
+Added Amortization to workpaper
+
+Added SCH M2 beginning balance 
+
+No information found regarding SCH L line 19B, this might be the solution to the BS being out of balance.
+
+Marked “Change in pship address” per client notes
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Paul Hyun:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+Name, address and ssn is correct
+
+Income is correct
+
+Selected electronic payment of balance due for federal return, but not for CA as last year.
+
+Added Q1 estimated payment
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Muse Aestetics Amended return;
+
+
+
+Waiting for the client to send:
+
+
+
+W2, 2023 tax returns to see if there were any COGS reported on 1125-A and carryforwards.
+
+
+
+Rose Wladis:
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+Address changed, Nikita mentioned that in her comment.
+
+SSN and Names correct
+
+Added Drivers licence information
+
+Selected electronic payment of balance due for federal return. To select this for PA we need her phone number
+
+W2 state withholdings are not flowing to PA return, How can this be fixed?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+Schouten Casper:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+W2 info correct
+
+Dividend amount correct
+
+Long term gain is reported separately but is correct.
+
+Mortage amounts correct
+
+Selected electronic payment of balance due
+
+Shouldn’t Spouse K1s income be included?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Extensions for Better Health Labs:
+
+
+
+(supposing loss position for all 3 entities under Better Health Labs)
+
+
+
+Coastal Care Medical Group CA:
+
+
+
+Diagnostics cleared
+
+PY extension payments - Federal: $0 - CA: $800
+
+CY extension payments - Federal: $0 - CA: $800
+
+
+
+Coastal Care Medical Group NJ:
+
+
+
+Diagnostics cleared
+
+PY extension payments - Federal: $0 - NJ: $500 minimum fee, $250 Instalment fee
+
+CY extension payments - Federal: $0 - NJ: $500 minimum fee, $250 Instalment fee
+
+
+
+Coastal Care Medical Group PA:
+
+
+
+Diagnostics cleared
+
+PY extension payments - Federal: $0 - CT: $250 - FL: $0 - MD: $0 - NY: $25 - NYC: $25 - TN: $100 - TX: $0
+
+CY extension payments - Federal: $0 - CT: $250 - FL: $0 - MD: $0 - NY: $25 - NYC: $25 - TN: $100 - TX: $0
+
+
+
+
+
+Aubrie extensions:
+
+
+
+Covington Shaun:
+
+
+
+Added W2 and Client info to solve diagnostics
+
+What about UBT extensions?
+
+Tara Glick:
+
+
+
+Diagnostics cleared
+
+What about UBT extensions?
+
+
+
+Bahij Nemeh:
+
+
+
+Diagnostics cleared
+
+What about UBT extensions?
+
+
+
+Dylan Scance:
+
+
+
+Diagnostics cleared
+
+
+
+Channon Wright:
+
+
+
+Diagnostics cleared
+
+What about UBT extensions?
+
+
+
+
+
+
+
+Michael Cooney:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+W2 amounts correct. 
+
+Names, Address and SSNs are correct
+
+Could not find Standard Bank interest amount
+
+Dividend income correct
+
+Alabama refund correct
+
+Added Sch C info to workpaper
+
+Sch D correct
+
+Added investment income to Icon digital K1
+
+Selected electronic payment of balance due for Federal and NC. For AL I followed PY and did not select it. For CA I could not select that because it is showing an efile error and I do not know how to solve it.
+
+Forms 7203 TY 2024 ending balance matches CY beginning balance
+
+Why was a refund requested for AL if we have a high tax due for this Tax year
+
+Tax increase comes from Icon digital almost duplicating income from last year to Current year
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+Catherine Willhoit:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Some files are in the smartReturn tab on proconnect and some files are in the Gdrive
+
+W2s correct
+
+Interest income is correct.
+
+SCH D correct
+
+Could not solve the remaining diagnostic. Tried following instructions and selecting Source: State, but when I do that more diagnostics appear and the original one does not erase. 
+
+No estimated payments info
+
+Should this be included? Do not realy know where 
+
+Names, address and SSNs are correct.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+
+
+Kevin Kimick Income Tax estimated payments:
+
+
+
+PTE:
+
+Q3 Five Points Digital NY payment: $1,500 09/15/2025
+
+Extension Payment Five Points Digital: $7,000. Date 01/15/2026
+
+
+
+Personal Payments:
+
+Federal Q3 $2500. Date 09/15/2025
+
+Federal Q4 $18,000. Date 01/15/2026
+
+
+
+
+
+
+
+Hi Mark, return is ready for your review. Here are my notes:
+
+
+
+Added Joshua as signing office to solve Montana diagnostic.
+
+Solved CA diagnostic
+
+Created a PDF for the federal Line 17 breakdown and attached it to solve MT diagnostics
+
+Need Montana Secretary of State ID to clear Diagnostics
+
+No apportionment for MT
+
+Only tax due for MT is the minimum $50 tax.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+Regarding Joshua Giliam CA return. I added it to Proconnect and solved all 5 diagnostics. We are filing a 540NR: 2022 California Part-Year/Nonresident Return as the email said. The only CA income source is SCH E rents and royalties for 9k. Per this picture Howard shared, he is under the threshold.
+
+Return is ready for your review. Only thing remaining, I could not find where the CA penalty was coming from. Please leave me a comment on how this was calculated or where was this amount added to proconnect!
+
+
+
+
+
+Hyun Joseph
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+W2s correct
+
+SCH D correct
+
+Interest income correct
+
+K1 info correct
+
+Names, addres and SSNs correct
+
+Estimated payments correct
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Nemeh Bahij:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+SSN correct (per client notes)
+
+Cancellation of debt amounts correct
+
+Need to ask the client for the school district name and number, and Drivers licence ID to solve EF critical diagnostics
+
+What’s Nemeh’s occupation? Needed to solve diagnostics
+
+
+
+Please let me know when we get the info needed and I will add it to the return!
+
+
+
+
+
+Modeh Ani:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Phone number, EIN and Address correct
+
+Per Nikita’s comment, are we getting a 1099 INT this year? As far as I have researched, we are only getting a 1099INT if we have interest payments for $10 or more. Link here
+
+Summary of the expenses: All expense figures are sourced directly from the Wells Fargo Navigate Business Checking Account (#6002973789) transaction history recorded in the "WF JAN-DEC" sheet of the 2025 Tax Workpapers. The CPA fees of $2,120 represent four ACH payments to Certifai CPA ($700 in May, $700 in August, $700 in November, and $20 in November). The Office Expenses of $3,550 consist of a $3,500 wire transfer to Natasha Hausdorff processed on January 6, a $25 wire transfer service charge on the same date, and a $25 check (#1068) issued in December. The Other Expenses of $216 represent twelve monthly recurring payments of $18 each to Moonclerk, charged every month from January through December 2025.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+
+
+Groovy Bean Company:
+
+
+
+Hi Aubrie, returns are ready for your review. Here are my notes:
+
+
+
+Groovy Bean Company:
+
+
+
+Difference in SCH K line 17d, it might be including 28,800 gross rents amounts, but It does not affect the taxable income.
+
+Also in NM apportionment, we now have %100 apportionment to NM and in the original return we have %0 apportionment.
+
+Please provide guidance regarding which depreciation method we should select to clear diagnostics.
+
+
+
+Merriman David:
+
+
+
+Differences in QBI relate to SCH K1 section 179 %50 limitation on the original return. As a result of this we have a higher deduction in the new return and a lower tax.
+
+Is there a reason why we are not adding NM payments and withholdings? 
+
+ISLAND ENTERPRISES INC EIN is required
+
+Could not solve the remaining diagnostics
+
+
+
+Could not find any FICA tip credit in any of both returns. Could you please let me know where it should be located and the amount so I can add it?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+
+
+
+
+
+
+Regarding Icon Digital notice, I updated the web information to match what was filed on the C-287 form and the only thing remaining is the payment. Which the client just approved.
+
+
+
+
+
+Koosed RE Bio LLC:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Workpaper BS and P&L matches QBO
+
+Interest income from the received K1s and morgan stanley file are correct
+
+I believe the negative state income tax deduction is not correct. Maybe we can ask the client about this amount and why it is there. They also included it on PY but it was not a negative amount.
+
+Also this negative amount is the problem that generates the remaining diagnostic
+
+No SCH D this year since no transactions.
+
+Informational items are correct
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Koosed Grandchildren’s trust:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+1099s interest, dividend and dispositions income are correct
+
+Missing K1: Koosed Ventures LLC, Koosed Capital LLC, Koosed Grandchildrens Trust (once reviewed we can add that from proconnect return), Koosed Investments LLC.
+
+Name, address and EIN correct.
+
+Solved OH address diagnostic. The remaining diagnostic can be ignored? Or what payee could we add? 
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+2023 Groovy bean company:
+
+
+
+Hi Aubrie, return is ready for your review. Here are my notes:
+
+
+
+Corrected address 
+
+Tip credit amount is correct
+
+Need advice on what type of property we do have to select for form 8825
+
+
+
+Merriman David 2023:
+
+
+
+Informational items correct.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+1501 INC:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+Is it correct to have tips in other deductions?
+
+Should we add ℅ Jeremy Waldis to the address to match PY return.
+
+Dates and EIN are correct.
+
+Accounting method selected is cash, I changed it to accrual to match PY return
+
+SCH M2 and SCH L beginning balance match PY ending balance
+
+Apportionment factor for NC is %100 in PY return, can we ask for apportionment info to the client?
+
+Attached Form NC-NA and added Nonresident shareholder number but diagnostics are not being cleared. Please let me know if we can ignore diagnostics as I have already done what it is asking for.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Brads Holdings
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+0 return
+
+Informational items correct
+
+Hanko LLC was classified as Pship on TY 2024 and in 2025 is marked as individual and thats why TIN is shown in SSN format and not EIN format. I changed it to match TY 2024.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+Fuel Pizza USA LLC:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+0 return
+
+Informational items correct
+
+1065 SCH B Jeremy Wladis Phone Number is different from PY
+
+Saw on Client notes Jeremy’s Mother should have final K1. Jeremy is also Marked as final, is that correct? Couldn’t find info. Elizabeth is his Mother? She is marked as final K1.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+
+
+520 Columbus Avenue LTD:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+Address, dates and EIN correct
+
+Ordinary business income matches workpaper
+
+What about question 14 a and b? Do we have any information regarding those? 
+
+No contributions this year?
+
+What is the 32k credit used on PY? 
+
+All forms 7203 are in 0.
+
+
+
+Please let me know if I could help with anything!
+
+
+
+
+
+Barker Corp:
+
+
+
+Hi Brady, return is ready for your review. Here are my notes:
+
+
+
+What is the “1099” amount in other expense?
+
+EIN, dates and address correct
+
+Changed accounting method from cash to accrual to match PY return
+
+Business activity says FULL SERVICE RESTAUR in PY, should we change it?
+
+
+
+Please let me know if I could help with anything!
+
+
+
+PARTNER REVIEWS:
+
+
+
+Howard Reviews: 
+
+
+
+Christina Valiullina thank you and sorry for the delay
+
+removed AMT adjustment on gain/loss of fixed asset
+
+balance sheet - removed other adjustment and moved this to retained earnings - RE was overridden to match last year
+
+M-2 beg balance didn't tie to last year ending
+
+updated COGS to match books - this should generally tie unless prior year inventory doesn't agree between tax and books
+
+checked exception not to have to include K-2/K-3
+
+missing Montana secretary of state number
+
+appears all fixed assets were entered as automobiles - which they weren't last year and shouldn't be - screenshot below - this substantially changed the amount of depreciation taken, making it much higher
+
+elected out of bonus depreciation on new 2025 addition given depreciation so high on old assets

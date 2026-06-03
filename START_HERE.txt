@@ -1,0 +1,18 @@
+﻿RAG Tax AI - Share Package
+
+How to run:
+1. Install Node.js 20+.
+2. Open a terminal in this folder.
+3. Run: npm install
+4. Set your Anthropic API key:
+   PowerShell: $env:ANTHROPIC_API_KEY="your_key_here"
+   cmd.exe:    set ANTHROPIC_API_KEY=your_key_here
+5. Run: npm start
+6. Open: http://127.0.0.1:8080
+
+Optional integrations:
+- Google Drive/Gmail, QuickBooks, and other accounting connectors require your own OAuth credentials in environment variables.
+- See README.md for setup instructions.
+
+Security note:
+This ZIP was sanitized. It does not include local secrets, Google tokens, QBO tokens, cost logs, node_modules, client uploaded files, private client records, or review sessions.

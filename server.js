@@ -1,0 +1,9419 @@
+﻿const http = require("node:http");
+const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const childProcess = require("node:child_process");
+const zlib = require("node:zlib");
+const { buildPresentation } = require("./lib/pptx-builder");
+
+const PORT = Number(process.env.PORT || 8080);
+const HOST = process.env.HOST || "0.0.0.0";
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
+  .split(",").map((m) => m.trim()).filter(Boolean);
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
+const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+const ROOT = __dirname;
+const DATA_DIR = path.join(ROOT, "data");
+const DB_PATH = path.join(DATA_DIR, "db.json");
+const CLIENTS_PATH = path.join(DATA_DIR, "clients.json");
+const FIRM_LIBRARY_PATH = path.join(DATA_DIR, "firm_library.json");
+const DEADLINES_PATH = path.join(DATA_DIR, "deadlines.json");
+const AI_LEARNING_PATH = path.join(DATA_DIR, "ai_learning.json");
+const FEEDBACK_PATH = path.join(DATA_DIR, "feedback.json");
+const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
+const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
+const CLIENT_FILES_DIR = path.join(DATA_DIR, "client_files");
+const LOCAL_SECRETS_PATH = path.join(DATA_DIR, "local-secrets.json");
+const LOCAL_SECRETS = loadLocalSecrets();
+const GOOGLE_TOKEN_PATH = path.join(DATA_DIR, "google_tokens.json");
+const QBO_TOKEN_PATH = path.join(DATA_DIR, "qbo_tokens.json");
+const ACCOUNTING_TOKEN_PATH = path.join(DATA_DIR, "accounting_tokens.json");
+const MASTER_REVIEW_PROMPT_PATH = path.join(ROOT, "senior-review-master-prompt.txt");
+const KNOWLEDGE_BASE_DIR = path.resolve(process.env.KNOWLEDGE_BASE_DIR || path.join(ROOT, "knowledge_base"));
+const REVIEW_EXAMPLES_DIR = path.resolve(process.env.REVIEW_EXAMPLES_DIR || path.join(ROOT, "review_examples"));
+const READABLE_CONTEXT_EXTENSIONS = new Set([".txt", ".md", ".csv", ".json"]);
+const BACKEND_ONLY_CONTEXT_FILES = new Map([
+  ["knowledge_base", new Set(["IRS_Instructions_URL_Reference 2025 - 2024.docx.txt".toLowerCase()])],
+  ["review_examples", new Set(["Agent notes _1_.docx.txt".toLowerCase()])],
+]);
+const MAX_CONTEXT_FILES = Number(process.env.MAX_CONTEXT_FILES || 30);
+const MAX_CONTEXT_CHARS_PER_FILE = Number(process.env.MAX_CONTEXT_CHARS_PER_FILE || 250000);
+const MAX_CONTEXT_UPLOAD_FILES = Number(process.env.MAX_CONTEXT_UPLOAD_FILES || 50);
+const MAX_CONTEXT_UPLOAD_CHARS_PER_FILE = Number(process.env.MAX_CONTEXT_UPLOAD_CHARS_PER_FILE || 250000);
+const MAX_FILES_PER_REVIEW = Number(process.env.MAX_FILES_PER_REVIEW || 15);
+const MAX_DRIVE_FOLDER_FILES = Number(process.env.MAX_DRIVE_FOLDER_FILES || 200);
+const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
+  .split(",").map((origin) => origin.trim()).filter(Boolean);
+const AUTH_REQUIRED = String(process.env.AUTH_REQUIRED || "true").toLowerCase() !== "false";
+const AUTH_SECRET = String(process.env.AUTH_SECRET || LOCAL_SECRETS.authSecret || "codex-local-auth-secret-please-change-2026");
+const AUTH_USERS_JSON = String(process.env.AUTH_USERS_JSON || LOCAL_SECRETS.authUsersJson || '[{"username":"augusto","passwordHash":"pbkdf2$120000$codex-local-salt$nzYSc-lwbuGw7zPOzwosdfjkfab8wjNn1VTiTtLJbEo","role":"admin","displayName":"Augusto"}]');
+const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "tax_review_session";
+const SESSION_TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS || 8 * 60 * 60);
+const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === "production" ? "true" : "false")).toLowerCase() === "true";
+const WEB_SEARCH_ENABLED = String(process.env.ENABLE_CLAUDE_WEB_SEARCH || "true").toLowerCase() === "true";
+const WEB_SEARCH_MAX_USES = Number(process.env.CLAUDE_WEB_SEARCH_MAX_USES || 3);
+const WEB_SEARCH_ALLOWED_DOMAINS = String(process.env.CLAUDE_WEB_ALLOWED_DOMAINS || "")
+  .split(",").map((domain) => domain.trim()).filter(Boolean);
+const CLAUDE_INPUT_COST_PER_MTOK = Number(process.env.CLAUDE_INPUT_COST_PER_MTOK || 3);
+const CLAUDE_OUTPUT_COST_PER_MTOK = Number(process.env.CLAUDE_OUTPUT_COST_PER_MTOK || 15);
+const MODEL_COSTS = {
+  "claude-sonnet-4-20250514": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-sonnet-4-5-20251001": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-3-5-sonnet-latest": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-opus-4-20250514": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
+  "claude-opus-4-7": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
+  "claude-opus-4-6": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
+  "claude-haiku-4-5-20251001": { inputPerMTok: 0.8, outputPerMTok: 4, cacheWritePerMTok: 1, cacheReadPerMTok: 0.08 },
+};
+const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || LOCAL_SECRETS.anthropicApiKey || "").trim();
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.googleClientId || "").trim();
+const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || LOCAL_SECRETS.googleClientSecret || "").trim();
+const GOOGLE_REDIRECT_URI = String(process.env.GOOGLE_REDIRECT_URI || LOCAL_SECRETS.googleRedirectUri || `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}/auth/google/callback`).trim();
+const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+const GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
+const GOOGLE_OAUTH_SCOPE = [GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE, GOOGLE_CALENDAR_SCOPE, GOOGLE_USERINFO_SCOPE].join(" ");
+const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
+const QBO_CLIENT_SECRET = String(process.env.QBO_CLIENT_SECRET || LOCAL_SECRETS.qboClientSecret || "").trim();
+const QBO_REDIRECT_URI = String(process.env.QBO_REDIRECT_URI || LOCAL_SECRETS.qboRedirectUri || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/qbo/callback`).trim();
+const QBO_ENVIRONMENT = String(process.env.QBO_ENVIRONMENT || LOCAL_SECRETS.qboEnvironment || "sandbox").trim();
+const QBO_SCOPES = "com.intuit.quickbooks.accounting openid profile email";
+if (ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY;
+const MASTER_REVIEW_PROMPT = loadMasterReviewPrompt();
+ensureDatabase();
+const researchHistories = new Map();
+
+const ACCOUNTING_SOFTWARE = {
+  quickbooks: {
+    id: "quickbooks",
+    name: "QuickBooks Online",
+    vendor: "Intuit",
+    logo: "QBO",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://developer.intuit.com",
+    envVars: ["QBO_CLIENT_ID", "QBO_CLIENT_SECRET", "QBO_REDIRECT_URI"],
+    scopes: ["com.intuit.quickbooks.accounting"],
+    reports: ["ProfitAndLoss", "ProfitAndLossDetail", "BalanceSheet", "BalanceSheetDetail", "TrialBalance", "GeneralLedger", "CashFlow", "AgedReceivables", "AgedPayables", "ExpensesByVendorSummary", "IncomeByCustomerSummary", "PayrollSummary"],
+    supportsMultiCompany: true,
+    supportsCash: true,
+  },
+  xero: {
+    id: "xero",
+    name: "Xero",
+    vendor: "Xero",
+    logo: "XE",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://developer.xero.com",
+    envVars: ["XERO_CLIENT_ID", "XERO_CLIENT_SECRET", "XERO_REDIRECT_URI"],
+    scopes: ["openid", "profile", "email", "accounting.reports.read", "accounting.settings.read", "offline_access"],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashSummary", "AgedReceivablesByContact", "AgedPayablesByContact", "ExecutiveSummary"],
+    supportsMultiCompany: true,
+    supportsCash: true,
+  },
+  sage_intacct: {
+    id: "sage_intacct",
+    name: "Sage Intacct",
+    vendor: "Sage",
+    logo: "SI",
+    type: "cloud",
+    authType: "xml",
+    setupUrl: "https://developer.intacct.com",
+    envVars: ["INTACCT_SENDER_ID", "INTACCT_SENDER_PASSWORD", "INTACCT_CLIENT_ID", "INTACCT_CLIENT_SECRET"],
+    scopes: [],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashFlow", "GeneralLedger", "StatisticalReport"],
+    supportsMultiCompany: true,
+    supportsCash: false,
+    note: "Advanced setup required. Uses Sage Intacct XML API and sender credentials.",
+  },
+  freshbooks: {
+    id: "freshbooks",
+    name: "FreshBooks",
+    vendor: "FreshBooks",
+    logo: "FB",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://www.freshbooks.com/api/start",
+    envVars: ["FRESHBOOKS_CLIENT_ID", "FRESHBOOKS_CLIENT_SECRET", "FRESHBOOKS_REDIRECT_URI"],
+    scopes: ["user:profile:read", "user:reports:read"],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TaxSummary", "ExpenseReport", "InvoiceDetails", "PaymentReport"],
+    supportsMultiCompany: true,
+    supportsCash: true,
+    note: "Best for service businesses. Balance sheet detail may be limited.",
+  },
+  wave: {
+    id: "wave",
+    name: "Wave Accounting",
+    vendor: "Wave Financial",
+    logo: "WA",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://developer.waveapps.com",
+    envVars: ["WAVE_CLIENT_ID", "WAVE_CLIENT_SECRET", "WAVE_REDIRECT_URI"],
+    scopes: ["account1:read", "business1:read"],
+    reports: ["ProfitAndLoss", "BalanceSheet", "CashFlow", "AccountTransactions"],
+    supportsMultiCompany: true,
+    supportsCash: false,
+    note: "Uses Wave GraphQL API.",
+  },
+  zoho_books: {
+    id: "zoho_books",
+    name: "Zoho Books",
+    vendor: "Zoho",
+    logo: "ZB",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://www.zoho.com/books/api/v3/",
+    envVars: ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REDIRECT_URI"],
+    scopes: ["ZohoBooks.reports.READ", "ZohoBooks.settings.READ"],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashFlow", "GeneralLedger", "AgedReceivables", "AgedPayables", "SalesByCustomer", "ExpensesByVendor"],
+    supportsMultiCompany: true,
+    supportsCash: true,
+    note: "US data center by default. Configure regional OAuth/API domains separately if needed.",
+  },
+  netsuite: {
+    id: "netsuite",
+    name: "NetSuite",
+    vendor: "Oracle",
+    logo: "NS",
+    type: "cloud",
+    authType: "oauth1",
+    setupUrl: "https://system.netsuite.com/app/setup/connections.nl",
+    envVars: ["NETSUITE_ACCOUNT_ID", "NETSUITE_CONSUMER_KEY", "NETSUITE_CONSUMER_SECRET", "NETSUITE_TOKEN_ID", "NETSUITE_TOKEN_SECRET"],
+    scopes: [],
+    reports: ["FinancialStatements", "BalanceSheet", "IncomeStatement", "TrialBalance", "GeneralLedger"],
+    supportsMultiCompany: true,
+    supportsCash: false,
+    note: "Enterprise setup. Requires NetSuite token-based authentication and SuiteAnalytics/REST permissions.",
+  },
+  manual_upload: {
+    id: "manual_upload",
+    name: "Manual Upload",
+    vendor: "Fallback",
+    logo: "UP",
+    type: "manual",
+    authType: "none",
+    setupUrl: "",
+    envVars: [],
+    scopes: [],
+    reports: [],
+    supportsMultiCompany: false,
+    supportsCash: true,
+    note: "Always available. Upload exported reports manually.",
+  },
+};
+
+const mimeTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".svg": "image/svg+xml",
+};
+
+// ---------------------------------------------------------------------------
+// Corrections DB â€” 47 historical corrections from Agent_notes.docx
+// ---------------------------------------------------------------------------
+function loadLocalSecrets() {
+  if (!fsSync.existsSync(LOCAL_SECRETS_PATH)) return {};
+  try {
+    const rawText = fsSync.readFileSync(LOCAL_SECRETS_PATH, "utf8").replace(/^\uFEFF/, "");
+    const raw = JSON.parse(rawText);
+    return {
+      anthropicApiKey: readLocalSecretValue(raw.anthropicApiKey),
+      googleClientId: String(raw.googleClientId || ""),
+      googleClientSecret: readLocalSecretValue(raw.googleClientSecret),
+      qboClientId: String(raw.qboClientId || ""),
+      qboClientSecret: readLocalSecretValue(raw.qboClientSecret),
+      qboRedirectUri: String(raw.qboRedirectUri || ""),
+      qboEnvironment: String(raw.qboEnvironment || ""),
+      authSecret: readLocalSecretValue(raw.authSecret),
+      authUsersJson: String(raw.authUsersJson || ""),
+    };
+  } catch (error) {
+    console.warn("Could not read data/local-secrets.json:", error.message);
+    return {};
+  }
+}
+
+function readLocalSecretValue(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (!isLikelyWindowsEncryptedSecret(text)) return text;
+  const decrypted = decryptWindowsLocalSecret(text);
+  return decrypted || "";
+}
+
+function isLikelyWindowsEncryptedSecret(value) {
+  const text = String(value || "").trim();
+  return text.length > 120 && /^[0-9a-f]+$/i.test(text) && text.startsWith("01000000d08c9ddf");
+}
+
+function decryptWindowsLocalSecret(value) {
+  if (process.platform !== "win32") return "";
+  try {
+    const script = [
+      "$secure = ConvertTo-SecureString -String $env:LOCAL_SECRET_VALUE",
+      "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)",
+      "try { [Runtime.InteropServices.Marshal]::PtrToStringAuto($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }",
+    ].join("; ");
+    return childProcess.execFileSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
+      encoding: "utf8",
+      env: { ...process.env, LOCAL_SECRET_VALUE: value },
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+const CORRECTIONS_DB = [
+  { stage:"initial", type:"Schedule", client:"Match Point Enterprise", desc:"Interests and charitable contributions missing from book-to-tax tab" },
+  { stage:"initial", type:"Schedule", client:"Match Point Enterprise", desc:"Bonus incorrectly in line 13 rents â€” needs reclassification" },
+  { stage:"initial", type:"Schedule", client:"Match Point Enterprise", desc:"Guaranteed payments should move to line 10 page 1 of 1065" },
+  { stage:"initial", type:"Schedule", client:"Match Point Enterprise", desc:"Penalties should be classified as non-deductible expenses" },
+  { stage:"initial", type:"Address",  client:"Venty Fan",              desc:"Address changed to 6900 Westcliff Dr #503 Las Vegas NV â€” verify" },
+  { stage:"initial", type:"Income",   client:"Venty Fan",              desc:"Interest income should move from 1120 page 1 to Schedule K" },
+  { stage:"initial", type:"Income",   client:"Venty Fan",              desc:"1125-E: Matt $150k vs K1 $120k â€” Philip missing from officer comp" },
+  { stage:"initial", type:"Address",  client:"Champion Media Solutions", desc:"Bradley's address on K1 needs to be updated" },
+  { stage:"initial", type:"Schedule", client:"Champion Media Solutions", desc:"Schedule G ownership percentage not updated" },
+  { stage:"initial", type:"Address",  client:"JXL Creative LLC",       desc:"Form CT-60 address does not match prior year" },
+  { stage:"initial", type:"Schedule", client:"JXL Creative LLC",       desc:"Form CT-399 must be attached to resolve efile errors" },
+  { stage:"initial", type:"Schedule", client:"Icon Digital LLC",       desc:"Balance sheet out of balance by $24,006 in NC" },
+  { stage:"initial", type:"Income",   client:"Icon Digital LLC",       desc:"Interest income moved from other income to Schedule K" },
+  { stage:"initial", type:"Schedule", client:"CPH International",      desc:"Credit card credits â€” other income vs credit classification unclear" },
+  { stage:"initial", type:"Schedule", client:"Manaus LLC",             desc:"Retirement -$15,235 in other deductions should be line 17 positive" },
+  { stage:"initial", type:"Schedule", client:"Blueberry Fence LLC",    desc:"Partnership representative must be updated before filing" },
+  { stage:"initial", type:"Schedule", client:"Blueberry Fence LLC",    desc:"Only 1 K1 for NY â€” should have one per partner" },
+  { stage:"initial", type:"Schedule", client:"JCLewis Advisory",       desc:"Schedule L is not balanced" },
+  { stage:"initial", type:"Schedule", client:"The Hive",               desc:"NJ depreciation override method unknown" },
+  { stage:"initial", type:"Address",  client:"The Hive",               desc:"Address changed to Hoboken â€” new bank account info missing" },
+  { stage:"initial", type:"Schedule", client:"Groovy Bean Company",    desc:"Form 7203 PY ending does not match CY beginning balance" },
+  { stage:"initial", type:"Schedule", client:"Groovy Bean Company",    desc:"NM apportionment changed to 100% from 0% â€” needs verification" },
+  { stage:"initial", type:"Schedule", client:"KT's BBQ",               desc:"Form 7203 and M2 beginning balance not matching TY 2024" },
+  { stage:"initial", type:"TIN",      client:"Lazy Cow Media LLC",     desc:"Shareholder SSN changed from 392-11-1969 to 843-44-1020" },
+  { stage:"initial", type:"Schedule", client:"Lazy Cow Media LLC",     desc:"R&D expense in other deductions should be R&D credit (Form 6765)" },
+  { stage:"initial", type:"Schedule", client:"Muse Aesthetics",        desc:"Georgia Withholding Tax and Sales Tax Registration Numbers missing" },
+  { stage:"initial", type:"Schedule", client:"Fleek Lab Inc",          desc:"M3 efile error â€” duplicate PY amortization suspected" },
+  { stage:"initial", type:"Schedule", client:"Fleek Lab Inc",          desc:"Gain on sale -$2.8M and unrealized gain -$1.3M pending details" },
+  { stage:"initial", type:"Schedule", client:"Ebite Inc",              desc:"BS and P&L not matching QBO" },
+  { stage:"initial", type:"Schedule", client:"1501 Inc",               desc:"Accounting method changed from cash to accrual to match PY" },
+  { stage:"initial", type:"Schedule", client:"Barker Corp",            desc:"Accounting method changed from cash to accrual to match PY" },
+  { stage:"initial", type:"Schedule", client:"Madre Nature LLC",       desc:"TX apportionment jumped from 8% to 100% â€” needs client verification" },
+  { stage:"initial", type:"Schedule", client:"Organic Bunny",          desc:"Net assets: $149,135 on return vs expected $149,320" },
+  { stage:"initial", type:"Schedule", client:"Psychedelic Games",      desc:"Loan payments in deductions â€” moved to interest expense" },
+  { stage:"manager", type:"Schedule", client:"Coda Capital",           desc:"Distributions should be income then offset via other deductions" },
+  { stage:"manager", type:"Schedule", client:"Vital Pet Life",         desc:"Tesla Model Y 2025 lease â€” business use % and addback unclear" },
+  { stage:"manager", type:"Schedule", client:"Champion Media",         desc:"R&D Study done â€” forms 3800, 4562 and 6765 added to ProConnect" },
+  { stage:"manager", type:"Schedule", client:"Lang.ai",                desc:"NY/NYC/CA apportionment does not match financial report" },
+  { stage:"manager", type:"Schedule", client:"Uptalent",               desc:"Foreign-owned corp efile errors â€” Form 5472 owner amounts missing" },
+  { stage:"manager", type:"Schedule", client:"Barun Corp",             desc:"R&D study pending â€” payroll info needed for Form 6765" },
+  { stage:"manager", type:"Schedule", client:"Groovy Bean Company",    desc:"FICA tip credit not found â€” location and amount needed" },
+  { stage:"manager", type:"Schedule", client:"Jamison Kirk",           desc:"Child Care donation in itemized deductions â€” should be credits" },
+  { stage:"manager", type:"Schedule", client:"Madre Nature LLC",       desc:"R&D credit payroll info pending" },
+  { stage:"final",   type:"TIN",      client:"Wisdom of Age",          desc:"Driver's licence expired 2025 â€” new info needed for efile" },
+  { stage:"final",   type:"TIN",      client:"Stabile Nicholas",       desc:"Missing W2 from M Booyh & Associates ($31,699) and NY PIN missing" },
+  { stage:"final",   type:"Schedule", client:"Swulius Amanda",         desc:"Form 7203 basis does not match Organic Bunny 1120s" },
+  { stage:"final",   type:"Schedule", client:"Ebite Inc",              desc:"DE apportionment override placement incorrect vs PY" },
+  { stage:"final",   type:"Schedule", client:"Profound Platform",      desc:"R&D expense in deductions but study was cancelled per client" },
+];
+
+const TAX_SOFTWARE_LIST = [
+  {
+    id: "proconnect",
+    name: "ProConnect Tax",
+    vendor: "Intuit",
+    type: "cloud",
+    logo: "PT",
+    navigationStyle: "left_sidebar",
+    description: "Cloud-based. Left sidebar navigation with collapsible sections.",
+    screenTerminology: { screen: "Input screen", section: "Section", field: "Field", navigate: "Go to [Screen] in the left sidebar > [Section] > [Field]" },
+    commonScreenPaths: {
+      clientInfo: "General > Client Information",
+      efiling: "General > Electronic Filing",
+      grossReceipts: "Income > Gross Receipts",
+      cogs: "Income > Cost of Goods Sold",
+      officerComp: "Deductions > Compensation of Officers (1125-E)",
+      depreciation: "Deductions > Depreciation (4562)",
+      otherDeductions: "Deductions > Other Deductions",
+      scheduleL: "Balance Sheet > Assets / Liabilities",
+      scheduleM1: "Reconciliation > Schedule M-1",
+      scheduleM3: "Reconciliation > Schedule M-3",
+      scheduleK: "Schedule K > Income (Loss)",
+      stateReturn: "State & Local > [State] > [Screen]",
+      investments: "Income > Investment Income",
+      dispositions: "Revenue > Dispositions (Schedule D)",
+    },
+  },
+  {
+    id: "lacerte",
+    name: "Lacerte",
+    vendor: "Intuit",
+    type: "desktop",
+    logo: "LT",
+    navigationStyle: "screen_numbers",
+    description: "Desktop software. Screens accessed by number from the left panel.",
+    screenTerminology: { screen: "Screen", section: "Line", field: "Line", navigate: "Go to Screen [N] ([Screen Name]) > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "Screen 1 (Client Information)",
+      efiling: "Screen 2 (Electronic Filing)",
+      grossReceipts: "Screen 14 (Income)",
+      cogs: "Screen 15 (Cost of Goods Sold)",
+      officerComp: "Screen 23 (Compensation of Officers)",
+      depreciation: "Screen 22 (Depreciation)",
+      otherDeductions: "Screen 25 (Other Deductions)",
+      scheduleL: "Screen 29 (Balance Sheet)",
+      scheduleM1: "Screen 31 (Schedule M-1)",
+      scheduleM3: "Screen 31A (Schedule M-3)",
+      scheduleK: "Screen 20 (Schedule K)",
+      stateReturn: "State Screens (left panel, state abbreviation)",
+      investments: "Screen 11 (Interest and Dividends)",
+      dispositions: "Screen 17D (Capital Gains and Losses)",
+    },
+  },
+  {
+    id: "proseries",
+    name: "ProSeries Professional",
+    vendor: "Intuit",
+    type: "desktop",
+    logo: "PS",
+    navigationStyle: "form_based",
+    description: "Desktop software. Navigate by form name. Supports Interview mode and Forms mode.",
+    screenTerminology: { screen: "Form", section: "Section", field: "Line", navigate: "Open [Form name] from the form list > [Section] > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "Client Information worksheet",
+      efiling: "Electronic Filing worksheet",
+      grossReceipts: "Form 1120 > Page 1 > Line 1",
+      cogs: "Form 1125-A",
+      officerComp: "Form 1125-E",
+      depreciation: "Form 4562",
+      otherDeductions: "Form 1120 > Page 1 > Line 26",
+      scheduleL: "Form 1120 > Schedule L",
+      scheduleM1: "Form 1120 > Schedule M-1",
+      scheduleM3: "Schedule M-3",
+      scheduleK: "Form 1065 > Schedule K",
+      stateReturn: "State form ([State abbreviation])",
+      investments: "Schedule B (Interest and Dividends)",
+      dispositions: "Schedule D / Form 8949",
+    },
+  },
+  {
+    id: "drake",
+    name: "Drake Tax",
+    vendor: "Drake Software",
+    type: "desktop",
+    logo: "DT",
+    navigationStyle: "screen_codes",
+    description: "Desktop software. Data entry screens accessed by typing a screen code.",
+    screenTerminology: { screen: "Screen", section: "Field", field: "Field", navigate: "Type screen code [CODE] in the data entry area > [Field]" },
+    commonScreenPaths: {
+      clientInfo: "Screen: DATA (Client Data Entry)",
+      efiling: "Screen: EF (Electronic Filing)",
+      grossReceipts: "Screen: 1120 (Corporation Return) > Line 1",
+      cogs: "Screen: A (Schedule A / COGS)",
+      officerComp: "Screen: E (Form 1125-E)",
+      depreciation: "Screen: 4562 (Depreciation)",
+      otherDeductions: "Screen: OD (Other Deductions)",
+      scheduleL: "Screen: L (Balance Sheet)",
+      scheduleM1: "Screen: M1 (Schedule M-1)",
+      scheduleM3: "Screen: M3 (Schedule M-3)",
+      scheduleK: "Screen: K (Schedule K)",
+      stateReturn: "State screen (state abbreviation as code)",
+      investments: "Screen: INT or DIV",
+      dispositions: "Screen: D (Schedule D) or 8949",
+    },
+  },
+  {
+    id: "ultratax",
+    name: "UltraTax CS",
+    vendor: "Thomson Reuters",
+    type: "desktop",
+    logo: "UT",
+    navigationStyle: "folder_tree",
+    description: "Desktop software. Organized in folders in the left panel.",
+    screenTerminology: { screen: "Input screen", section: "Section", field: "Field", navigate: "Open [Folder] in the left panel > [Screen name] > [Field]" },
+    commonScreenPaths: {
+      clientInfo: "General folder > Client Information",
+      efiling: "General folder > Electronic Filing",
+      grossReceipts: "Income folder > Gross Receipts",
+      cogs: "Income folder > Cost of Goods Sold",
+      officerComp: "Deductions folder > Officer Compensation",
+      depreciation: "Deductions folder > Depreciation (4562)",
+      otherDeductions: "Deductions folder > Other Deductions",
+      scheduleL: "Balance Sheet folder > Schedule L",
+      scheduleM1: "Reconciliation folder > Schedule M-1",
+      scheduleM3: "Reconciliation folder > Schedule M-3",
+      scheduleK: "K Folder > Schedule K Input",
+      stateReturn: "[State] folder > applicable screens",
+      investments: "Income folder > Interest / Dividends",
+      dispositions: "Income folder > Schedule D",
+    },
+  },
+  {
+    id: "cch_axcess",
+    name: "CCH Axcess Tax",
+    vendor: "Wolters Kluwer",
+    type: "cloud",
+    logo: "AX",
+    navigationStyle: "interview_tabs",
+    description: "Cloud-based. Navigate using Interview tabs or Worksheet view.",
+    screenTerminology: { screen: "Worksheet", section: "Tab", field: "Line", navigate: "Go to [Tab name] > [Worksheet] > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "General > Identification tab",
+      efiling: "General > Electronic Filing tab",
+      grossReceipts: "Income/Deductions > Income tab > Gross Receipts line",
+      cogs: "Income/Deductions > COGS worksheet",
+      officerComp: "Income/Deductions > Officers Compensation worksheet",
+      depreciation: "Income/Deductions > Depreciation worksheet (4562)",
+      otherDeductions: "Income/Deductions > Other Deductions worksheet",
+      scheduleL: "Balance Sheet > Schedule L tab",
+      scheduleM1: "Reconciliation > Schedule M-1 tab",
+      scheduleM3: "Reconciliation > Schedule M-3 tab",
+      scheduleK: "Schedule K tab",
+      stateReturn: "States tab > [State] > applicable worksheet",
+      investments: "Income/Deductions > Interest/Dividends tab",
+      dispositions: "Income/Deductions > Schedule D worksheet",
+    },
+  },
+  {
+    id: "cch_prosystem",
+    name: "CCH ProSystem fx Tax",
+    vendor: "Wolters Kluwer",
+    type: "desktop",
+    logo: "FX",
+    navigationStyle: "interview_tabs",
+    description: "Desktop software. Interview-based navigation with tabs and worksheets.",
+    screenTerminology: { screen: "Worksheet", section: "Interview tab", field: "Line", navigate: "Interview tab [Name] > Worksheet [Name] > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "General tab > Identification worksheet",
+      efiling: "General tab > Electronic Filing worksheet",
+      grossReceipts: "Income tab > Gross Receipts",
+      cogs: "Income tab > COGS worksheet",
+      officerComp: "Income tab > Officer Compensation worksheet",
+      depreciation: "Deductions tab > Depreciation worksheet",
+      otherDeductions: "Deductions tab > Other Deductions",
+      scheduleL: "Balance Sheet tab > Schedule L",
+      scheduleM1: "Schedule M tab > M-1 worksheet",
+      scheduleM3: "Schedule M tab > M-3 worksheet",
+      scheduleK: "Schedule K tab",
+      stateReturn: "States tab > [State] worksheets",
+      investments: "Income tab > Interest and Dividends",
+      dispositions: "Income tab > Schedule D worksheet",
+    },
+  },
+  {
+    id: "gosystem",
+    name: "GoSystem RS",
+    vendor: "Thomson Reuters",
+    type: "cloud",
+    logo: "GS",
+    navigationStyle: "category_folders",
+    description: "Cloud-based. Categories in the left navigation panel.",
+    screenTerminology: { screen: "Category", section: "Screen", field: "Field", navigate: "Left panel > [Category] > [Screen] > [Field]" },
+    commonScreenPaths: {
+      clientInfo: "General > Identification",
+      efiling: "General > Electronic Filing",
+      grossReceipts: "Income > Business Income > Gross Receipts",
+      cogs: "Income > Cost of Goods Sold",
+      officerComp: "Deductions > Officer Compensation",
+      depreciation: "Deductions > Depreciation",
+      otherDeductions: "Deductions > Other Deductions",
+      scheduleL: "Balance Sheet > Schedule L",
+      scheduleM1: "Reconciliation > M-1",
+      scheduleM3: "Reconciliation > M-3",
+      scheduleK: "Schedule K > Income",
+      stateReturn: "States > [State] > relevant category",
+      investments: "Income > Interest and Dividends",
+      dispositions: "Income > Gains and Losses",
+    },
+  },
+  {
+    id: "taxslayer_pro",
+    name: "TaxSlayer Pro",
+    vendor: "TaxSlayer",
+    type: "desktop",
+    logo: "TS",
+    navigationStyle: "menu_based",
+    description: "Desktop software. Menu-driven navigation from the main menu.",
+    screenTerminology: { screen: "Menu option", section: "Section", field: "Field", navigate: "Main Menu > [Option] > [Sub-option] > [Field]" },
+    commonScreenPaths: {
+      clientInfo: "Main Menu > Client Data > Personal Information",
+      efiling: "Main Menu > Electronic Filing",
+      grossReceipts: "Business Return Menu > Income > Gross Receipts",
+      cogs: "Business Return Menu > Cost of Goods Sold",
+      officerComp: "Business Return Menu > Officer Compensation",
+      depreciation: "Business Return Menu > Depreciation (4562)",
+      otherDeductions: "Business Return Menu > Other Deductions",
+      scheduleL: "Business Return Menu > Balance Sheet",
+      scheduleM1: "Business Return Menu > Schedule M-1",
+      scheduleM3: "Business Return Menu > Schedule M-3",
+      scheduleK: "Partnership Menu > Schedule K",
+      stateReturn: "State Return Menu > [State]",
+      investments: "Income Menu > Interest/Dividends",
+      dispositions: "Income Menu > Capital Gains",
+    },
+  },
+  {
+    id: "atx",
+    name: "ATX",
+    vendor: "Wolters Kluwer",
+    type: "desktop",
+    logo: "AT",
+    navigationStyle: "form_tree",
+    description: "Desktop software. Forms listed in a tree on the left.",
+    screenTerminology: { screen: "Form", section: "Part", field: "Line", navigate: "Left form tree > [Form name] > [Part/Page] > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "Client Information form",
+      efiling: "EF Information form",
+      grossReceipts: "Form 1120 > Page 1 > Line 1",
+      cogs: "Form 1125-A",
+      officerComp: "Form 1125-E",
+      depreciation: "Form 4562",
+      otherDeductions: "Form 1120 > Page 1 > Other Deductions statement",
+      scheduleL: "Form 1120 > Schedule L",
+      scheduleM1: "Form 1120 > Schedule M-1",
+      scheduleM3: "Schedule M-3 form",
+      scheduleK: "Form 1065 > Schedule K",
+      stateReturn: "State form tree > [State] forms",
+      investments: "Schedule B form",
+      dispositions: "Schedule D / Form 8949",
+    },
+  },
+  {
+    id: "other",
+    name: "Other / Not Listed",
+    vendor: "Other",
+    type: "generic",
+    logo: "OT",
+    navigationStyle: "generic",
+    description: "Generic instructions using standard IRS form and line references.",
+    screenTerminology: { screen: "Section", section: "Section", field: "Line", navigate: "Navigate to [Form name] > [Section] > Line [N]" },
+    commonScreenPaths: {
+      clientInfo: "Client/Entity Information section",
+      efiling: "Electronic Filing section",
+      grossReceipts: "Form [X] > Income section > Gross Receipts (Line 1)",
+      cogs: "Cost of Goods Sold section / Form 1125-A",
+      officerComp: "Officer Compensation section / Form 1125-E",
+      depreciation: "Depreciation section / Form 4562",
+      otherDeductions: "Other Deductions section",
+      scheduleL: "Balance Sheet / Schedule L",
+      scheduleM1: "Book-to-Tax Reconciliation / Schedule M-1",
+      scheduleM3: "Schedule M-3",
+      scheduleK: "Schedule K",
+      stateReturn: "State return section",
+      investments: "Interest and Dividend Income section",
+      dispositions: "Capital Gains section / Schedule D",
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
+// HTTP server
+// ---------------------------------------------------------------------------
+const server = http.createServer(async (req, res) => {
+  try {
+    setSecurityHeaders(res);
+    res.corsOrigin = getAllowedOrigin(req);
+    const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
+    if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/logout") { await handleLogout(req, res); return; }
+    if (req.method === "GET" && req.url === "/api/auth/status") { await handleAuthStatus(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/auth/google") { await handleGoogleAuth(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/auth/google/callback") { await handleGoogleCallback(req, res, requestUrl); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/auth/qbo") { await handleQboAuth(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/auth/qbo/callback") { await handleQboCallback(req, res, requestUrl); return; }
+    if (req.method === "GET" && requestUrl.pathname.startsWith("/auth/accounting/")) { await handleAccountingAuthRoute(req, res, requestUrl); return; }
+    if (req.method === "GET" && req.url === "/healthz") { await handleHealth(req, res); return; }
+    if (!requireAuthenticated(req, res)) return;
+    if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
+    if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
+    if (req.method === "DELETE" && req.url === "/api/research/chat") { await handleResearchClear(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/review") { await handleReview(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/review/respond") { await handleReviewResponse(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/irs-instructions") { await handleIrsInstructions(req, res, requestUrl); return; }
+    if (req.method === "POST" && req.url === "/api/prepare-workpaper") { await handlePrepareWorkpaper(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/preparation/data-entry-guide") { await handlePreparationDataEntryGuide(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname.startsWith("/api/estimated-taxes/templates/")) { await handleEstimatedTaxesTemplateDownload(req, res, requestUrl); return; }
+    if (req.method === "POST" && req.url === "/api/estimated-taxes/detect-period") { await handleEstimatedTaxesDetectPeriod(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/estimated-taxes/calculate") { await handleEstimatedTaxesCalculate(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/extension/calculate") { await handleExtensionCalculate(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/presentations/generate") { await handlePresentationsGenerate(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/calculations/run") { await handleCalculationsRun(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/notices") { await handleNotices(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/diagnostics") { await handleDiagnostics(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/organizer") { await handleOrganizer(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable") { await handleDeliverable(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable/email-draft") { await handleDeliverableEmailDraft(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable/load-client-folder") { await handleDeliverableLoadClientFolder(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable/generate-draft") { await handleDeliverableGenerateDraft(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable/send-gmail") { await handleDeliverableSendGmail(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/deliverable/create-gmail-draft") { await handleDeliverableCreateGmailDraft(req, res); return; }
+    if (req.method === "GET" && req.url === "/api/deliverable/gmail-status") { await handleDeliverableGmailStatus(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/tax-software/list") { sendJson(res, 200, publicTaxSoftwareList()); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/database/export") { sendJson(res, 200, readDb()); return; }
+    if (req.method === "DELETE" && requestUrl.pathname === "/api/database") { writeDb({ clients: {}, sessions: {} }); sendJson(res, 200, { ok: true }); return; }
+    if (requestUrl.pathname.startsWith("/api/library")) { await handleLibraryApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/deadlines")) { await handleDeadlinesApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/learning")) { await handleLearningApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/feedback")) { await handleFeedbackApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/requests")) { await handleRequestsApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/database/drive-sync")) { await handleDatabaseDriveSyncApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/tracker")) { await handleTrackerApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/pto")) { await handlePtoApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/clients")) { await handleClientApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/sessions")) { await handleSessionApi(req, res, requestUrl); return; }
+    if (req.method === "GET" && req.url === "/api/config") { await handleConfig(req, res); return; }
+    if (requestUrl.pathname.startsWith("/api/drive")) { await handleDriveApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/accounting")) { await handleAccountingApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/qbo")) { await handleQboApi(req, res, requestUrl); return; }
+    if (req.method === "GET" && req.url.startsWith("/api/context")) { await handleContextList(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/context/upload") { await handleContextUpload(req, res); return; }
+    if (req.method === "GET") { await serveStatic(req, res); return; }
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (error) {
+    console.error(error);
+    sendJson(res, error.statusCode || 500, { error: error.expose ? error.message : "Unexpected server error." });
+  }
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`AI Tax Agent listening on ${HOST}:${PORT}`);
+  try {
+    const index = rebuildDeadlinesIndex();
+    console.log(`[Deadlines] Index rebuilt - ${(index.upcoming || []).length} upcoming deadlines`);
+  } catch (error) {
+    console.warn("[Deadlines] Could not rebuild index:", error.message);
+  }
+});
+
+setInterval(() => {
+  try { checkDeadlineNotifications(); } catch (error) { console.warn("[Deadlines] Notification check failed:", error.message); }
+}, 6 * 60 * 60 * 1000);
+
+// ---------------------------------------------------------------------------
+// Tracker, dynamic statuses, sections, and PTO calendar
+// ---------------------------------------------------------------------------
+const DEFAULT_TRACKER_STATUSES = [
+  { id: "not_ready", label: "Not Ready", color: "#94a3b8", bg: "#f1f5f9", order: 1, isDefault: true, isFinal: false },
+  { id: "waiting_client", label: "Waiting for Client", color: "#f59e0b", bg: "#fffbeb", order: 2, isDefault: false, isFinal: false },
+  { id: "ready_to_prep", label: "Ready to Prep", color: "#3b82f6", bg: "#eff6ff", order: 3, isDefault: false, isFinal: false },
+  { id: "on_prep", label: "On Prep", color: "#8b5cf6", bg: "#f5f3ff", order: 4, isDefault: false, isFinal: false },
+  { id: "on_review", label: "On Review", color: "#06b6d4", bg: "#ecfeff", order: 5, isDefault: false, isFinal: false },
+  { id: "manager_review", label: "Manager Review", color: "#f97316", bg: "#fff7ed", order: 6, isDefault: false, isFinal: false },
+  { id: "final_review", label: "Final Review", color: "#ec4899", bg: "#fdf2f8", order: 7, isDefault: false, isFinal: false },
+  { id: "ready_to_send", label: "Ready to Send", color: "#10b981", bg: "#f0fdf4", order: 8, isDefault: false, isFinal: false },
+  { id: "completed", label: "Completed", color: "#1B3A6B", bg: "#eff6ff", order: 9, isDefault: true, isFinal: true },
+];
+
+function defaultTrackerData() {
+  const now = new Date().toISOString();
+  return {
+    globalStatuses: structuredCloneSafe(DEFAULT_TRACKER_STATUSES),
+    sectionStatuses: {},
+    sections: {
+      tax_returns: { id: "tax_returns", name: "Tax Returns", color: "#2563eb", icon: "\u{1F4CB}", order: 1, createdAt: now },
+      estimates: { id: "estimates", name: "Estimates", color: "#06b6d4", icon: "\u{1F4C5}", order: 2, createdAt: now },
+      extensions: { id: "extensions", name: "Extensions", color: "#8b5cf6", icon: "\u{23F3}", order: 3, createdAt: now },
+      deliverables: { id: "deliverables", name: "Deliverables", color: "#10b981", icon: "\u{1F4E8}", order: 4, createdAt: now },
+    },
+    tasks: {},
+    users: {},
+    pto: { entries: {}, settings: { requireApproval: false, maxDaysPerYear: null, ptoDaysAllotted: {} } },
+  };
+}
+
+function readTracker() {
+  ensureDatabase();
+  const tracker = readJsonFile(TRACKER_PATH, defaultTrackerData());
+  let changed = false;
+  if (!Array.isArray(tracker.globalStatuses) || tracker.globalStatuses.length === 0) {
+    tracker.globalStatuses = structuredCloneSafe(DEFAULT_TRACKER_STATUSES);
+    changed = true;
+  }
+  tracker.sectionStatuses = tracker.sectionStatuses || {};
+  tracker.sections = tracker.sections || {};
+  tracker.tasks = tracker.tasks || {};
+  tracker.users = tracker.users || {};
+  tracker.pto = tracker.pto || { entries: {}, settings: {} };
+  tracker.pto.entries = tracker.pto.entries || {};
+  tracker.pto.settings = { requireApproval: false, maxDaysPerYear: null, ptoDaysAllotted: {}, ...(tracker.pto.settings || {}) };
+  if (!Object.keys(tracker.sections).length) {
+    Object.assign(tracker.sections, defaultTrackerData().sections);
+    changed = true;
+  }
+  if (changed) writeTracker(tracker);
+  return tracker;
+}
+
+function writeTracker(tracker) {
+  writeJsonFile(TRACKER_PATH, tracker);
+}
+
+async function handleTrackerApi(req, res, requestUrl) {
+  const tracker = readTracker();
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (req.method === "GET" && requestUrl.pathname === "/api/tracker") { sendJson(res, 200, publicTrackerData(tracker)); return; }
+  if (req.method === "GET" && requestUrl.pathname === "/api/tracker/statuses") { sendJson(res, 200, sortByOrder(tracker.globalStatuses)); return; }
+  if (req.method === "GET" && parts[2] === "statuses" && parts[3] === "section" && parts[4]) { sendJson(res, 200, statusesForSection(tracker, decodeURIComponent(parts[4]))); return; }
+  if (req.method === "POST" && requestUrl.pathname === "/api/tracker/statuses") {
+    const payload = await readJsonBody(req);
+    const status = createTrackerStatus(tracker.globalStatuses, payload);
+    tracker.globalStatuses.push(status);
+    writeTracker(tracker);
+    sendJson(res, 200, status);
+    return;
+  }
+  if (req.method === "POST" && parts[2] === "statuses" && parts[3] === "section" && parts[4]) {
+    const sectionId = decodeURIComponent(parts[4]);
+    const payload = await readJsonBody(req);
+    if (!tracker.sectionStatuses[sectionId]) tracker.sectionStatuses[sectionId] = structuredCloneSafe(sortByOrder(tracker.globalStatuses));
+    const status = createTrackerStatus(tracker.sectionStatuses[sectionId], payload);
+    tracker.sectionStatuses[sectionId].push(status);
+    writeTracker(tracker);
+    sendJson(res, 200, status);
+    return;
+  }
+  if (req.method === "PUT" && requestUrl.pathname === "/api/tracker/statuses/reorder") {
+    const payload = await readJsonBody(req);
+    reorderStatuses(tracker.globalStatuses, payload.statuses || []);
+    writeTracker(tracker);
+    sendJson(res, 200, sortByOrder(tracker.globalStatuses));
+    return;
+  }
+  if (req.method === "PUT" && parts[2] === "statuses" && parts[3]) {
+    const payload = await readJsonBody(req);
+    const statusId = decodeURIComponent(parts[3]);
+    updateStatusCollection(tracker.globalStatuses, statusId, payload);
+    Object.values(tracker.sectionStatuses).forEach((list) => updateStatusCollection(list, statusId, payload));
+    if (payload.isFinal === true) {
+      markSingleFinal(tracker.globalStatuses, statusId);
+      Object.values(tracker.sectionStatuses).forEach((list) => markSingleFinal(list, statusId));
+    }
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "DELETE" && parts[2] === "statuses" && parts[3]) {
+    if (!requireAdmin(req, res)) return;
+    const statusId = decodeURIComponent(parts[3]);
+    const target = tracker.globalStatuses.find((status) => status.id === statusId);
+    if (target?.isDefault) { sendJson(res, 400, { error: "default_status", message: "Default statuses cannot be deleted." }); return; }
+    const taskCount = Object.values(tracker.tasks).filter((task) => task.status === statusId).length;
+    if (taskCount) { sendJson(res, 400, { error: "status_in_use", taskCount, message: `${taskCount} tasks use this status. Move them first.` }); return; }
+    tracker.globalStatuses = tracker.globalStatuses.filter((status) => status.id !== statusId);
+    Object.keys(tracker.sectionStatuses).forEach((sectionId) => { tracker.sectionStatuses[sectionId] = tracker.sectionStatuses[sectionId].filter((status) => status.id !== statusId); });
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "PUT" && parts[2] === "sections" && parts[4] === "use-custom-statuses") {
+    const sectionId = decodeURIComponent(parts[3]);
+    const payload = await readJsonBody(req);
+    if (payload.useCustom) tracker.sectionStatuses[sectionId] = tracker.sectionStatuses[sectionId] || structuredCloneSafe(sortByOrder(tracker.globalStatuses));
+    else delete tracker.sectionStatuses[sectionId];
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true, statuses: statusesForSection(tracker, sectionId) });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/tracker/sections") { sendJson(res, 200, sortSections(tracker)); return; }
+  if (req.method === "POST" && requestUrl.pathname === "/api/tracker/sections") {
+    const payload = await readJsonBody(req);
+    const section = createTrackerSection(tracker, payload);
+    tracker.sections[section.id] = section;
+    writeTracker(tracker);
+    sendJson(res, 200, section);
+    return;
+  }
+  if (req.method === "PUT" && requestUrl.pathname === "/api/tracker/sections/reorder") {
+    const payload = await readJsonBody(req);
+    (payload.sections || []).forEach((item) => { if (tracker.sections[item.id]) tracker.sections[item.id].order = Number(item.order) || tracker.sections[item.id].order; });
+    writeTracker(tracker);
+    sendJson(res, 200, sortSections(tracker));
+    return;
+  }
+  if (req.method === "PUT" && parts[2] === "sections" && parts[3]) {
+    const sectionId = decodeURIComponent(parts[3]);
+    const payload = await readJsonBody(req);
+    if (!tracker.sections[sectionId]) { sendJson(res, 404, { error: "Section not found." }); return; }
+    if (payload.name !== undefined) {
+      const name = String(payload.name || "").trim();
+      if (!name || name.length > 50) { sendJson(res, 400, { error: "Section name is required and must be 50 characters or less." }); return; }
+      tracker.sections[sectionId].name = name;
+    }
+    if (payload.color !== undefined && isValidHex(payload.color)) tracker.sections[sectionId].color = payload.color;
+    if (payload.icon !== undefined) tracker.sections[sectionId].icon = String(payload.icon || "").slice(0, 4);
+    writeTracker(tracker);
+    sendJson(res, 200, tracker.sections[sectionId]);
+    return;
+  }
+  if (req.method === "DELETE" && parts[2] === "sections" && parts[3]) {
+    if (!requireAdmin(req, res)) return;
+    const sectionId = decodeURIComponent(parts[3]);
+    const payload = await readJsonBody(req).catch(() => ({}));
+    const tasks = Object.values(tracker.tasks).filter((task) => task.sectionId === sectionId);
+    if (tasks.length && !payload.action) { sendJson(res, 400, { error: "section_has_tasks", taskCount: tasks.length }); return; }
+    if (tasks.length && payload.action === "move") tasks.forEach((task) => { task.sectionId = payload.targetSectionId; });
+    if (tasks.length && payload.action === "delete") tasks.forEach((task) => { delete tracker.tasks[task.id]; });
+    delete tracker.sections[sectionId];
+    delete tracker.sectionStatuses[sectionId];
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/tracker/tasks") {
+    const payload = await readJsonBody(req);
+    const task = createTrackerTask(tracker, payload, req.user || getSession(req));
+    tracker.tasks[task.id] = task;
+    writeTracker(tracker);
+    sendJson(res, 200, task);
+    return;
+  }
+  if (req.method === "PUT" && parts[2] === "tasks" && parts[3]) {
+    const taskId = decodeURIComponent(parts[3]);
+    if (!tracker.tasks[taskId]) { sendJson(res, 404, { error: "Task not found." }); return; }
+    const payload = await readJsonBody(req);
+    tracker.tasks[taskId] = { ...tracker.tasks[taskId], ...pickTaskFields(payload), updatedAt: new Date().toISOString() };
+    writeTracker(tracker);
+    sendJson(res, 200, tracker.tasks[taskId]);
+    return;
+  }
+  if (req.method === "POST" && parts[2] === "tasks" && parts[3] && parts[4] === "time") {
+    const taskId = decodeURIComponent(parts[3]);
+    const task = tracker.tasks[taskId];
+    if (!task) { sendJson(res, 404, { error: "Task not found." }); return; }
+    const payload = await readJsonBody(req);
+    const minutes = Math.max(1, Math.min(1440, Math.round(Number(payload.minutes || 0))));
+    if (!minutes) { sendJson(res, 400, { error: "Minutes are required." }); return; }
+    const user = trackerUser(req.user || getSession(req));
+    const entry = {
+      id: crypto.randomUUID(),
+      minutes,
+      note: String(payload.note || "").slice(0, 500),
+      loggedBy: user.id,
+      loggedByName: user.name,
+      loggedAt: new Date().toISOString(),
+    };
+    task.timeEntries = Array.isArray(task.timeEntries) ? task.timeEntries : [];
+    task.timeEntries.push(entry);
+    task.totalMinutes = (Number(task.totalMinutes) || 0) + minutes;
+    task.updatedAt = new Date().toISOString();
+    writeTracker(tracker);
+    sendJson(res, 200, task);
+    return;
+  }
+  if (req.method === "DELETE" && parts[2] === "tasks" && parts[3]) {
+    delete tracker.tasks[decodeURIComponent(parts[3])];
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 404, { error: "Tracker route not found." });
+}
+
+async function handlePtoApi(req, res, requestUrl) {
+  const tracker = readTracker();
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (req.method === "GET" && requestUrl.pathname === "/api/pto") {
+    const year = requestUrl.searchParams.get("year") || String(new Date().getFullYear());
+    const userId = requestUrl.searchParams.get("userId") || "";
+    const entries = Object.values(tracker.pto.entries).filter((entry) => (!year || entry.startDate.startsWith(year) || entry.endDate.startsWith(year)) && (!userId || entry.userId === userId));
+    sendJson(res, 200, { entries: sortPto(entries), settings: tracker.pto.settings });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/pto/my") {
+    const user = trackerUser(req.user || getSession(req));
+    const entries = Object.values(tracker.pto.entries).filter((entry) => entry.userId === user.id);
+    sendJson(res, 200, { entries: sortPto(entries) });
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/pto") {
+    const payload = await readJsonBody(req);
+    const user = trackerUser(req.user || getSession(req));
+    const entry = createPtoEntry(tracker, payload, user);
+    const overlap = Object.values(tracker.pto.entries).find((item) => item.userId === entry.userId && item.status !== "rejected" && datesOverlap(item.startDate, item.endDate, entry.startDate, entry.endDate));
+    if (overlap) { sendJson(res, 400, { error: "pto_overlap", message: "You already have PTO on some of these days." }); return; }
+    if (entry.status === "approved") await syncPtoEntryToGoogleCalendar(entry).catch(() => null);
+    tracker.pto.entries[entry.id] = entry;
+    writeTracker(tracker);
+    sendJson(res, 200, entry);
+    return;
+  }
+  if (req.method === "PUT" && parts[1] === "pto" && parts[2] && !["approve", "reject"].includes(parts[3])) {
+    const id = decodeURIComponent(parts[2]);
+    const entry = tracker.pto.entries[id];
+    if (!entry) { sendJson(res, 404, { error: "PTO entry not found." }); return; }
+    const user = trackerUser(req.user || getSession(req));
+    if (entry.userId !== user.id && user.role !== "admin") { sendJson(res, 403, { error: "You can only edit your own PTO." }); return; }
+    const payload = await readJsonBody(req);
+    tracker.pto.entries[id] = { ...entry, ...ptoEditableFields(payload), ...ptoDates(payload), updatedAt: new Date().toISOString() };
+    writeTracker(tracker);
+    sendJson(res, 200, tracker.pto.entries[id]);
+    return;
+  }
+  if (req.method === "DELETE" && parts[1] === "pto" && parts[2]) {
+    const id = decodeURIComponent(parts[2]);
+    const entry = tracker.pto.entries[id];
+    const user = trackerUser(req.user || getSession(req));
+    if (entry && entry.userId !== user.id && user.role !== "admin") { sendJson(res, 403, { error: "You can only delete your own PTO." }); return; }
+    if (entry?.googleEventId) await deletePtoGoogleCalendarEvent(entry).catch(() => null);
+    delete tracker.pto.entries[id];
+    writeTracker(tracker);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "PUT" && parts[1] === "pto" && parts[3] === "approve") {
+    if (!requireAdmin(req, res)) return;
+    const entry = tracker.pto.entries[decodeURIComponent(parts[2])];
+    if (!entry) { sendJson(res, 404, { error: "PTO entry not found." }); return; }
+    entry.status = "approved";
+    entry.reviewedBy = trackerUser(req.user || getSession(req)).id;
+    entry.reviewedAt = new Date().toISOString();
+    await syncPtoEntryToGoogleCalendar(entry).catch(() => null);
+    writeTracker(tracker);
+    sendJson(res, 200, entry);
+    return;
+  }
+  if (req.method === "PUT" && parts[1] === "pto" && parts[3] === "reject") {
+    if (!requireAdmin(req, res)) return;
+    const payload = await readJsonBody(req).catch(() => ({}));
+    const entry = tracker.pto.entries[decodeURIComponent(parts[2])];
+    if (!entry) { sendJson(res, 404, { error: "PTO entry not found." }); return; }
+    entry.status = "rejected";
+    entry.note = [entry.note, payload.reason ? `Rejected: ${payload.reason}` : ""].filter(Boolean).join("\n");
+    entry.reviewedBy = trackerUser(req.user || getSession(req)).id;
+    entry.reviewedAt = new Date().toISOString();
+    if (entry.googleEventId) await deletePtoGoogleCalendarEvent(entry).catch(() => null);
+    entry.syncedToGoogle = false;
+    entry.googleEventId = null;
+    writeTracker(tracker);
+    sendJson(res, 200, entry);
+    return;
+  }
+  if (req.method === "GET" && parts[1] === "pto" && parts[2] === "stats" && parts[3]) {
+    const year = requestUrl.searchParams.get("year") || String(new Date().getFullYear());
+    sendJson(res, 200, ptoStats(tracker, decodeURIComponent(parts[3]), year));
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/pto/settings") { sendJson(res, 200, tracker.pto.settings); return; }
+  if (req.method === "PUT" && requestUrl.pathname === "/api/pto/settings") {
+    if (!requireAdmin(req, res)) return;
+    const payload = await readJsonBody(req);
+    tracker.pto.settings = { ...tracker.pto.settings, ...payload, ptoDaysAllotted: payload.ptoDaysAllotted || tracker.pto.settings.ptoDaysAllotted || {} };
+    writeTracker(tracker);
+    sendJson(res, 200, tracker.pto.settings);
+    return;
+  }
+  sendJson(res, 404, { error: "PTO route not found." });
+}
+
+function publicTrackerData(tracker) {
+  return { sections: sortSections(tracker), statuses: sortByOrder(tracker.globalStatuses), sectionStatuses: tracker.sectionStatuses, tasks: Object.values(tracker.tasks).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)), pto: { entries: sortPto(Object.values(tracker.pto.entries)), settings: tracker.pto.settings } };
+}
+
+function sortByOrder(list) {
+  return [...(list || [])].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.label).localeCompare(String(b.label)));
+}
+
+function sortSections(tracker) {
+  return Object.values(tracker.sections || {}).sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.name).localeCompare(String(b.name)));
+}
+
+function statusesForSection(tracker, sectionId) {
+  return sortByOrder(tracker.sectionStatuses?.[sectionId] || tracker.globalStatuses);
+}
+
+function slugId(label, existingIds) {
+  const base = String(label || "item").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "item";
+  let id = base;
+  let counter = 2;
+  while (existingIds.has(id)) id = `${base}_${counter++}`;
+  return id;
+}
+
+function createTrackerStatus(existing, payload) {
+  const label = String(payload.label || "").trim();
+  if (!label) throw new Error("Status label is required.");
+  const ids = new Set((existing || []).map((status) => status.id));
+  return { id: slugId(label, ids), label, color: isValidHex(payload.color) ? payload.color : "#3b82f6", bg: isValidHex(payload.bg) ? payload.bg : "#eff6ff", order: Number(payload.order) || (existing || []).length + 1, isDefault: false, isFinal: Boolean(payload.isFinal) };
+}
+
+function updateStatusCollection(list, statusId, payload) {
+  const status = (list || []).find((item) => item.id === statusId);
+  if (!status) return;
+  if (payload.label !== undefined) status.label = String(payload.label || status.label).trim() || status.label;
+  if (payload.color !== undefined && isValidHex(payload.color)) status.color = payload.color;
+  if (payload.bg !== undefined && isValidHex(payload.bg)) status.bg = payload.bg;
+  if (payload.isFinal !== undefined) status.isFinal = Boolean(payload.isFinal);
+}
+
+function markSingleFinal(list, statusId) {
+  (list || []).forEach((status) => { status.isFinal = status.id === statusId; });
+}
+
+function reorderStatuses(list, ordered) {
+  const orderMap = new Map((ordered || []).map((item) => [item.id, Number(item.order)]));
+  (list || []).forEach((status, index) => { status.order = orderMap.get(status.id) || index + 1; });
+}
+
+function createTrackerSection(tracker, payload) {
+  const name = String(payload.name || "").trim();
+  if (!name || name.length > 50) throw new Error("Section name is required and must be 50 characters or less.");
+  const id = slugId(name, new Set(Object.keys(tracker.sections || {})));
+  return { id, name, color: isValidHex(payload.color) ? payload.color : "#2563eb", icon: String(payload.icon || "\u{1F4C1}").slice(0, 4), order: Number(payload.order) || Object.keys(tracker.sections || {}).length + 1, createdAt: new Date().toISOString() };
+}
+
+function createTrackerTask(tracker, payload, session) {
+  const sectionId = tracker.sections[payload.sectionId] ? payload.sectionId : sortSections(tracker)[0]?.id;
+  const statuses = statusesForSection(tracker, sectionId);
+  return { id: crypto.randomUUID(), title: String(payload.title || "Untitled task").trim(), clientName: String(payload.clientName || "").trim(), sectionId, status: statuses.find((status) => status.id === payload.status)?.id || statuses[0]?.id || "not_ready", assignee: String(payload.assignee || session?.displayName || session?.username || "").trim(), dueDate: String(payload.dueDate || "").slice(0, 10), notes: String(payload.notes || ""), totalMinutes: 0, timeEntries: [], createdBy: session?.username || "unknown", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+}
+
+function pickTaskFields(payload) {
+  const allowed = {};
+  ["title", "clientName", "sectionId", "status", "assignee", "dueDate", "notes"].forEach((key) => { if (payload[key] !== undefined) allowed[key] = String(payload[key] || ""); });
+  return allowed;
+}
+
+function isValidHex(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || ""));
+}
+
+function trackerUser(session) {
+  const displayName = session?.displayName || session?.username || "User";
+  const id = session?.username || "anonymous";
+  return { id, role: session?.role === "admin" ? "admin" : "user", name: displayName, initials: displayName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "U", color: userColor(id) };
+}
+
+function userColor(seed) {
+  const colors = ["#2563eb", "#8b5cf6", "#06b6d4", "#10b981", "#f97316", "#ec4899", "#64748b"];
+  const total = String(seed || "").split("").reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  return colors[total % colors.length];
+}
+
+function createPtoEntry(tracker, payload, user) {
+  const dates = ptoDates(payload);
+  const status = tracker.pto.settings.requireApproval ? "pending" : "approved";
+  return { id: crypto.randomUUID(), userId: user.id, userName: user.name, userInitials: user.initials, userColor: user.color, type: ["vacation", "sick", "personal", "holiday", "other"].includes(payload.type) ? payload.type : "vacation", ...dates, note: String(payload.note || ""), status, reviewedBy: status === "approved" ? user.id : null, reviewedAt: status === "approved" ? new Date().toISOString() : null, createdAt: new Date().toISOString(), syncedToGoogle: false, googleEventId: null };
+}
+
+async function syncPtoEntryToGoogleCalendar(entry) {
+  const tokens = readGoogleTokens();
+  if (!tokens?.access_token || !String(tokens.scope || "").includes(GOOGLE_CALENDAR_SCOPE)) return entry;
+  const event = {
+    summary: `${ptoTypeEmojiServer(entry.type)} ${entry.userName} - ${ptoTypeLabelServer(entry.type)}`,
+    description: [entry.note, "Submitted via RAG Tax AI"].filter(Boolean).join("\n\n"),
+    start: { date: entry.startDate },
+    end: { date: addDaysIso(entry.endDate, 1) },
+    colorId: googleCalendarColorId(entry.userColor),
+  };
+  const response = await googleApiFetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.ok && data.id) {
+    entry.syncedToGoogle = true;
+    entry.googleEventId = data.id;
+  }
+  return entry;
+}
+
+async function deletePtoGoogleCalendarEvent(entry) {
+  const tokens = readGoogleTokens();
+  if (!tokens?.access_token || !entry.googleEventId || !String(tokens.scope || "").includes(GOOGLE_CALENDAR_SCOPE)) return;
+  await googleApiFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(entry.googleEventId)}`, { method: "DELETE" });
+}
+
+function ptoTypeLabelServer(type) {
+  return ({ vacation: "Vacation", sick: "Sick", personal: "Personal", holiday: "Holiday", other: "Other" })[type] || "PTO";
+}
+
+function ptoTypeEmojiServer(type) {
+  return ({ vacation: "PTO", sick: "Sick", personal: "Personal", holiday: "Holiday", other: "PTO" })[type] || "PTO";
+}
+
+function addDaysIso(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function googleCalendarColorId(hex) {
+  const palette = {
+    1: "#7986cb", 2: "#33b679", 3: "#8e24aa", 4: "#e67c73", 5: "#f6c026",
+    6: "#f5511d", 7: "#039be5", 8: "#616161", 9: "#3f51b5", 10: "#0b8043", 11: "#d60000",
+  };
+  const rgb = hexToRgb(hex || "#2563eb");
+  let best = "9";
+  let bestDistance = Infinity;
+  Object.entries(palette).forEach(([id, color]) => {
+    const target = hexToRgb(color);
+    const distance = ((rgb.r - target.r) ** 2) + ((rgb.g - target.g) ** 2) + ((rgb.b - target.b) ** 2);
+    if (distance < bestDistance) { best = id; bestDistance = distance; }
+  });
+  return best;
+}
+
+function hexToRgb(hex) {
+  const value = String(hex || "#000000").replace("#", "");
+  return { r: parseInt(value.slice(0, 2), 16) || 0, g: parseInt(value.slice(2, 4), 16) || 0, b: parseInt(value.slice(4, 6), 16) || 0 };
+}
+
+function ptoDates(payload) {
+  const startDate = String(payload.startDate || "").slice(0, 10);
+  const endDate = String(payload.endDate || startDate).slice(0, 10);
+  const halfDay = Boolean(payload.halfDay);
+  return { startDate, endDate, totalDays: halfDay ? 0.5 : calculateWorkingDays(startDate, endDate), halfDay, halfDayPeriod: halfDay ? (payload.halfDayPeriod === "afternoon" ? "afternoon" : "morning") : null };
+}
+
+function ptoEditableFields(payload) {
+  return { type: ["vacation", "sick", "personal", "holiday", "other"].includes(payload.type) ? payload.type : "vacation", note: String(payload.note || "") };
+}
+
+function calculateWorkingDays(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return 0;
+  let count = 0;
+  const cur = new Date(start.getTime());
+  while (cur <= end) {
+    const day = cur.getDay();
+    if (day !== 0 && day !== 6) count += 1;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+function datesOverlap(aStart, aEnd, bStart, bEnd) {
+  return new Date(`${aStart}T00:00:00`) <= new Date(`${bEnd}T00:00:00`) && new Date(`${bStart}T00:00:00`) <= new Date(`${aEnd}T00:00:00`);
+}
+
+function sortPto(entries) {
+  return [...(entries || [])].sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+}
+
+function ptoStats(tracker, userId, year) {
+  const entries = Object.values(tracker.pto.entries).filter((entry) => entry.userId === userId && (entry.startDate.startsWith(year) || entry.endDate.startsWith(year)));
+  const approved = entries.filter((entry) => entry.status === "approved");
+  const pending = entries.filter((entry) => entry.status === "pending");
+  const allotted = tracker.pto.settings.ptoDaysAllotted?.[userId] ?? null;
+  const used = approved.reduce((sum, entry) => sum + Number(entry.totalDays || 0), 0);
+  const pendingDays = pending.reduce((sum, entry) => sum + Number(entry.totalDays || 0), 0);
+  const byType = {};
+  approved.forEach((entry) => { byType[entry.type] = (byType[entry.type] || 0) + Number(entry.totalDays || 0); });
+  return { year, userId, userName: entries[0]?.userName || userId, allotted, used, pending: pendingDays, remaining: allotted === null ? null : allotted - used, byType };
+}
+
+// ---------------------------------------------------------------------------
+// Estimated taxes and extensions
+// ---------------------------------------------------------------------------
+const EST_STATE_RULES = {
+  CA: { rate: 0.093, url: "https://www.ftb.ca.gov/pay/estimated-tax/", name: "California" },
+  NY: { rate: 0.0685, url: "https://www.tax.ny.gov/pit/estimated_tax/", name: "New York" },
+  TX: { rate: 0, url: "https://comptroller.texas.gov/taxes/franchise/", name: "Texas" },
+  FL: { rate: 0.055, url: "https://floridarevenue.com/taxes/taxesfees/Pages/corporate.aspx", name: "Florida" },
+  IL: { rate: 0.0495, url: "https://tax.illinois.gov/individuals/estimated-payments.html", name: "Illinois" },
+  NJ: { rate: 0.0637, url: "https://www.nj.gov/treasury/taxation/estimated_tax.shtml", name: "New Jersey" },
+  PA: { rate: 0.0307, url: "https://www.revenue.pa.gov/TaxTypes/PIT/Pages/Estimated-Tax.aspx", name: "Pennsylvania" },
+  OH: { rate: 0.035, url: "https://tax.ohio.gov/individual/resources/estimated-payments", name: "Ohio" },
+  GA: { rate: 0.0539, url: "https://dor.georgia.gov/estimated-tax-payments", name: "Georgia" },
+  NC: { rate: 0.045, url: "https://www.ncdor.gov/file-pay/estimated-income-tax", name: "North Carolina" },
+  MA: { rate: 0.05, url: "https://www.mass.gov/estimated-taxes", name: "Massachusetts" },
+  WA: { rate: 0, url: "", name: "Washington" },
+  NV: { rate: 0, url: "", name: "Nevada" },
+  WY: { rate: 0, url: "", name: "Wyoming" },
+  SD: { rate: 0, url: "", name: "South Dakota" },
+  AK: { rate: 0, url: "", name: "Alaska" },
+  TN: { rate: 0, url: "", name: "Tennessee" },
+};
+
+const EXTENSION_DEADLINES = {
+  "1040": { originalMonth: 4, originalDay: 15, extendedMonth: 10, extendedDay: 15, form: "4868", formName: "Application for Automatic Extension of Time to File", formUrl: "https://www.irs.gov/pub/irs-pdf/f4868.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i4868.pdf", onlinePayUrl: "https://directpay.irs.gov", autoApproved: true, notes: "Extension is automatic. Pay estimated tax due by the original deadline to avoid penalties and interest." },
+  "1041": { originalMonth: 4, originalDay: 15, extendedMonth: 9, extendedDay: 30, form: "7004", formName: "Application for Automatic Extension of Time to File Certain Business Income Tax Returns", formUrl: "https://www.irs.gov/pub/irs-pdf/f7004.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i7004.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: true, notes: "5.5 month extension. Estimated tax must be paid by the original due date." },
+  "1065": { originalMonth: 3, originalDay: 15, extendedMonth: 9, extendedDay: 15, form: "7004", formName: "Application for Automatic Extension of Time to File", formUrl: "https://www.irs.gov/pub/irs-pdf/f7004.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i7004.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: true, notes: "Partnerships generally do not pay entity-level federal income tax. Extension extends filing deadline only." },
+  "1120": { originalMonth: 4, originalDay: 15, extendedMonth: 10, extendedDay: 15, form: "7004", formName: "Application for Automatic Extension of Time to File", formUrl: "https://www.irs.gov/pub/irs-pdf/f7004.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i7004.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: true, notes: "Extension extends filing deadline 6 months. Estimated tax is due by original deadline." },
+  "1120-S": { originalMonth: 3, originalDay: 15, extendedMonth: 9, extendedDay: 15, form: "7004", formName: "Application for Automatic Extension of Time to File", formUrl: "https://www.irs.gov/pub/irs-pdf/f7004.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i7004.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: true, notes: "S corporations do not pay federal income tax at entity level. Extension extends filing deadline only." },
+  "990": { originalMonth: 5, originalDay: 15, extendedMonth: 11, extendedDay: 15, form: "8868", formName: "Application for Automatic Extension of Time to File an Exempt Organization Return", formUrl: "https://www.irs.gov/pub/irs-pdf/f8868.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i8868.pdf", onlinePayUrl: "https://www.irs.gov/charities-non-profits/e-file-for-charities-and-non-profits", autoApproved: true, notes: "6 month automatic extension." },
+  "990-T": { originalMonth: 5, originalDay: 15, extendedMonth: 11, extendedDay: 15, form: "8868", formName: "Application for Automatic Extension - Form 990-T", formUrl: "https://www.irs.gov/pub/irs-pdf/f8868.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i8868.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: true, notes: "Unrelated business income tax must be paid by original due date." },
+  "706": { form: "4768", formName: "Application for Extension of Time to File a Return and/or Pay U.S. Estate Taxes", formUrl: "https://www.irs.gov/pub/irs-pdf/f4768.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i4768.pdf", onlinePayUrl: "https://www.eftps.gov", autoApproved: false, notes: "Extension of time to file is generally 6 months from the original estate tax deadline. Payment extension requires separate approval." },
+  "709": { originalMonth: 4, originalDay: 15, extendedMonth: 10, extendedDay: 15, form: "4868", formName: "Extension via Form 4868", formUrl: "https://www.irs.gov/pub/irs-pdf/f4868.pdf", instrUrl: "https://www.irs.gov/pub/irs-pdf/i4868.pdf", onlinePayUrl: "https://directpay.irs.gov", autoApproved: true, notes: "Gift tax extension is obtained through the individual extension." },
+};
+
+const STATE_EXTENSION_RULES = {
+  CA: { autoWithFederal: true, requiresSeparateForm: false, extendedMonths: 6, payDeadline: "April 15, YYYY", minimumPayment: "90% of current year tax or 100% of prior year tax", url: "https://www.ftb.ca.gov/pay/due-dates/extension.html", notes: "California automatically grants a 6-month extension. No separate individual extension form required." },
+  NY: { autoWithFederal: false, requiresSeparateForm: true, stateForm: "IT-370", stateFormUrl: "https://www.tax.ny.gov/pdf/current_forms/it/it370.pdf", extendedMonths: 6, payDeadline: "April 15, YYYY", minimumPayment: "Amount to bring total payments to 90% of current year tax", url: "https://www.tax.ny.gov/pit/estimated_tax/extension.htm", notes: "New York requires Form IT-370 by original due date." },
+  TX: { noStateIncomeTax: true, notes: "Texas has no state income tax. Franchise tax has separate extension rules.", url: "https://comptroller.texas.gov/taxes/franchise/filing-requirements.php" },
+  FL: { autoWithFederal: true, requiresSeparateForm: false, notes: "Florida has no personal income tax. Corporate income tax generally follows federal extension.", url: "https://floridarevenue.com/taxes/taxesfees/Pages/corporate.aspx" },
+  IL: { autoWithFederal: true, requiresSeparateForm: false, minimumPayment: "100% of prior year tax or 90% of current year tax", url: "https://tax.illinois.gov/individuals/estimated-payments.html", notes: "Illinois automatically extends if federal extension filed and required tax is paid." },
+  NJ: { autoWithFederal: true, requiresSeparateForm: false, minimumPayment: "80% of current year tax due", url: "https://www.nj.gov/treasury/taxation/njit25.shtml", notes: "New Jersey follows federal extension if payment requirements are met." },
+  PA: { autoWithFederal: true, requiresSeparateForm: false, minimumPayment: "90% of current year tax", url: "https://www.revenue.pa.gov/TaxTypes/PIT/Pages/Extensions.aspx", notes: "Pennsylvania automatically grants extension if payment requirements are met." },
+  OH: { autoWithFederal: true, requiresSeparateForm: false, url: "https://tax.ohio.gov/individual/resources/estimated-payments", notes: "Ohio automatically extends if federal extension filed." },
+  GA: { autoWithFederal: false, requiresSeparateForm: true, stateForm: "IT-303", stateFormUrl: "https://gtc.dor.ga.gov/_/", minimumPayment: "90% of current year tax", url: "https://dor.georgia.gov/filing-extensions", notes: "Georgia requires Form IT-303." },
+  NC: { autoWithFederal: true, requiresSeparateForm: false, minimumPayment: "90% of current year tax", url: "https://www.ncdor.gov/file-pay/pay-individual-income-tax/extensions-individual-income-tax", notes: "North Carolina automatically grants extension if federal extension filed." },
+  MA: { autoWithFederal: false, requiresSeparateForm: false, minimumPayment: "80% of current year tax", url: "https://www.mass.gov/info-details/extensions-for-filing-massachusetts-income-taxes", notes: "Massachusetts grants automatic extension if 80% of tax is paid." },
+  WA: { noStateIncomeTax: true, notes: "Washington has no state income tax." },
+  NV: { noStateIncomeTax: true, notes: "Nevada has no state income tax." },
+  WY: { noStateIncomeTax: true, notes: "Wyoming has no state income tax." },
+  SD: { noStateIncomeTax: true, notes: "South Dakota has no state income tax." },
+  AK: { noStateIncomeTax: true, notes: "Alaska has no state income tax." },
+  TN: { noStateIncomeTax: true, notes: "Tennessee has no state income tax." },
+};
+
+async function handleEstimatedTaxesDetectPeriod(req, res) {
+  const payload = await readJsonBody(req);
+  const file = {
+    name: payload.name || "P&L",
+    type: payload.type || "",
+    text: payload.text || decodeEstimatedTextContent(payload),
+    content: payload.content || "",
+  };
+  const period = detectEstimatedTaxPeriod(file);
+  sendJson(res, 200, {
+    detectedPeriod: period?.label || "",
+    detectedMonths: period?.months || null,
+    annFactor: period?.factor || null,
+  });
+}
+
+async function handleEstimatedTaxesCalculate(req, res) {
+  const payload = normalizeEstimatedTaxesPayload(await readJsonBody(req));
+  if (!payload.entityType || !payload.period || !payload.plFile) {
+    sendJson(res, 400, { error: "Select entity type, period, and upload the current-year P&L before generating the workpaper." });
+    return;
+  }
+  const result = await buildEstimatedTaxesCompleteWithClaude(req, payload);
+  if (result.error) {
+    sendJson(res, result.status || 502, { error: result.error, details: result.details || "" });
+    return;
+  }
+  sendJson(res, 200, result);
+}
+
+async function handleEstimatedTaxesTemplateDownload(_req, res, requestUrl) {
+  const entityType = normalizeEstimatedEntityTypeServer(decodeURIComponent(requestUrl.pathname.split("/").pop() || ""));
+  const templatePath = estimatedTemplatePathForEntity(entityType);
+  if (!templatePath || !fsSync.existsSync(templatePath)) {
+    sendJson(res, 404, { error: `No estimated tax template found for ${entityType}.` });
+    return;
+  }
+  const buffer = fsSync.readFileSync(templatePath);
+  res.writeHead(200, {
+    "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "content-disposition": `attachment; filename="${path.basename(templatePath)}"`,
+    "content-length": buffer.length,
+  });
+  res.end(buffer);
+}
+
+async function handleExtensionCalculate(req, res) {
+  const payload = await readJsonBody(req);
+  sendJson(res, 200, calculateExtension(payload));
+}
+
+function summarizeEstimatedTaxFiles(files = []) {
+  const buckets = {
+    financial_report: [],
+    prior_year_template: [],
+    supporting_document: [],
+    other: [],
+  };
+  for (const file of Array.isArray(files) ? files : []) {
+    const role = String(file.role || "financial_report");
+    const bucket = buckets[role] || buckets.other;
+    bucket.push({ name: String(file.name || "Uploaded file"), type: String(file.type || ""), size: Number(file.size || 0) });
+  }
+  return {
+    financialReports: buckets.financial_report,
+    priorYearTemplates: buckets.prior_year_template,
+    supportingDocuments: buckets.supporting_document,
+    other: buckets.other,
+    hasTemplate: buckets.prior_year_template.length > 0,
+  };
+}
+
+function decodeEstimatedTextContent(payload = {}) {
+  const type = String(payload.type || "").toLowerCase();
+  const name = String(payload.name || "").toLowerCase();
+  if (!payload.content || (!type.includes("text") && !type.includes("csv") && !/\.csv$|\.txt$/i.test(name))) return "";
+  try {
+    return Buffer.from(String(payload.content || ""), "base64").toString("utf8");
+  } catch (_) {
+    return "";
+  }
+}
+
+function normalizeEstimatedTaxesPayload(payload = {}) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const byRole = (role) => files.find((file) => String(file.role || "") === role) || null;
+  const entityType = normalizeEstimatedEntityTypeServer(payload.entityType || payload.returnType || "1040");
+  const customTemplateFile = payload.customTemplateFile || payload.templateFile || byRole("custom_template") || byRole("prior_year_template") || null;
+  const templateFile = customTemplateFile;
+  const plFile = payload.plFile || byRole("current_year_pl") || files.find((file) => detectEstimatedDocumentType(file) === "PL_STATEMENT") || null;
+  const balanceSheetFile = payload.balanceSheetFile || byRole("current_year_balance_sheet") || null;
+  const taxReturnFiles = Array.isArray(payload.taxReturnFiles) ? payload.taxReturnFiles : files.filter((file) => /return/i.test(String(file.role || "")));
+  const normalizedFiles = [
+    templateFile ? { ...templateFile, role: "custom_template" } : null,
+    plFile ? { ...plFile, role: "current_year_pl" } : null,
+    balanceSheetFile ? { ...balanceSheetFile, role: "current_year_balance_sheet" } : null,
+    ...taxReturnFiles.map((file) => ({ ...file, role: file.role || "prior_year_return" })),
+  ].filter(Boolean);
+  return {
+    ...payload,
+    entityType,
+    period: normalizeEstimatedPeriod(payload.period || payload.quarter || "Q1"),
+    quarter: normalizeEstimatedPeriod(payload.period || payload.quarter || "Q1"),
+    returnType: estimatedEntityDisplayName(entityType),
+    federalPayments: payload.federalPayments || {},
+    statePayments: Array.isArray(payload.statePayments) ? payload.statePayments : [],
+    customTemplateFile,
+    templateFile,
+    plFile,
+    balanceSheetFile,
+    taxReturnFiles,
+    files: normalizedFiles,
+  };
+}
+
+function normalizeEstimatedEntityTypeServer(entityType) {
+  const value = String(entityType || "1040").toUpperCase().replace(/[^0-9A-Z]/g, "");
+  if (value === "1120S") return "1120S";
+  if (["1040", "1041", "1065", "1120"].includes(value)) return value;
+  return "1040";
+}
+
+function estimatedEntityDisplayName(entityType) {
+  const value = normalizeEstimatedEntityTypeServer(entityType);
+  return value === "1120S" ? "1120-S" : value;
+}
+
+function normalizeEstimatedPeriod(period) {
+  const value = String(period || "Q1").toUpperCase();
+  return ["Q1", "Q2", "Q3", "Q4", "ANNUAL"].includes(value) ? value : "Q1";
+}
+
+function estimatedTemplatePathForEntity(entityType) {
+  const value = normalizeEstimatedEntityTypeServer(entityType);
+  const fileName = `EstTax_Template_${value}.xlsx`;
+  return path.join(ROOT, "templates", "estimates", fileName);
+}
+
+function estimatedTemplateContext(payload = {}) {
+  if (payload.templateFile?.text) {
+    return {
+      source: `Custom uploaded template: ${payload.templateFile.name || "template"}`,
+      text: String(payload.templateFile.text || "").slice(0, 90000),
+    };
+  }
+  if (payload.templateFile?.content) {
+    try {
+      const buffer = Buffer.from(String(payload.templateFile.content || ""), "base64");
+      return {
+        source: `Custom uploaded template: ${payload.templateFile.name || "template"}`,
+        text: extractXlsxText(buffer).slice(0, 90000),
+      };
+    } catch (_) {}
+  }
+  const templatePath = estimatedTemplatePathForEntity(payload.entityType);
+  if (templatePath && fsSync.existsSync(templatePath)) {
+    try {
+      return {
+        source: `Standard template: ${path.basename(templatePath)}`,
+        text: extractXlsxText(fsSync.readFileSync(templatePath)).slice(0, 90000),
+      };
+    } catch (_) {}
+  }
+  return { source: "No template readable", text: "" };
+}
+
+async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) return { error: "Claude API key is not configured. The estimated tax workpaper cannot be generated without AI extraction.", status: 400 };
+  const fileContext = buildEstimatedTaxFileContext(payload.files || []);
+  const templateContext = estimatedTemplateContext(payload);
+  if (!fileContext.hasText && !fileContext.documents.length && !fileContext.images.length) {
+    return { error: "No readable text could be extracted from the uploaded files. Upload readable XLSX/PDF/CSV files.", status: 400 };
+  }
+  const plPeriod = detectEstimatedTaxPeriod(payload.plFile || {}) || fileContext.plSummary?.files?.[0]?.period || null;
+  const plMonths = Number(payload.plMonthsOverride || plPeriod?.months || 0) || null;
+  const annFactor = plMonths ? +(12 / plMonths).toFixed(4) : null;
+  const content = [
+    ...fileContext.documents.slice(0, 8).map((doc) => ({
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: doc.content },
+      title: doc.name,
+      context: doc.role || "estimated tax source file",
+    })),
+    ...fileContext.images.slice(0, 6).map((image) => ({
+      type: "image",
+      source: { type: "base64", media_type: image.type || "image/png", data: image.content },
+    })),
+    { type: "text", text: buildEstimatedTaxesCompletePrompt(payload, fileContext, { plPeriod, plMonths, annFactor, templateContext }) },
+  ];
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 16000,
+    webSearch: false,
+    models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    thinking: { type: "enabled", budget_tokens: 10000 },
+    system: [{
+      type: "text",
+      text: withDatabaseContext([
+        "You are a senior CPA estimated-tax workpaper preparer.",
+        "You must read the uploaded prior-year template, current-year P&L, optional balance sheet, and tax returns.",
+        "The current-year P&L uploaded in Zone 2 is the authoritative source for current-year income and expenses.",
+        "Do not combine current-year P&L data with old P&L/template data. Prior-year template values are structure/context only.",
+        "If a current-year amount is absent from the current-year P&L, treat it as zero or missing and flag it. Do not silently reuse the prior-year amount.",
+        "Schedule A standard/itemized deduction data must come from the prior-year return Schedule A when relevant. Other taxes must come from Schedule 2.",
+        "For book-to-tax adjustments, reconcile the current-year P&L, then annualize the reconciled taxable income.",
+        "Projected income is calculated from taxable income plus book-to-tax adjustments, not from net operating income.",
+        "Return only valid JSON inside ```json``` fences using the requested complete estimated tax schema. Do not include prose outside JSON.",
+      ].join("\n"), payload, "estimated_taxes"),
+    }],
+  });
+  if (!result.ok) return { error: `Claude could not complete the estimate calculation: ${result.error}`, status: result.status || 502 };
+  logClaudeCost(req, result, "estimated_taxes", "estimated_taxes", payload, startedAt);
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed) return { error: "Claude did not return valid workbook JSON. No Excel file was generated.", status: 502, details: raw.slice(0, 2000) };
+  const normalized = normalizeEstimatedCompleteResult(parsed, payload, { plPeriod, plMonths, annFactor });
+  normalized.workbook = buildEstimatedCompleteWorkbook(normalized, payload);
+  try {
+    const xlsxBuffer = buildSimpleXlsx(normalized.workbook);
+    normalized.filename = buildEstimatedCompleteWorkbookFileName(normalized);
+    normalized.mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    normalized.contentBase64 = xlsxBuffer.toString("base64");
+  } catch (error) {
+    normalized.workbookBuildWarning = error.message || "Workbook file could not be generated server-side.";
+  }
+  normalized.aiWorkbookStatus = "AI generated the workpaper from the uploaded template, current-year P&L, and supporting files.";
+  normalized.email = { subject: normalized.emailSubject || "", body: normalized.emailBody || "" };
+  normalized.paymentSummary = estimatedCompletePaymentSummary(normalized);
+  return normalized;
+}
+
+function buildEstimatedTaxesCompletePrompt(payload, fileContext, periodInfo = {}) {
+  const federal = payload.federalPayments || {};
+  const statePayments = Array.isArray(payload.statePayments) ? payload.statePayments : [];
+  const templateContext = periodInfo.templateContext || { source: "", text: "" };
+  return [
+    "TASK: Fill an estimated tax Excel workpaper using the selected entity template and uploaded source files.",
+    "",
+    "CLIENT AND PERIOD:",
+    `Client: ${payload.clientName || "Client"}`,
+    `Entity type: ${estimatedEntityDisplayName(payload.entityType || payload.returnType || "1040")}`,
+    `Tax year: ${payload.taxYear || ""}`,
+    `Selected period: ${payload.period || payload.quarter || ""}`,
+    `P&L detected period: ${periodInfo.plPeriod?.label || "not detected"}`,
+    `P&L months override / final months: ${periodInfo.plMonths || "not provided"}`,
+    `Annualization factor: ${periodInfo.annFactor || "not available"}`,
+    "",
+    "PRIOR PAYMENTS:",
+    `Federal: ${safeJsonForPrompt(federal, 2000)}`,
+    `State: ${safeJsonForPrompt(statePayments, 3000)}`,
+    "",
+    "USER NOTES:",
+    payload.notes || "(none)",
+    "",
+    "STRICT RULES:",
+    "0. First read the template structure below. Use it to decide the sections, labels, and workpaper flow that must be completed.",
+    "1. Zone 2 current-year P&L is authoritative for current-year income and expenses.",
+    "2. Never copy prior-year/template/P&L-old amounts into current-year calculations.",
+    "3. If charitable contributions, meals, or another expense is not on the current-year P&L, do not invent it. Use zero or flag as missing/suggestion.",
+    "4. Standard/itemized deduction amounts must come from Schedule A of the prior-year return when relevant.",
+    "5. Other taxes must come from Schedule 2 of the prior-year return when relevant.",
+    "6. Book-to-tax adjustments must be reconciled first; then annualize the adjusted taxable income.",
+    "7. Projected income equals taxable income plus book-to-tax adjustments, not net operating income.",
+    "8. Every numeric value must include a source label in the JSON.",
+    "9. If an uploaded current-year P&L has a line missing, the current-year amount is zero/missing. Do not use the prior-year amount as current-year support.",
+    "10. If multiple P&L files exist, use the file marked current_year_pl / Zone 2 as the only current-year P&L source.",
+    "",
+    "RETURN JSON SCHEMA. Return ONLY this JSON inside ```json``` fences:",
+    `{
+  "clientName": "string",
+  "period": "Q1|Q2|Q3|Q4|ANNUAL",
+  "taxYear": "string",
+  "fileReadingLog": {
+    "pl": {"fileName":"string","periodFound":"string","months":number,"status":"read|limited","notes":"string"},
+    "balanceSheet": {"fileName":"string","status":"read|limited|not_uploaded","notes":"string"},
+    "returns": [{"fileName":"string","status":"read|limited|not_used","formsFound":["string"],"notes":"string"}]
+  },
+  "annualizedPL": [{"account":"string","ytdAmount":number,"annFactor":number,"annualizedAmount":number,"source":"file/sheet/line"}],
+  "plTotals": {"annualizedRevenue":number,"annualizedExpenses":number,"annualizedNetIncome":number},
+  "bookToTaxAdjustments": [{"name":"string","bookAmount":number,"taxAmount":number,"adjustment":number,"direction":"addback|deduction|none","explanation":"string","ircCite":"string","runningTotal":number,"found":true}],
+  "taxableIncome": number,
+  "federalTax": {"bracketDetail":[{"base":number,"rate":number,"tax":number,"explanation":"string"}],"grossTax":number,"credits":[{"name":"string","amount":number,"source":"string"}],"totalCredits":number,"additionalTaxes":[{"name":"string","amount":number,"source":"string"}],"netAnnualTax":number},
+  "stateTax": {"state":"string","stateModifications":[{"name":"string","amount":number,"source":"string"}],"stateTI":number,"stateRate":number,"stateGrossTax":number,"stateCredits":[{"name":"string","amount":number,"source":"string"}],"statePTE":number,"netStateTax":number},
+  "safeHarbor": {"option1Annual":number,"option2Annual":number,"option2Source":"string","recommended":"string","recommendedAnnual":number,"recommendedQuarterly":number},
+  "payments": {"periodPercentage":number,"federalRequiredThrough":number,"federalPaid":number,"federalDue":number,"statePaid":number,"stateRequiredThrough":number,"stateDue":number,"totalDue":number,"federalDueDate":"string","stateDueDate":"string","federalPayUrl":"string","statePayUrl":"string"},
+  "flags": [{"severity":"HIGH|MEDIUM|LOW","message":"string"}],
+  "emailSubject": "string",
+  "emailBody": "string"
+}`,
+    "",
+    "TEMPLATE STRUCTURE TO FILL:",
+    `Template source: ${templateContext.source || "standard template"}`,
+    templateContext.text || "(Template text could not be extracted; use the standard estimated tax sections.)",
+    "",
+    "UPLOADED FILES:",
+    fileContext.documentBlocks || "(No extracted document text)",
+  ].join("\n");
+}
+
+function normalizeEstimatedCompleteResult(result = {}, payload = {}, periodInfo = {}) {
+  const payments = result.payments || {};
+  const federalDue = num(payments.federalDue ?? result.summary?.federalDue ?? result.federalReconciliation?.paymentDue);
+  const stateDue = num(payments.stateDue ?? result.summary?.stateDue ?? (Array.isArray(result.stateReconciliations) ? result.stateReconciliations.reduce((sum, row) => sum + num(row.paymentDue), 0) : 0));
+  const totalDue = num(payments.totalDue ?? result.summary?.totalDue ?? federalDue + stateDue);
+  const plTotals = result.plTotals || {};
+  const normalizedAnnualizedPl = Array.isArray(result.annualizedPL)
+    ? result.annualizedPL.map((row) => ({
+      ...row,
+      line: row.line || row.account || row.name || "",
+      sourceAmount: num(row.sourceAmount ?? row.ytdAmount ?? row.amount),
+      annualizationFactor: num(row.annualizationFactor ?? row.annFactor ?? row.factor ?? periodInfo.annFactor),
+      annualizedAmount: num(row.annualizedAmount ?? row.annualized),
+    }))
+    : [];
+  const normalizedAdjustments = Array.isArray(result.bookToTaxAdjustments)
+    ? result.bookToTaxAdjustments.map((row) => ({
+      ...row,
+      adjustmentAmount: num(row.adjustmentAmount ?? row.adjustment ?? row.difference),
+      notes: row.notes || row.explanation || row.ircCite || "",
+      source: row.source || row.ircCite || "",
+    }))
+    : [];
+  const fileReadingConfirmation = normalizeEstimatedFileReadingLog(result.fileReadingLog || result.fileReadingConfirmation, payload);
+  const annualizedNetIncome = num(result.annualizedNetIncome ?? plTotals.annualizedNetIncome);
+  const taxableIncome = num(result.taxableIncomeBeforeSpecial ?? result.taxableIncome);
+  const stateRows = Array.isArray(result.stateReconciliations) && result.stateReconciliations.length
+    ? result.stateReconciliations
+    : result.stateTax ? [{
+      state: result.stateTax.state || payload.state || "",
+      requiredAnnualPayment: num(result.stateTax.netStateTax),
+      paymentsMade: num(payments.statePaid),
+      overpaymentApplied: num((payload.statePayments || [])[0]?.priorYearOverpayment),
+      paymentDue: stateDue,
+      source: "AI state tax calculation",
+    }] : [];
+  const federalReconciliation = result.federalReconciliation || {
+    requiredAnnualPayment: num(result.safeHarbor?.recommendedAnnual ?? result.federalTax?.netAnnualTax),
+    paymentsMade: num(payments.federalPaid),
+    overpaymentApplied: num(payload.federalPayments?.priorYearOverpayment),
+    paymentDue: federalDue,
+  };
+  const safeHarbor = {
+    ...(result.safeHarbor || {}),
+    priorYearTax: num(result.safeHarbor?.option2Annual ?? result.safeHarbor?.priorYearTax),
+    currentYearRequiredAnnual: num(result.safeHarbor?.option1Annual ?? result.safeHarbor?.currentYearRequiredAnnual),
+    selectedBasis: result.safeHarbor?.recommended || result.safeHarbor?.selectedBasis || "",
+    requiredAnnualPayment: num(result.safeHarbor?.recommendedAnnual ?? result.safeHarbor?.requiredAnnualPayment),
+  };
+  const federalTax = {
+    ...(result.federalTax || {}),
+    taxableIncome,
+    taxBeforeCredits: num(result.federalTax?.grossTax ?? result.federalTax?.taxBeforeCredits),
+    credits: num(result.federalTax?.totalCredits ?? result.federalTax?.credits),
+    totalTax: num(result.federalTax?.netAnnualTax ?? result.federalTax?.totalTax),
+  };
+  return {
+    ...result,
+    clientName: result.clientName || payload.clientName || "Client",
+    clientEmail: payload.clientEmail || result.clientEmail || "",
+    period: result.period || payload.period || payload.quarter || "Q1",
+    quarter: result.period || payload.period || payload.quarter || "Q1",
+    taxYear: result.taxYear || payload.taxYear || "",
+    state: payload.state || payload.statePayments?.[0]?.state || result.stateReconciliations?.[0]?.state || "",
+    plPeriodMonths: num(result.plPeriodMonths || periodInfo.plMonths),
+    annFactor: num(result.annFactor || periodInfo.annFactor),
+    plPeriodLabel: result.plPeriodLabel || periodInfo.plPeriod?.label || "",
+    fileReadingConfirmation,
+    annualizedPL: normalizedAnnualizedPl,
+    annualizedNetIncome,
+    bookToTaxAdjustments: normalizedAdjustments,
+    taxableIncome,
+    taxableIncomeBeforeSpecial: taxableIncome,
+    federalTax,
+    safeHarbor,
+    federalReconciliation,
+    stateReconciliations: stateRows,
+    summary: {
+      ...(result.summary || {}),
+      federalDue,
+      stateDue,
+      totalDue,
+      federalDueDate: payments.federalDueDate || result.summary?.federalDueDate || "",
+      stateDueDate: payments.stateDueDate || result.summary?.stateDueDate || "",
+    },
+    federalDue,
+    stateDue,
+    totalDue,
+    dueDate: payments.federalDueDate || result.summary?.federalDueDate || result.summary?.stateDueDate || "",
+  };
+}
+
+function normalizeEstimatedFileReadingLog(log, payload = {}) {
+  if (Array.isArray(log)) return log;
+  const rows = [];
+  if (log?.pl) rows.push({
+    fileName: log.pl.fileName || payload.plFile?.name || "Current-year P&L",
+    purpose: "Current-year P&L",
+    status: log.pl.status || "read",
+    notes: [log.pl.periodFound, log.pl.months ? `${log.pl.months} months` : "", log.pl.notes].filter(Boolean).join(" - "),
+  });
+  if (log?.balanceSheet) rows.push({
+    fileName: log.balanceSheet.fileName || payload.balanceSheetFile?.name || "Balance Sheet",
+    purpose: "Balance Sheet",
+    status: log.balanceSheet.status || "not_uploaded",
+    notes: log.balanceSheet.notes || "",
+  });
+  if (Array.isArray(log?.returns)) {
+    log.returns.forEach((item) => rows.push({
+      fileName: item.fileName || "Tax return",
+      purpose: "Tax return / safe harbor support",
+      status: item.status || "read",
+      notes: [Array.isArray(item.formsFound) ? item.formsFound.join(", ") : "", item.notes].filter(Boolean).join(" - "),
+    }));
+  }
+  if (!rows.length) {
+    if (payload.templateFile) rows.push({ fileName: payload.templateFile.name || "Custom template", purpose: "Template", status: "read", notes: "Custom template uploaded." });
+    else rows.push({ fileName: path.basename(estimatedTemplatePathForEntity(payload.entityType) || "standard template"), purpose: "Template", status: "read", notes: "Standard template selected by entity type." });
+    if (payload.plFile) rows.push({ fileName: payload.plFile.name || "Current-year P&L", purpose: "Current-year P&L", status: "read", notes: "" });
+  }
+  return rows;
+}
+
+function buildEstimatedCompleteWorkbook(result = {}, payload = {}) {
+  const stateRows = Array.isArray(result.stateReconciliations) ? result.stateReconciliations : [];
+  const flags = Array.isArray(result.flags) ? result.flags : [];
+  return {
+    sheets: [
+      {
+        name: "Summary",
+        rows: [
+          ["Estimated Tax Workpaper"],
+          ["Client", result.clientName],
+          ["Tax Year", result.taxYear],
+          ["Period", result.period],
+          ["P&L Period", result.plPeriodLabel],
+          ["P&L Months", result.plPeriodMonths],
+          ["Annualization Factor", result.annFactor],
+          [],
+          ["Payment Summary"],
+          ["Federal Due", result.federalDue],
+          ["State Due", result.stateDue],
+          ["Total Due", result.totalDue],
+          ["Federal Due Date", result.summary?.federalDueDate || ""],
+          ["State Due Date", result.summary?.stateDueDate || ""],
+          [],
+          ["Flags"],
+          ...flags.map((flag) => [flag.severity || "Note", flag.message || "", flag.source || ""]),
+        ],
+        cols: [{ wch: 28 }, { wch: 24 }, { wch: 60 }],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }, { r: 8, c: 0, bold: true, fill: "BFDBFE" }],
+      },
+      {
+        name: "Annualized PL and B2T",
+        rows: [
+          ["Annualized P&L"],
+          ["Line", "Source Amount", "Annualization Factor", "Annualized Amount", "Source"],
+          ...(Array.isArray(result.annualizedPL) ? result.annualizedPL.map((row) => [
+            row.line || row.name || "",
+            num(row.sourceAmount ?? row.amount),
+            num(row.annualizationFactor ?? row.factor ?? result.annFactor),
+            num(row.annualizedAmount ?? row.annualized),
+            row.source || "",
+          ]) : []),
+          [],
+          ["Book-to-Tax Adjustments"],
+          ["Name", "Book Amount", "Tax Amount", "Adjustment", "Source", "Notes"],
+          ...(Array.isArray(result.bookToTaxAdjustments) ? result.bookToTaxAdjustments.map((row) => [
+            row.name || row.adjustment || "",
+            num(row.bookAmount ?? row.book),
+            num(row.taxAmount ?? row.tax),
+            num(row.adjustmentAmount ?? row.adjustment ?? row.difference),
+            row.source || row.authority || "",
+            row.notes || "",
+          ]) : []),
+          [],
+          ["Taxable Income Before Special Deductions", num(result.taxableIncomeBeforeSpecial)],
+          ["Annualized Net Income", num(result.annualizedNetIncome)],
+        ],
+        cols: [{ wch: 34 }, { wch: 18 }, { wch: 18 }, { wch: 20 }, { wch: 60 }, { wch: 50 }],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }],
+      },
+      {
+        name: "Federal Tax",
+        rows: [
+          ["Federal Tax"],
+          ["Taxable Income", num(result.federalTax?.taxableIncome ?? result.taxableIncomeBeforeSpecial)],
+          ["Tax Before Credits", num(result.federalTax?.taxBeforeCredits)],
+          ["Credits", num(result.federalTax?.credits)],
+          ["Total Tax", num(result.federalTax?.totalTax)],
+          ["Source", result.federalTax?.source || ""],
+          [],
+          ["Safe Harbor"],
+          ["Prior Year Tax", num(result.safeHarbor?.priorYearTax)],
+          ["Current Year Required Annual", num(result.safeHarbor?.currentYearRequiredAnnual)],
+          ["Selected Basis", result.safeHarbor?.selectedBasis || ""],
+          ["Required Annual Payment", num(result.safeHarbor?.requiredAnnualPayment)],
+          ["Source", result.safeHarbor?.source || ""],
+          [],
+          ["Federal Reconciliation"],
+          ["Required Annual Payment", num(result.federalReconciliation?.requiredAnnualPayment)],
+          ["Payments Made", num(result.federalReconciliation?.paymentsMade)],
+          ["Overpayment Applied", num(result.federalReconciliation?.overpaymentApplied)],
+          ["Payment Due", num(result.federalReconciliation?.paymentDue)],
+        ],
+        cols: [{ wch: 30 }, { wch: 22 }, { wch: 70 }],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }, { r: 7, c: 0, bold: true, fill: "BFDBFE" }, { r: 14, c: 0, bold: true, fill: "BFDBFE" }],
+      },
+      {
+        name: "State Tax",
+        rows: [
+          ["State", "Required Annual Payment", "Payments Made", "Overpayment Applied", "Payment Due", "Source"],
+          ...stateRows.map((row) => [
+            row.state || payload.state || "",
+            num(row.requiredAnnualPayment),
+            num(row.paymentsMade),
+            num(row.overpaymentApplied),
+            num(row.paymentDue),
+            row.source || "",
+          ]),
+        ],
+        cols: [{ wch: 12 }, { wch: 24 }, { wch: 18 }, { wch: 22 }, { wch: 18 }, { wch: 70 }],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }],
+      },
+      {
+        name: "File Reading Log",
+        rows: [
+          ["File", "Purpose", "Status", "Notes"],
+          ...(Array.isArray(result.fileReadingConfirmation) ? result.fileReadingConfirmation.map((row) => [
+            row.fileName || row.name || "",
+            row.purpose || "",
+            row.status || "",
+            row.notes || "",
+          ]) : []),
+          [],
+          ["User Notes", payload.notes || ""],
+        ],
+        cols: [{ wch: 34 }, { wch: 28 }, { wch: 16 }, { wch: 80 }],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }],
+      },
+    ],
+    aiNotes: flags.map((flag) => `${flag.severity || "Note"}: ${flag.message || ""}`),
+  };
+}
+
+function buildEstimatedCompleteWorkbookFileName(result = {}) {
+  const parts = [
+    "estimated_tax_workpaper",
+    result.clientName || "client",
+    result.taxYear || "",
+    result.period || result.quarter || "",
+  ].filter(Boolean);
+  return `${safeFileName(parts.join("_"))}.xlsx`;
+}
+
+function estimatedCompletePaymentSummary(result = {}) {
+  const money = (value) => `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return [
+    `${result.clientName || "Client"} estimated tax workpaper`,
+    `Tax year: ${result.taxYear || ""}`,
+    `Period: ${result.period || ""}`,
+    `Federal due: ${money(result.federalDue)}`,
+    `State due: ${money(result.stateDue)}`,
+    `Total due: ${money(result.totalDue)}`,
+  ].join("\n");
+}
+
+async function buildEstimatedTaxWorkbookWithClaude(req, payload, deterministicResult) {
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) return { error: "Claude API key is not configured. The workbook was generated without AI calculations.", status: 400 };
+  const fileContext = buildEstimatedTaxFileContext(payload.files || []);
+  if (!fileContext.hasText && !fileContext.images.length && !fileContext.documents.length) return { error: "No readable text could be extracted from the uploaded files. Upload readable XLSX/PDF/CSV files.", status: 400 };
+  const content = [
+    ...fileContext.documents.slice(0, 8).map((doc) => ({
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: doc.content },
+      title: doc.name,
+      context: doc.role || "estimated tax source file",
+    })),
+    ...fileContext.images.slice(0, 6).map((image) => ({
+      type: "image",
+      source: { type: "base64", media_type: image.type || "image/png", data: image.content },
+    })),
+    { type: "text", text: buildEstimatedTaxWorkbookPrompt(payload, deterministicResult, fileContext) },
+  ];
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 16000,
+    webSearch: false,
+    models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    thinking: { type: "enabled", budget_tokens: 10000 },
+    system: [{
+      type: "text",
+      text: withDatabaseContext([
+        "You are a senior CPA estimated-tax workpaper preparer.",
+        "Return only valid JSON inside ```json``` fences using the compact estimate update-plan schema requested by the user.",
+        "Do not return a full workbook. The application already has the Excel template and will apply your row/column updates.",
+        "Read every uploaded source carefully, identify what the template needs, compute the estimate, and provide exact template row/column updates with source notes.",
+        "Do not invent missing current-year amounts. Do not copy prior-year/template amounts into current-year calculations unless the prompt explicitly identifies them as prior-year payments, carryforwards, Schedule A, or Schedule 2 prior-year data.",
+        "For current-year tax adjustments, use only the current-year financial reports, then reconcile book-to-tax adjustments and annualize the reconciled result when instructed.",
+        "Projected income must be calculated from taxable income plus book-to-tax adjustments. Do not calculate projected income from net operating income.",
+      ].join("\n"), payload, "estimated_taxes"),
+    }],
+  });
+  if (!result.ok) return { error: `Claude could not complete the estimate calculation: ${result.error}`, status: result.status || 502 };
+  logClaudeCost(req, result, "estimated_taxes", "estimated_taxes", payload, startedAt);
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed) return { error: "Claude did not return valid calculation JSON. The workbook was generated with extracted template/files and AI Notes.", status: 502, details: raw.slice(0, 2000) };
+  try {
+    const summary = normalizeEstimatedTaxAiSummary(parsed.summary || parsed.estimatedTaxSummary || {}, deterministicResult);
+    const plan = {
+      summary,
+      updates: Array.isArray(parsed.updates) ? parsed.updates : Array.isArray(parsed.cellUpdates) ? parsed.cellUpdates : [],
+      aiNotes: Array.isArray(parsed.aiNotes) ? parsed.aiNotes : Array.isArray(parsed.notes) ? parsed.notes : [],
+      sourceMapping: Array.isArray(parsed.sourceMapping) ? parsed.sourceMapping : [],
+    };
+    const validation = validateEstimatedAiPlan(payload, deterministicResult, plan, fileContext);
+    if (!validation.ok) {
+      return { error: validation.error, status: 502, details: validation.details || raw.slice(0, 2000) };
+    }
+    return {
+      workbook: buildEstimatedTaxWorkbookFromPlan(payload, { ...deterministicResult, ...summary }, plan),
+      summary,
+      statusMessage: parsed.statusMessage || "AI completed the template workpaper from uploaded files.",
+      raw,
+    };
+  } catch (error) {
+    return { error: error.message || "Claude workbook JSON was not usable. No Excel file was generated.", status: 502, details: raw.slice(0, 2000) };
+  }
+}
+
+function normalizeEstimatedTaxAiSummary(summary = {}) {
+  const pickMoney = (...keys) => {
+    for (const key of keys) {
+      if (summary[key] !== undefined && summary[key] !== null && summary[key] !== "") return roundMoney(num(summary[key]));
+    }
+    return undefined;
+  };
+  const output = {};
+  const mapped = {
+    bookNetIncomeYtd: pickMoney("bookNetIncomeYtd", "bookNetIncomeYTD", "ytdBookIncome"),
+    bookNetIncomeAnnual: pickMoney("bookNetIncomeAnnual", "annualizedBookIncome", "annualizedIncome"),
+    taxableIncome: pickMoney("taxableIncome", "estimatedTaxableIncome"),
+    annualFederalTax: pickMoney("annualFederalTax", "federalTax"),
+    annualStateTax: pickMoney("annualStateTax", "stateTax"),
+    federalDue: pickMoney("federalDue", "federalPaymentDue", "federalEstimatedPayment"),
+    stateDue: pickMoney("stateDue", "statePaymentDue", "stateEstimatedPayment"),
+    totalDue: pickMoney("totalDue", "totalPaymentDue", "totalEstimatedPayment"),
+  };
+  for (const [key, value] of Object.entries(mapped)) {
+    if (value !== undefined) output[key] = value;
+  }
+  if (output.totalDue === undefined && (output.federalDue !== undefined || output.stateDue !== undefined)) {
+    output.totalDue = roundMoney(num(output.federalDue) + num(output.stateDue));
+  }
+  if (summary.dueDate) output.dueDate = String(summary.dueDate);
+  if (summary.quarter) output.quarter = String(summary.quarter);
+  if (summary.safeHarborBasis) output.safeHarborBasis = String(summary.safeHarborBasis);
+  if (summary.effectiveRate !== undefined) output.effectiveRate = roundMoney(num(summary.effectiveRate));
+  else if (output.taxableIncome) output.effectiveRate = roundMoney(((num(output.annualFederalTax) + num(output.annualStateTax)) / output.taxableIncome) * 100);
+  if (Array.isArray(summary.adjustments) && summary.adjustments.length) output.adjustments = summary.adjustments;
+  if (Array.isArray(summary.sources) && summary.sources.length) output.sources = summary.sources;
+  if (Array.isArray(summary.caveats) && summary.caveats.length) output.caveats = summary.caveats;
+  return output;
+}
+
+function validateEstimatedAiPlan(payload, deterministicResult, plan = {}, fileContext = {}) {
+  const updates = Array.isArray(plan.updates) ? plan.updates : [];
+  const financialUpdates = updates.filter((update) => estimatedUpdateLooksFinancial(update));
+  const nullFinancial = financialUpdates.filter((update) => update.value === null || update.value === undefined || String(update.value).toUpperCase().includes("NOT FOUND"));
+  if (financialUpdates.length >= 5 && nullFinancial.length / financialUpdates.length > 0.3) {
+    return {
+      ok: false,
+      error: "Insufficient data - most financial amounts could not be determined from the provided documents. Please verify the P&L file was uploaded correctly.",
+    };
+  }
+
+  const copied = findPossibleTemplateAmountCopies(payload, updates);
+  if (copied.length) {
+    return {
+      ok: false,
+      error: `Possible template amount not updated: ${copied[0].rowLabel || copied[0].label || "unknown row"} = ${copied[0].value}. Please verify this is the correct current year amount.`,
+      details: JSON.stringify(copied.slice(0, 10)),
+    };
+  }
+
+  const currentPl = fileContext.plSummary?.currentYearFileName ? (fileContext.files || []).find((file) => file.name === fileContext.plSummary.currentYearFileName) : null;
+  const period = currentPl?.estimatedPeriod || null;
+  const ytdNetIncome = findEstimatedSourceAmount(currentPl, /(net income|net ordinary income|net profit|net earnings)/i);
+  const annualBook = Number(plan.summary?.bookNetIncomeAnnual ?? deterministicResult.bookNetIncomeAnnual);
+  if (period?.months && period.months < 12 && ytdNetIncome && Math.abs(roundMoney(ytdNetIncome) - roundMoney(annualBook)) < 1) {
+    return {
+      ok: false,
+      error: "Net income appears not to have been annualized. Please verify the current-year P&L period and rerun.",
+    };
+  }
+  return { ok: true };
+}
+
+function estimatedUpdateLooksFinancial(update = {}) {
+  const text = `${update.rowLabel || ""} ${update.columnLabel || ""} ${update.note || ""}`.toLowerCase();
+  return /(income|revenue|sales|expense|meals|charitable|wages|salary|depreciation|interest|tax|payment|deduction|adjustment|profit|loss|gross|net)/.test(text);
+}
+
+function findPossibleTemplateAmountCopies(payload = {}, updates = []) {
+  const template = estimatedTemplateWorkbookFromPayload(payload);
+  if (!template?.sheets?.length) return [];
+  const templateAmounts = new Map();
+  for (const sheet of template.sheets) {
+    const rows = normalizeRows(sheet.rows);
+    rows.forEach((row, r) => row.forEach((cell, c) => {
+      const amount = normalizeComparableMoney(cell);
+      if (amount === null || Math.abs(amount) < 1) return;
+      const label = String(row.find((candidate) => /[A-Za-z]/.test(String(candidate || ""))) || "").trim();
+      const key = `${sheet.name || ""}|${r + 1}|${c + 1}|${amount}`;
+      templateAmounts.set(key, { sheetName: sheet.name || "", rowIndex: r + 1, columnIndex: c + 1, amount, label });
+    }));
+  }
+  return updates.filter((update) => {
+    if (!estimatedUpdateLooksFinancial(update)) return false;
+    const amount = normalizeComparableMoney(update.value);
+    if (amount === null || Math.abs(amount) < 1) return false;
+    const source = String(update.valueSource || update.note || "").toLowerCase();
+    if (/(1040|line 24|safe harbor|prior year tax|schedule a|schedule 2|carryforward|overpayment|withholding)/.test(source)) return false;
+    const sheetName = String(update.sheetName || "");
+    const rowIndex = Number(update.rowIndex || 0);
+    const columnIndex = Number(update.columnIndex || 0);
+    for (const item of templateAmounts.values()) {
+      if (Math.abs(item.amount - amount) >= 1) continue;
+      const sameLocation = (!sheetName || item.sheetName === sheetName) && (!rowIndex || item.rowIndex === rowIndex) && (!columnIndex || item.columnIndex === columnIndex);
+      const sameLabel = update.rowLabel && item.label && String(item.label).toLowerCase().includes(String(update.rowLabel).toLowerCase().slice(0, 20));
+      if (sameLocation || sameLabel) return true;
+    }
+    return false;
+  });
+}
+
+function normalizeComparableMoney(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return roundMoney(value);
+  const text = String(value ?? "").replace(/,/g, "").trim();
+  if (!/^-?\(?\$?\d/.test(text)) return null;
+  const negative = /^\(/.test(text) || /^-/.test(text);
+  const parsed = Number(text.replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(parsed)) return null;
+  return roundMoney(negative ? -parsed : parsed);
+}
+
+function findEstimatedSourceAmount(file = {}, labelRegex) {
+  const text = String(file?.text || "");
+  if (!text) return 0;
+  const lines = text.split(/\n+/);
+  for (const line of lines) {
+    if (!labelRegex.test(line)) continue;
+    const matches = line.match(/-?\(?\$?\d[\d,]*(?:\.\d{1,2})?\)?/g);
+    if (matches?.length) return normalizeComparableMoney(matches[matches.length - 1]) || 0;
+  }
+  return 0;
+}
+
+function buildEstimatedTaxWorkbookFromPlan(payload, result, plan = {}) {
+  const templateWorkbook = estimatedTemplateWorkbookFromPayload(payload);
+  const workbook = templateWorkbook?.sheets?.length
+    ? JSON.parse(JSON.stringify(templateWorkbook))
+    : buildEstimatedTaxWorkbook(result, payload);
+  workbook.sheets = Array.isArray(workbook.sheets) ? workbook.sheets : [];
+  workbook.sheets = workbook.sheets.map((sheet) => ({
+    ...sheet,
+    rows: normalizeRows(sheet.rows),
+  }));
+
+  const updates = Array.isArray(plan.updates) ? plan.updates : [];
+  const unapplied = [];
+  const applied = [];
+  for (const update of updates) {
+    if (applyEstimatedWorkbookUpdate(workbook, update)) applied.push(update);
+    else unapplied.push(update);
+  }
+  addEstimatedSourceColumns(workbook, applied);
+  addEstimatedSourcesSheet(workbook, applied, plan.sourceMapping);
+
+  const summaryRows = estimatedTaxSummaryRows(result, plan);
+  workbook.sheets.unshift({
+    name: "AI Estimate Summary",
+    rows: summaryRows,
+    cols: [{ wch: 28 }, { wch: 18 }, { wch: 50 }],
+    styles: [
+      { r: 0, c: 0, bold: true, fill: "DBEAFE" },
+      { r: 0, c: 1, bold: true, fill: "DBEAFE" },
+      { r: 0, c: 2, bold: true, fill: "DBEAFE" },
+    ],
+  });
+
+  if (unapplied.length) {
+    workbook.sheets.push({
+      name: "Unapplied AI Updates",
+      rows: [["Sheet", "Row Label", "Column Label", "Value", "Note"], ...unapplied.map((item) => [
+        item.sheetName || "",
+        item.rowLabel || "",
+        item.columnLabel || "",
+        item.value ?? "",
+        item.note || "",
+      ])],
+    });
+  }
+
+  const aiNotes = [
+    ...(Array.isArray(workbook.aiNotes) ? workbook.aiNotes : []),
+    ...(Array.isArray(plan.aiNotes) ? plan.aiNotes.map((note) => String(note || "")) : []),
+    templateWorkbook?.sheets?.length
+      ? "Template workbook was used as the base. AI updates were applied by matching sheet names, row labels, and column labels."
+      : "No prior-year template workbook was available; generated a standard estimated-tax workpaper.",
+  ].filter(Boolean);
+  workbook.aiNotes = aiNotes;
+  workbook.sheets.push({
+    name: "AI Notes",
+      rows: [["AI Notes"], ...aiNotes.map((note) => [note]), [], ["Source Mapping"], ["Value", "Source File", "Source Location"], ...(Array.isArray(plan.sourceMapping) ? plan.sourceMapping.map((item) => [item.value || "", item.sourceFile || "", item.sourceLocation || ""]) : [])],
+  });
+  return workbook;
+}
+
+function addEstimatedSourcesSheet(workbook, applied = [], sourceMapping = []) {
+  const rows = [["Sheet", "Cell", "Row Label", "Value", "Source"]];
+  for (const update of applied) {
+    const cell = Number.isFinite(Number(update.rowIndex)) && Number.isFinite(Number(update.columnIndex))
+      ? `${columnNameFromIndex(Number(update.columnIndex))}${Number(update.rowIndex)}`
+      : "";
+    rows.push([
+      update.sheetName || "",
+      cell,
+      update.rowLabel || update.label || "",
+      update.value ?? "[MISSING - not in documents]",
+      update.valueSource || update.note || "Source not specified",
+    ]);
+  }
+  if (Array.isArray(sourceMapping) && sourceMapping.length) {
+    rows.push([], ["Value", "Source File", "Source Location", ""]);
+    sourceMapping.forEach((item) => rows.push([item.value || "", item.sourceFile || "", item.sourceLocation || "", ""]));
+  }
+  workbook.sheets.push({
+    name: "Sources",
+    rows,
+    cols: [{ wch: 26 }, { wch: 12 }, { wch: 32 }, { wch: 18 }, { wch: 70 }],
+  });
+}
+
+function columnNameFromIndex(index) {
+  let n = Math.max(1, Number(index) || 1);
+  let name = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    name = String.fromCharCode(65 + rem) + name;
+    n = Math.floor((n - 1) / 26);
+  }
+  return name;
+}
+
+function estimatedTemplateWorkbookFromPayload(payload = {}) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const templateFile = files.find((file) => ["prior_year_template", "custom_template"].includes(String(file.role || "")) && (file?.workbookTemplate?.sheets?.length || file?.workbookTemplates?.some((template) => template?.sheets?.length)))
+    || files.find((file) => file?.workbookTemplate?.sheets?.length || file?.workbookTemplates?.some((template) => template?.sheets?.length));
+  if (!templateFile) return null;
+  return templateFile.workbookTemplate?.sheets?.length
+    ? templateFile.workbookTemplate
+    : templateFile.workbookTemplates.find((candidate) => candidate?.sheets?.length);
+}
+
+function estimatedTaxSummaryRows(result, plan = {}) {
+  return [
+    ["Metric", "Amount", "Notes"],
+    ["Client", result.clientName || "", ""],
+    ["Return Type", result.returnType || "", ""],
+    ["Tax Year", result.taxYear || "", ""],
+    ["Quarter", result.quarter || "", ""],
+    ["Due Date", result.dueDate || "", ""],
+    ["Book Net Income YTD", num(result.bookNetIncomeYtd), "From uploaded financial data / AI calculation"],
+    ["Annualized Book Income", num(result.bookNetIncomeAnnual), "Annualized per selected quarter and notes"],
+    ["Taxable Income", num(result.taxableIncome), ""],
+    ["Annual Federal Tax", num(result.annualFederalTax), ""],
+    ["Annual State Tax", num(result.annualStateTax), ""],
+    ["Federal Payment Due", num(result.federalDue), ""],
+    ["State Payment Due", num(result.stateDue), ""],
+    ["Total Payment Due", num(result.totalDue), ""],
+    ["Effective Tax Rate", result.effectiveRate !== undefined ? `${result.effectiveRate}%` : "", ""],
+    ["Safe Harbor Basis", result.safeHarborBasis || "", ""],
+    [],
+    ["AI Update Count", Array.isArray(plan.updates) ? plan.updates.length : 0, "Updates applied to the template where labels matched"],
+  ];
+}
+
+function applyEstimatedWorkbookUpdate(workbook, update = {}) {
+  const isMissing = update.value == null;
+  const value = update.value == null
+    ? "[MISSING - see flags]"
+    : update.value;
+  if (Number.isFinite(Number(update.rowIndex)) && Number.isFinite(Number(update.columnIndex))) {
+    const sheet = findEstimatedSheet(workbook, update.sheetName) || workbook.sheets?.[0];
+    if (sheet) {
+      sheet.rows = normalizeRows(sheet.rows);
+      const r = Math.max(0, Number(update.rowIndex) - 1);
+      const c = Math.max(0, Number(update.columnIndex) - 1);
+      while (sheet.rows.length <= r) sheet.rows.push([]);
+      while (sheet.rows[r].length <= c) sheet.rows[r].push("");
+      sheet.rows[r][c] = value;
+      if (isMissing) markEstimatedMissingCell(sheet, r, c);
+      return true;
+    }
+  }
+  const rowsText = (value) => String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  const sheetHint = rowsText(update.sheetName || "");
+  const rowLabel = rowsText(update.rowLabel || update.label || "");
+  if (!rowLabel) return false;
+  const sheets = workbook.sheets || [];
+  const candidateSheets = sheetHint
+    ? [...sheets.filter((sheet) => rowsText(sheet.name).includes(sheetHint) || sheetHint.includes(rowsText(sheet.name))), ...sheets]
+    : sheets;
+  for (const sheet of candidateSheets) {
+    const rows = normalizeRows(sheet.rows);
+    sheet.rows = rows;
+    const rowIndex = rows.findIndex((row) => row.some((cell) => rowsText(cell).includes(rowLabel) || rowLabel.includes(rowsText(cell))));
+    if (rowIndex < 0) continue;
+    const row = rows[rowIndex];
+    let colIndex = findEstimatedUpdateColumn(rows, rowIndex, update.columnLabel);
+    if (colIndex < 0) colIndex = Math.max(1, row.findIndex((cell) => rowsText(cell).includes(rowLabel)) + 1);
+    while (row.length <= colIndex) row.push("");
+    row[colIndex] = value;
+    if (isMissing) markEstimatedMissingCell(sheet, rowIndex, colIndex);
+    return true;
+  }
+  return false;
+}
+
+function markEstimatedMissingCell(sheet, rowIndex, colIndex) {
+  sheet.styles = Array.isArray(sheet.styles) ? sheet.styles : [];
+  sheet.styles.push({
+    r: rowIndex,
+    c: colIndex,
+    fill: "FEF2F2",
+    fontColor: "DC2626",
+    bold: true,
+  });
+}
+
+function addEstimatedSourceColumns(workbook, appliedUpdates = []) {
+  if (!Array.isArray(appliedUpdates) || !appliedUpdates.length) return;
+  const updatesBySheet = new Map();
+  for (const update of appliedUpdates) {
+    const sheetName = String(update.sheetName || "");
+    const key = sheetName || "__first__";
+    if (!updatesBySheet.has(key)) updatesBySheet.set(key, []);
+    updatesBySheet.get(key).push(update);
+  }
+  for (const [sheetKey, updates] of updatesBySheet) {
+    const sheet = sheetKey === "__first__" ? workbook.sheets?.[0] : findEstimatedSheet(workbook, sheetKey);
+    if (!sheet) continue;
+    sheet.rows = normalizeRows(sheet.rows);
+    const sourceCol = Math.max(0, ...sheet.rows.map((row) => row.length)) + 1;
+    if (!sheet.rows.length) sheet.rows.push([]);
+    while (sheet.rows[0].length <= sourceCol) sheet.rows[0].push("");
+    sheet.rows[0][sourceCol] = "AI Source";
+    for (const update of updates) {
+      const rowIndex = Number.isFinite(Number(update.rowIndex))
+        ? Math.max(0, Number(update.rowIndex) - 1)
+        : findEstimatedUpdateRow(sheet.rows, update.rowLabel || update.label || "");
+      if (rowIndex < 0) continue;
+      while (sheet.rows.length <= rowIndex) sheet.rows.push([]);
+      while (sheet.rows[rowIndex].length <= sourceCol) sheet.rows[rowIndex].push("");
+      sheet.rows[rowIndex][sourceCol] = update.valueSource || update.note || "AI update - source not specified";
+    }
+    sheet.cols = Array.isArray(sheet.cols) ? sheet.cols : [];
+    while (sheet.cols.length <= sourceCol) sheet.cols.push({});
+    sheet.cols[sourceCol] = { ...(sheet.cols[sourceCol] || {}), wch: 42 };
+  }
+}
+
+function findEstimatedUpdateRow(rows, rowLabel) {
+  const label = String(rowLabel || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!label) return -1;
+  return rows.findIndex((row) => row.some((cell) => {
+    const text = String(cell ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+    return text && (text.includes(label) || label.includes(text));
+  }));
+}
+
+function findEstimatedSheet(workbook, sheetName) {
+  const hint = String(sheetName || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const sheets = workbook.sheets || [];
+  if (!hint) return sheets[0] || null;
+  return sheets.find((sheet) => {
+    const name = String(sheet.name || "").toLowerCase().replace(/\s+/g, " ").trim();
+    return name === hint || name.includes(hint) || hint.includes(name);
+  }) || null;
+}
+
+function findEstimatedUpdateColumn(rows, rowIndex, columnLabel) {
+  const label = String(columnLabel || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!label) return -1;
+  for (let r = Math.max(0, rowIndex - 8); r <= rowIndex; r += 1) {
+    const row = rows[r] || [];
+    const col = row.findIndex((cell) => {
+      const text = String(cell ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+      return text && (text.includes(label) || label.includes(text));
+    });
+    if (col >= 0) return col;
+  }
+  return -1;
+}
+
+function buildEstimatedTaxFileContext(files = []) {
+  const normalizedFiles = Array.isArray(files) ? files.map((file) => ({
+    ...file,
+    estimatedRole: classifyEstimatedTaxFile(file),
+    estimatedPeriod: detectEstimatedTaxPeriod(file),
+    detectedDocType: detectEstimatedDocumentType(file),
+  })) : [];
+  const plFiles = normalizedFiles.filter((file) => file.detectedDocType === "PL_STATEMENT");
+  const currentYearPl = chooseEstimatedCurrentYearPl(plFiles);
+  const grouped = {
+    financialReports: buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedCurrentYearFinancialRole(file.estimatedRole))),
+    priorYearTemplates: buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
+    supporting: buildUploadedFileContext(normalizedFiles.filter((file) => !isEstimatedCurrentYearFinancialRole(file.estimatedRole) && !isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
+  };
+  const documents = [];
+  for (const file of normalizedFiles) {
+    const name = String(file.name || "Uploaded file");
+    const type = String(file.type || mimeFromName(name) || "").toLowerCase();
+    const content = String(file.content || file.contentBase64 || "");
+    if (content && (type.includes("pdf") || /\.pdf$/i.test(name))) {
+      documents.push({ name, content, role: file.estimatedRole || String(file.role || "financial_report") });
+    }
+  }
+  return {
+    ...grouped,
+    files: normalizedFiles,
+    documentBlocks: buildEstimatedDocumentBlocks(normalizedFiles),
+    documents,
+    images: [...grouped.financialReports.images, ...grouped.priorYearTemplates.images, ...grouped.supporting.images],
+    hasText: Boolean(grouped.financialReports.text || grouped.priorYearTemplates.text || grouped.supporting.text),
+    plSummary: {
+      count: plFiles.length,
+      currentYearFileName: currentYearPl?.name || "",
+      files: plFiles.map((file, index) => ({
+        label: `P&L File ${index + 1}`,
+        name: file.name,
+        estimatedRole: file.estimatedRole,
+        detectedDocType: file.detectedDocType,
+        period: file.estimatedPeriod,
+      })),
+    },
+  };
+}
+
+function detectEstimatedDocumentType(file = {}) {
+  const name = String(file.name || "").toLowerCase();
+  const text = String(file.text || "").slice(0, 120000).toLowerCase();
+  const haystack = `${name}\n${text}`;
+  if (/form\s*1040|u\.?s\.?\s+individual income tax return/.test(haystack)) return "1040_RETURN";
+  if (/form\s*1120-?s|u\.?s\.?\s+income tax return for an s corporation|s corporation/.test(haystack)) return "1120S_RETURN";
+  if (/\bw-?2\b|wage and tax statement|box\s*1|box\s*2|box\s*16|box\s*17/.test(haystack)) return "W2_DOCUMENT";
+  if (/(estimated tax|estimate).*(template|workpaper|prior)|prior.*(estimated tax|estimate|template)|\bq[1-4]\b.*(estimate|template|workpaper)/.test(haystack)) return "PRIOR_YEAR_TEMPLATE";
+  if (/(profit\s+(and|&)\s+loss|p\s*&\s*l|income statement|statement of operations)/.test(haystack) && /(ytd|year to date|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|20\d{2})/.test(haystack)) return "PL_STATEMENT";
+  return "OTHER";
+}
+
+function chooseEstimatedCurrentYearPl(plFiles = []) {
+  return plFiles.find((file) => isEstimatedCurrentYearFinancialRole(file.estimatedRole) && file.estimatedRole !== "prior_year_template")
+    || plFiles.find((file) => String(file.role || "").toLowerCase() === "financial_report")
+    || plFiles[0]
+    || null;
+}
+
+function classifyEstimatedTaxFile(file = {}) {
+  const explicit = String(file.role || "").toLowerCase().replace(/\s+/g, "_");
+  const name = String(file.name || "").toLowerCase();
+  const text = String(file.text || "").slice(0, 5000).toLowerCase();
+  const haystack = `${name}\n${text}`;
+  if (explicit === "prior_year_template" || /\b(estimated tax|estimate|workpaper|template|q[1-4])\b/.test(haystack) && /\b(2024|2025|prior|template)\b/.test(haystack)) return "prior_year_template";
+  if (/form\s*1040|u\.?s\.?\s+individual income tax return|schedule\s+a|schedule\s+2/i.test(haystack)) return "prior_year_return_1040";
+  if (/form\s*1120-?s|s corporation|schedule\s+k-?1/i.test(haystack)) return "prior_year_return_1120s";
+  if (/\bw-?2\b|wage and tax statement|box\s*1|box\s*2|box\s*16|box\s*17/i.test(haystack)) return "current_year_w2";
+  if (/p\s*&\s*l|profit\s+(and|&)\s+loss|income statement|statement of operations|ytd|year to date|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(haystack)) return "current_year_pl";
+  if (explicit === "financial_report") return "current_year_financial_report";
+  if (explicit === "supporting_document") return "supporting_document";
+  return explicit || "current_year_financial_report";
+}
+
+function isEstimatedCurrentYearFinancialRole(role) {
+  return ["current_year_pl", "current_year_w2", "current_year_financial_report", "financial_report"].includes(String(role || ""));
+}
+
+function isEstimatedTemplateOrPriorReturnRole(role) {
+  return ["prior_year_template", "prior_year_return_1040", "prior_year_return_1120s"].includes(String(role || ""));
+}
+
+function estimatedRolePurpose(role, file = {}) {
+  const period = file.estimatedPeriod;
+  const periodText = period?.months
+    ? ` Detected period: ${period.label}. Annualization factor: 12 / ${period.months} = ${period.factor}. Apply this factor line-by-line when this is current-year partial-year data.`
+    : "";
+  switch (role) {
+    case "prior_year_template":
+      return "This file is a PRIOR YEAR WORKPAPER TEMPLATE. Use it only for structure, sheet names, row labels, section names, and formatting. Do not use any numbers from this file as current-year data.";
+    case "prior_year_return_1040":
+      return "This is a prior-year Form 1040/source return. Extract prior-year AGI, taxable income, total tax, credits, filing status, prior payments/withholding, Schedule A standard/itemized deduction support, Schedule 2 other taxes, carryforwards, and safe-harbor facts. Label every value by form/schedule/line.";
+    case "prior_year_return_1120s":
+      return "This is a prior-year Form 1120-S/source return. Extract ordinary income, Schedule K/K-1 items, officer compensation, depreciation, other deductions, Schedule L facts, and M-1/M-3 book-to-tax adjustments. Use as prior-year context only unless a value is explicitly a prior-year tax/safe-harbor/carryforward fact.";
+    case "current_year_pl":
+      return `This is the CURRENT YEAR P&L/financial statement and primary source for current-year income, expenses, meals, charitable contributions, depreciation, and book net income. Do not combine it with old P&L/template amounts. Annualize every line item, not only net income.${periodText}`;
+    case "current_year_w2":
+      return `This is CURRENT YEAR W-2/wage/withholding information. Extract wages and withholding; annualize only if it is partial-year data. Use it for wage/withholding lines and explain if it overrides P&L wage amounts.${periodText}`;
+    case "current_year_financial_report":
+    case "financial_report":
+      return `This is a current-year financial source unless its text clearly says prior year. Extract all relevant financial data with labels, dates, and sources. Use it for current-year calculations only when the document period matches the target year.${periodText}`;
+    case "supporting_document":
+      return "This is a supporting document. Review for relevant facts and note explicitly if no relevant estimate data was found.";
+    default:
+      return "Review this file according to its user-selected role. Extract any relevant estimate facts with source labels, and do not use unsupported numbers.";
+  }
+}
+
+function buildEstimatedDocumentBlocks(files = []) {
+  return files.map((file, index) => {
+    const name = String(file.name || `Document ${index + 1}`);
+    const role = file.estimatedRole || classifyEstimatedTaxFile(file);
+    const detectedDocType = file.detectedDocType || detectEstimatedDocumentType(file);
+    const text = String(file.text || "").trim();
+    const templates = [file.workbookTemplate, ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : [])].filter((template) => template?.sheets?.length);
+    const templateText = templates.length ? `\nSTRUCTURED WORKBOOK DATA:\n${safeJsonForPrompt(templates.slice(0, 2), role === "prior_year_template" ? 140000 : 50000)}` : "";
+    const content = text || "(No extracted text available. If this is a native PDF/image block, inspect the attached document content directly.)";
+    const maxChars = role === "current_year_pl" ? 120000 : role === "prior_year_template" ? 90000 : 70000;
+    const period = file.estimatedPeriod || detectEstimatedTaxPeriod(file);
+    return [
+      `DOCUMENT ${index + 1}: ${name}`,
+      `DETECTED TYPE: ${detectedDocType}`,
+      `ROLE: ${role}`,
+      `USER SELECTED ROLE: ${file.role || ""}`,
+      `PURPOSE INSTRUCTIONS: ${estimatedRolePurpose(role, file)}`,
+      `STRICT EXTRACTION CHECKLIST: ${estimatedDocumentExtractionChecklist(detectedDocType, period)}`,
+      "DOCUMENT CONTENT:",
+      content.slice(0, maxChars),
+      templateText,
+    ].join("\n");
+  }).join("\n\n" + "=".repeat(72) + "\n\n");
+}
+
+function estimatedDocumentExtractionChecklist(detectedDocType, period) {
+  switch (detectedDocType) {
+    case "1040_RETURN":
+      return "Extract Form 1040 line 11 AGI, line 24 total tax for safe harbor, lines 25a/25b withholding, line 26 estimates, line 37 refund or line 38 amount owed, filing status, tax year, Schedule A deduction data, and Schedule 2 other taxes. These are prior-year facts only unless expressly safe harbor/prior payment data.";
+    case "1120S_RETURN":
+      return "Extract Form 1120-S line 21 ordinary income/loss, line 7 officer compensation, line 8 salaries/wages, line 14 tax depreciation, line 19 other deductions, Schedule M-1/M-3 book-to-tax items, Schedule K income items. Use categories as structure/reference only, not current-year amounts.";
+    case "PL_STATEMENT":
+      return period?.months
+        ? `Extract every P&L line item. Period detected: ${period.label}; annualization factor ${period.factor}. Use this document only if it is current-year financial data. Annualize each line item individually.`
+        : "Extract every P&L line item. WARNING: P&L period was not detected; do not annualize until the period is confirmed from the document content, and flag this for the preparer.";
+    case "PRIOR_YEAR_TEMPLATE":
+      return "Use for workbook structure only: sheet names, row labels, section names, adjustment categories, and formatting. Do not use dollar amounts as current-year data.";
+    case "W2_DOCUMENT":
+      return "Extract employer, Box 1 wages, Box 2 federal withholding, Box 16 state wages, Box 17 state withholding, tax year, and period if partial-year.";
+    default:
+      return "Extract all relevant facts and state explicitly if no estimate data was found.";
+  }
+}
+
+function detectEstimatedTaxPeriod(file = {}) {
+  const text = `${file.name || ""}\n${file.text || ""}`.toLowerCase();
+  const monthNames = {
+    january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
+    may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8, september: 9, sep: 9, sept: 9,
+    october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12,
+  };
+  const qMatch = text.match(/\bq([1-4])\b/);
+  if (qMatch) {
+    const months = Number(qMatch[1]) * 3;
+    return { months, factor: +(12 / months).toFixed(4), label: `Q${qMatch[1]} (${months} months)` };
+  }
+  const monthPattern = Object.keys(monthNames).join("|");
+  const range = text.match(new RegExp(`\\b(${monthPattern})\\b\\s*(?:\\d{1,2},?\\s*)?(?:20\\d{2})?\\s*(?:-|to|through|thru|/|â€“|â€”)\\s*\\b(${monthPattern})\\b`, "i"));
+  if (range) {
+    const start = monthNames[range[1].toLowerCase()];
+    const end = monthNames[range[2].toLowerCase()];
+    const months = end >= start ? end - start + 1 : end;
+    if (months > 0 && months <= 12) return { months, factor: +(12 / months).toFixed(4), label: `${range[1]} through ${range[2]} (${months} months)` };
+  }
+  const through = text.match(new RegExp(`(?:jan(?:uary)?\\s*(?:through|to|-|â€“|â€”)\\s*)?(${monthPattern})\\s+20\\d{2}`, "i"));
+  if (through) {
+    const months = monthNames[through[1].toLowerCase()];
+    if (months > 0 && months <= 12) return { months, factor: +(12 / months).toFixed(4), label: `January through ${through[1]} (${months} months)` };
+  }
+  return null;
+}
+
+function buildEstimatedTaxWorkbookPrompt(payload, result, fileContext) {
+  const cf = payload.carryforward || {};
+  const prior = payload.priorPayments || {};
+  const templateWorkbook = estimatedTemplateWorkbookFromPayload(payload);
+  const templateFieldMap = buildEstimatedTemplateFieldMap(templateWorkbook);
+  const sourceFacts = buildEstimatedSourceFactMap(payload.files || []);
+  const plPeriod = fileContext.plSummary?.files?.find((file) => file.name === fileContext.plSummary?.currentYearFileName)?.period
+    || fileContext.plSummary?.files?.[0]?.period
+    || null;
+  const priorPaymentRows = {
+    federal: {
+      q1: prior.q1Federal || 0,
+      q2: prior.q2Federal || 0,
+      q3: prior.q3Federal || 0,
+      priorYearOverpaymentApplied: prior.priorYearOverpaymentApplied || 0,
+    },
+    state: {
+      q1: prior.q1State || 0,
+      q2: prior.q2State || 0,
+      q3: prior.q3State || 0,
+      priorYearOverpaymentAppliedState: prior.priorYearOverpaymentAppliedState || 0,
+    },
+  };
+  return [
+    "[SECTION 1] ROLE AND ABSOLUTE RULES",
+    `You are a senior CPA performing a ${payload.quarter || result.quarter} ${payload.taxYear || result.taxYear} estimated tax calculation for ${payload.clientName || result.clientName} (${payload.returnType || result.returnType}).`,
+    `You have received ${(payload.files || []).length} documents. Your job is to read each one carefully, extract the relevant numbers, and produce an estimated tax workpaper.`,
+    "",
+    "ABSOLUTE RULES - VIOLATING ANY OF THESE IS AN ERROR:",
+    "RULE 1 - NO INVENTED NUMBERS: Every number in your output must come from one provided document or manual preparer field. If a number is not in any document, write NOT FOUND and flag it. Never estimate, guess, or fill in a number that is not explicitly stated.",
+    "RULE 2 - NO PRIOR YEAR NUMBERS AS CURRENT YEAR DATA: Prior-year templates and prior-year returns are used only for safe harbor, carryforward amounts, Schedule A/Schedule 2 prior-year facts, M-1 categories, and structure. Never use prior-year income/expense/template amounts as current-year amounts.",
+    "RULE 3 - NO P&L MIXING: If multiple P&L files exist, identify the year/period of each. Use only the current-year P&L for current-year income and expense calculations. Never average, combine, or borrow from prior-year P&L/template data.",
+    "RULE 4 - SHOW EVERY CALCULATION: In aiNotes/sourceMapping, show every material calculation as Source -> Amount and YTD amount x annualization factor = annualized amount.",
+    "RULE 5 - EXPLAIN EVERY ADJUSTMENT: Every book-to-tax adjustment needs one sentence explaining what it is, why it is made, authority/IRC cite, and how the amount was calculated.",
+    "RULE 6 - CONFIRM WHAT YOU READ FROM EACH FILE: Before calculations, include a document inventory in aiNotes. Do not silently skip any file.",
+    "",
+    "OUTPUT FORMAT:",
+    '{"summary":{"bookNetIncomeYtd":number,"bookNetIncomeAnnual":number,"taxableIncome":number,"annualFederalTax":number,"annualStateTax":number,"federalDue":number,"stateDue":number,"totalDue":number,"effectiveRate":number,"dueDate":"string","safeHarborBasis":"string","adjustments":[{"name":"string","bookAmount":number,"taxAmount":number,"adjustment":number,"authority":"string","url":"string","valueSource":"string"}],"caveats":[{"severity":"HIGH|MEDIUM|LOW","text":"string"}],"sources":[{"title":"string","url":"string","relevance":"string"}]},"updates":[{"sheetName":"string","rowIndex":number,"columnIndex":number,"rowLabel":"exact row label from template","columnLabel":"exact column/header label","value":"string or number or null","note":"source/explanation","valueSource":"source file and location"}],"aiNotes":["Missing information or assumptions"],"sourceMapping":[{"value":"string","sourceFile":"string","sourceLocation":"string"}],"statusMessage":"string"}',
+    "",
+    "[SECTION 2] CLIENT AND QUARTER INFORMATION",
+    "Manual preparer fields are authoritative. Do not override them with uploaded documents.",
+    safeJsonForPrompt({
+      clientName: payload.clientName,
+      returnType: payload.returnType,
+      taxYear: payload.taxYear,
+      state: payload.state,
+      filingStatus: payload.filingStatus || "N/A for entity",
+      quarter: payload.quarter,
+      quarterEndDate: payload.quarterEndDate,
+      annualizationQuarter: payload.quarter,
+      plPeriodMonths: plPeriod?.months || null,
+      plPeriodLabel: plPeriod?.label || "NOT DETECTED",
+      annualizationFactor: plPeriod?.factor || null,
+      periodWarning: plPeriod?.months ? "" : "P&L period could not be determined from the document. Preparer must confirm the period covered. Do not silently annualize.",
+    }, 12000),
+    "",
+    "[SECTION 3] PRIOR PAYMENTS FROM MANUAL FIELDS",
+    "Use only these manual fields for prior payment reconciliation. Do not look for these in uploaded documents unless manual fields are blank and you flag that clearly.",
+    safeJsonForPrompt(priorPaymentRows, 12000),
+    "",
+    "[SECTION 4] CARRYFORWARDS FROM MANUAL FIELDS",
+    "Use these as-is when nonzero. Do not invent carryforwards.",
+    safeJsonForPrompt(cf, 12000),
+    "",
+    "[SECTION 5] DOCUMENTS PROVIDED",
+    `You received ${(payload.files || []).length} documents. Read every document in this section before calculating anything.`,
+    fileContext.plSummary?.count > 1
+      ? `CRITICAL: There are ${fileContext.plSummary.count} P&L documents. They are labeled below. Use ONLY the current-year P&L for financial calculations. Prior-year P&L/template files are for structure/reference only.\n${safeJsonForPrompt(fileContext.plSummary, 20000)}`
+      : `P&L document summary:\n${safeJsonForPrompt(fileContext.plSummary || {}, 12000)}`,
+    "",
+    fileContext.documentBlocks || "No uploaded document text extracted.",
+    "",
+    "[SECTION 6] ADDITIONAL PREPARER NOTES",
+    String(payload.notes || "").trim()
+      ? `The preparer added these instructions. Follow them exactly unless they conflict with source documents; if there is a conflict, flag it.\n${payload.notes}`
+      : "No additional preparer notes entered.",
+    "",
+    "[SECTION 7] CALCULATION SEQUENCE - FOLLOW IN ORDER",
+    "STEP 1 - CONFIRM WHAT YOU READ: In aiNotes, write DOCUMENTS READ with each filename, detected type, and key extracted facts. If a required document cannot be read or key data is missing, return HIGH caveat and missing markers.",
+    "STEP 2 - BUILD THE ANNUALIZED P&L: Start from the current-year P&L only. Annualize each line item individually. Do not include any prior-year amounts. Cross-check revenue minus expenses equals book net income.",
+    "STEP 3 - BOOK-TO-TAX RECONCILIATION: Start with annualized current-year book net income. Apply template adjustment categories with current-year source amounts only. If current-year amount is missing, write MISSING - prior year had this item, current-year amount not found.",
+    "STEP 4 - MANDATORY ADJUSTMENTS: Meals 50% disallowance under IRC 274(n)(1), depreciation timing if supported, interest expense 163(j) check if interest exists. If data is not determinable, flag it; do not invent.",
+    "STEP 5 - SPECIAL DEDUCTIONS: Apply manual NOL/carryforwards and QBI if applicable. Show the calculation in aiNotes/sourceMapping.",
+    "STEP 6 - FEDERAL TAX COMPUTATION: Apply correct rates for return type/tax year and show bracket/rate calculation in aiNotes/sourceMapping.",
+    "STEP 7 - SAFE HARBOR: Option 1 is 90% of current-year tax. Option 2 uses prior-year Form 1040 Line 24 only, or prior-year tax manual field if no 1040 line is available; flag when 1040 is missing.",
+    "STEP 8 - PRIOR PAYMENT RECONCILIATION: Use Section 3 manual fields, calculate required through quarter, subtract prior payments.",
+    "STEP 9 - WORKPAPER OUTPUT: Use Claude JSON update plan against TEMPLATE FIELD MAP. Every material update needs valueSource. If replacing a prior-year value, note Prior year -> Current year and source.",
+    "",
+    "[SECTION 8] OUTPUT VALIDATION BEFORE RESPONDING",
+    "Before final JSON, verify: every annualized P&L number came from the current-year P&L; net income is annualized when partial year; every adjustment has explanation/cite; safe harbor Option 2 came from 1040 Line 24/manual prior tax; prior payments are manual fields; no template amounts appear as current-year data; missing data is flagged, not filled with zero/prior-year value.",
+    "",
+    "CRITICAL WORKPAPER RULES:",
+    "- Produce a new current-year workpaper, not a narrative memo.",
+    "- Calculate the estimate from the uploaded current-year financial files and the user's notes. The UI summary and workbook must agree.",
+    "- If the user's notes instruct annualization, annualize the current-year data according to the selected quarter before calculating the estimate.",
+    "- If both prior returns and current-year financial files are supplied, use prior returns to understand prior-year complete information and payments, but use current-year files for 2026/target-year values.",
+    "- Treat files with role financial_report as the only source for current-year P&L, balance sheet, W-2, withholding, and operating activity. Do not combine old P&L/template amounts with the current-year P&L.",
+    "- Treat files with role prior_year_template only as structure, formatting, prior-year return references, and prior-year payment/carryforward context. Never use prior-year template amounts as current-year amounts.",
+    "- If a current-year amount is not present in the current-year financial report, do not invent it and do not copy the prior-year amount. Leave the current-year amount blank/zero as appropriate and add an aiNotes item or caveat requesting confirmation.",
+    "- Charitable contributions are a strict example: if charitable contributions are not found in the current-year P&L/current-year financial files, do not include a charitable contribution amount in taxable income. Mention it only as a suggested follow-up, not as a booked current-year value.",
+    "- Meals and entertainment must come from the current-year P&L/current-year financial files only. Do not use prior-year meals amounts when calculating tax adjustments.",
+    "- Standard deduction / itemized deduction amounts for the prior year must come from Schedule A of the uploaded 2025 return, not from the P&L or template assumptions.",
+    "- Other taxes for the prior year must come from Schedule 2 of the uploaded 2025 return, not from the P&L or template assumptions.",
+    "- For tax adjustments, first reconcile current-year book income from the current-year P&L, then apply addbacks and deductions supported by current-year source data, then annualize the reconciled tax income if annualization is requested.",
+    "- Projected income must be calculated using taxable income plus book-to-tax adjustments. Never use net operating income as the base for projected income.",
+    "- Return only the compact JSON calculation/update plan above. Do not return the full workbook JSON.",
+    "- Use primitive cell values only: strings, numbers, dates.",
+    "- Before calculating, read TEMPLATE FIELD MAP and identify every row/cell that needs current-year data.",
+    "- For each value you can support from the uploaded files, create an update using exact rowIndex and columnIndex from TEMPLATE FIELD MAP. rowIndex and columnIndex are 1-based Excel-style positions.",
+    "- For updates, use exact row labels and column labels from the template whenever possible. The app will apply your update plan to the template.",
+    "- Use SOURCE FACTS as a quick index, then verify against FINANCIAL DATA / native PDFs before finalizing.",
+    "- Use current-year financial data as the source for values. Never copy prior-year template numbers.",
+    "- If current-year financial data is missing for a template line, add an aiNotes item explaining what is missing.",
+    "- Every material update must cite a sourceFile/sourceLocation in sourceMapping. If the only support is a prior-year/template file, do not treat it as a current-year update.",
+    "- If required data is missing, set the update value to null, set valueSource/note to NOT FOUND IN PROVIDED DOCUMENTS, and add a HIGH caveat. Continue calculating the lines that are supported.",
+    "- Before calculating, list in aiNotes what was extracted from each uploaded document. If a document could not be read or was irrelevant, say that explicitly.",
+    "- Show annualization explicitly in aiNotes/sourceMapping: YTD amount x factor = annualized amount.",
+    "",
+    "UPLOADED FILE ROLES:",
+    safeJsonForPrompt((payload.files || []).map((file) => {
+      const estimatedRole = classifyEstimatedTaxFile(file);
+      const enriched = { ...file, estimatedRole, estimatedPeriod: detectEstimatedTaxPeriod(file), detectedDocType: detectEstimatedDocumentType(file) };
+      return {
+        name: file.name,
+        userSelectedRole: file.role || "financial_report",
+        estimatedRole,
+        detectedDocType: enriched.detectedDocType,
+        type: file.type || "",
+        period: enriched.estimatedPeriod,
+        instruction: estimatedRolePurpose(estimatedRole, enriched),
+      };
+    }), 30000),
+    "",
+    "TEMPLATE FIELD MAP (use rowIndex and columnIndex from here when returning updates):",
+    safeJsonForPrompt(templateFieldMap, 90000),
+    "",
+    "SOURCE FACTS INDEX (candidate facts extracted from uploaded files; verify before using):",
+    safeJsonForPrompt(sourceFacts, 60000),
+    "",
+    "CALCULATION STEPS TO FOLLOW:",
+    [
+      "STEP 1 - Read and reconcile every uploaded document. Extract facts per document and note the source.",
+      "STEP 2 - Annualize current-year P&L/income/expense lines individually. Do not annualize only net income.",
+      "STEP 3 - Start book-to-tax reconciliation from annualized current-year book net income.",
+      "STEP 4 - Apply addbacks/deductions supported by current-year files, required law, template labels, or preparer notes.",
+      "STEP 5 - Compute taxable income after supported adjustments and manual carryforwards. Then compute projected income from taxable income plus book-to-tax adjustments, not from net operating income.",
+      "STEP 6 - Compute federal/state tax, safe harbor, and prior payment reconciliation using manual fields first.",
+      "STEP 7 - Build update plan against TEMPLATE FIELD MAP. Replace prior-year template values with supported current-year values or missing markers.",
+    ].join("\n"),
+    "",
+    "DETERMINISTIC CALCULATION BASELINE:",
+    safeJsonForPrompt({
+      bookNetIncomeYtd: result.bookNetIncomeYtd,
+      bookNetIncomeAnnual: result.bookNetIncomeAnnual,
+      taxableIncome: result.taxableIncome,
+      annualFederalTax: result.annualFederalTax,
+      annualStateTax: result.annualStateTax,
+      federalDue: result.federalDue,
+      stateDue: result.stateDue,
+      totalDue: result.totalDue,
+      dueDate: result.dueDate,
+      adjustments: result.adjustments,
+    }, 40000),
+    "",
+    "FINANCIAL DATA (use these numbers):",
+    fileContext.financialReports.text || "No readable financial report text extracted.",
+    "",
+    "WORKPAPER FORMAT (follow template structure):",
+    fileContext.priorYearTemplates.text || "No prior-year template provided. Create a clean CPA workpaper format.",
+    "",
+    "ADDITIONAL CONTEXT:",
+    [String(payload.notes || "No additional notes."), fileContext.supporting.text || ""].filter(Boolean).join("\n\n"),
+  ].join("\n");
+}
+
+function buildEstimatedTemplateFieldMap(templateWorkbook) {
+  if (!templateWorkbook?.sheets?.length) return [];
+  const fields = [];
+  for (const sheet of templateWorkbook.sheets.slice(0, 12)) {
+    const rows = normalizeRows(sheet.rows).slice(0, 250);
+    for (let r = 0; r < rows.length; r += 1) {
+      const row = rows[r] || [];
+      const nonEmpty = row.map((cell, c) => ({ c, text: String(cell ?? "").trim() })).filter((item) => item.text);
+      if (!nonEmpty.length) continue;
+      const labelCell = nonEmpty.find((item) => /[A-Za-z]/.test(item.text)) || nonEmpty[0];
+      const currentValueCell = nonEmpty.find((item) => item.c > labelCell.c && /[$(]?\d/.test(item.text));
+      const nearbyHeader = findNearbyTemplateHeader(rows, r);
+      fields.push({
+        sheetName: sheet.name,
+        rowIndex: r + 1,
+        labelColumnIndex: labelCell.c + 1,
+        suggestedValueColumnIndex: currentValueCell ? currentValueCell.c + 1 : Math.min(labelCell.c + 2, 20),
+        rowLabel: labelCell.text,
+        nearbyHeader,
+        currentValue: currentValueCell?.text || "",
+        rowPreview: row.slice(0, 18),
+      });
+      if (fields.length >= 900) return fields;
+    }
+  }
+  return fields;
+}
+
+function findNearbyTemplateHeader(rows, rowIndex) {
+  for (let r = rowIndex - 1; r >= Math.max(0, rowIndex - 6); r -= 1) {
+    const text = (rows[r] || []).map((cell) => String(cell || "").trim()).filter(Boolean).join(" | ");
+    if (text && /[A-Za-z]/.test(text)) return text.slice(0, 240);
+  }
+  return "";
+}
+
+function buildEstimatedSourceFactMap(files = []) {
+  const facts = [];
+  for (const file of files) {
+    const name = String(file.name || "Uploaded file");
+    const role = classifyEstimatedTaxFile(file);
+    const period = detectEstimatedTaxPeriod(file);
+    const text = String(file.text || "").replace(/\r/g, "\n");
+    if (!text.trim()) continue;
+    const lines = text.split(/\n+/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+    for (const line of lines) {
+      if (!/[-$()0-9,]{2,}/.test(line)) continue;
+      if (!/(w-?2|wages?|withholding|federal|state|profit|loss|revenue|income|expense|tax|payment|estimate|q[1-4]|balance|payroll|p&l|net|charitable|meals?|deduction|schedule|line)/i.test(line)) continue;
+      facts.push({ sourceFile: name, role, period, text: line.slice(0, 500) });
+      if (facts.length >= 600) return facts;
+    }
+  }
+  return facts;
+}
+
+function addEstimatedTaxFileNotes(workbook, payload, result, note) {
+  const fileSummary = summarizeEstimatedTaxFiles(payload.files || []);
+  const next = workbook && Array.isArray(workbook.sheets) ? JSON.parse(JSON.stringify(workbook)) : buildEstimatedTaxWorkbook(result, payload);
+  next.sheets.push({
+    name: "Uploaded Files",
+    rows: [
+      ["Uploaded File", "Role", "Type", "Size"],
+      ...Object.entries({
+        "Financial Report": fileSummary.financialReports,
+        "Prior Year Template": fileSummary.priorYearTemplates,
+        "Supporting Document": fileSummary.supportingDocuments,
+        Other: fileSummary.other,
+      }).flatMap(([role, list]) => list.map((file) => [file.name, role, file.type, file.size])),
+      [],
+      ["Workbook note", note],
+    ],
+  });
+  next.aiNotes = [...(next.aiNotes || []), note];
+  return next;
+}
+
+function calculateEstimatedTaxes(payload = {}) {
+  const year = Number(payload.taxYear || new Date().getFullYear());
+  const quarter = String(payload.quarter || "Q1").toUpperCase();
+  const returnType = String(payload.returnType || "1040");
+  const factor = ({ Q1: 4, Q2: 2, Q3: 4 / 3, Q4: 1 })[quarter] || 4;
+  const quarterNumber = ({ Q1: 1, Q2: 2, Q3: 3, Q4: 4 })[quarter] || 1;
+  const fd = payload.financialData || {};
+  const op = fd.operatingExpenses || {};
+  const oi = fd.otherIncome || {};
+  const cf = payload.carryforward || {};
+  const prior = payload.priorPayments || {};
+  const ytdRevenue = num(fd.grossRevenue) || num(fd.grossProfit) + num(fd.costOfGoodsSold);
+  const ytdCogs = num(fd.costOfGoodsSold);
+  const ytdExpenses = sumNumbers(op.salariesWages, op.rentLease, op.utilities, op.mealsEntertainment, op.travel, op.advertising, op.insurance, op.depreciation, op.amortization, op.interest, op.otherDeductions);
+  const ytdOtherIncome = sumNumbers(oi.interestIncome, oi.dividendIncome, oi.capitalGains, oi.otherIncome);
+  const bookNetIncomeYtd = ytdRevenue - ytdCogs - ytdExpenses + ytdOtherIncome;
+  const bookNetIncomeAnnual = roundMoney(bookNetIncomeYtd * factor);
+  const mealsAddback = roundMoney(num(op.mealsEntertainment) * factor * 0.5);
+  const interestLimit = fd.adjustedTaxableIncome ? Math.max(0, num(op.interest) * factor - Math.max(0, num(fd.businessInterestIncome) + num(fd.adjustedTaxableIncome) * 0.3)) : 0;
+  const preliminaryTaxable = Math.max(0, bookNetIncomeAnnual + mealsAddback + interestLimit);
+  const nolApplied = Math.min(num(cf.netOperatingLoss), preliminaryTaxable * 0.8);
+  const qbiDeduction = ["1040", "1065", "1120-S"].includes(returnType) ? Math.max(0, (preliminaryTaxable - nolApplied) * 0.2) : 0;
+  const taxableIncome = roundMoney(Math.max(0, preliminaryTaxable - nolApplied - qbiDeduction));
+  const federalTaxBeforeCredits = roundMoney(estimateFederalTax(returnType, taxableIncome, payload.filingStatus || "single"));
+  const credits = Math.min(federalTaxBeforeCredits, sumNumbers(cf.generalBusinessCredit, cf.foreignTaxCredit, cf.minimumTaxCredit));
+  const annualFederalTax = roundMoney(Math.max(0, federalTaxBeforeCredits - credits));
+  const stateRule = stateRuleFor(payload.state);
+  const annualStateTax = roundMoney(Math.max(0, taxableIncome * stateRule.rate));
+  const federalPaid = priorPaymentsThroughQuarter(prior, "Federal", quarterNumber) + num(prior.priorYearOverpaymentApplied);
+  const statePaid = priorPaymentsThroughQuarter(prior, "State", quarterNumber) + num(prior.priorYearOverpaymentAppliedState);
+  const currentFederalRequired = annualFederalTax * 0.9 * quarterNumber / 4;
+  const currentStateRequired = annualStateTax * 0.9 * quarterNumber / 4;
+  const priorFederalSafeHarbor = (num(payload.priorYearFederalTax) || annualFederalTax) * quarterNumber / 4;
+  const priorStateSafeHarbor = (num(payload.priorYearStateTax) || annualStateTax) * quarterNumber / 4;
+  const safeFederalRequired = Math.min(currentFederalRequired, priorFederalSafeHarbor || currentFederalRequired);
+  const safeStateRequired = Math.min(currentStateRequired, priorStateSafeHarbor || currentStateRequired);
+  const federalDue = roundMoney(Math.max(0, Math.max(currentFederalRequired, safeFederalRequired) - federalPaid));
+  const stateDue = roundMoney(Math.max(0, Math.max(currentStateRequired, safeStateRequired) - statePaid));
+  const dueDate = estimateDueDate(year, quarter, returnType);
+  const result = {
+    clientName: payload.clientName || "Client",
+    clientEmail: payload.clientEmail || "",
+    returnType,
+    taxYear: String(year),
+    state: String(payload.state || "").toUpperCase(),
+    quarter,
+    quarterEndDate: payload.quarterEndDate || quarterEndDate(year, quarter),
+    dueDate,
+    annualizationFactor: factor,
+    bookNetIncomeYtd: roundMoney(bookNetIncomeYtd),
+    bookNetIncomeAnnual,
+    taxableIncome,
+    annualFederalTax,
+    annualStateTax,
+    federalDue,
+    stateDue,
+    totalDue: roundMoney(federalDue + stateDue),
+    effectiveRate: taxableIncome ? roundMoney(((annualFederalTax + annualStateTax) / taxableIncome) * 100) : 0,
+    safeHarborBasis: "Payment recommended uses the larger of current-year annualized tax required through the quarter and safe harbor required through the quarter, reduced by prior payments.",
+    caveats: [
+      { severity: "MEDIUM", text: "State estimates use built-in default rates and should be verified against the state revenue department for the selected tax year." },
+      { severity: "LOW", text: "Uploaded file extraction can support the calculation, but manually entered amounts are treated as controlling." },
+    ],
+    adjustments: [
+      { name: "Meals and entertainment", bookAmount: roundMoney(num(op.mealsEntertainment) * factor), taxAmount: roundMoney(num(op.mealsEntertainment) * factor * 0.5), adjustment: mealsAddback, authority: "IRC 274(n)", url: "https://www.irs.gov/publications/p463" },
+      { name: "Business interest expense", bookAmount: roundMoney(num(op.interest) * factor), taxAmount: roundMoney(num(op.interest) * factor - interestLimit), adjustment: interestLimit, authority: "IRC 163(j)", url: "https://www.irs.gov/newsroom/final-regulations-on-the-limitation-on-deduction-for-business-interest-expense" },
+      { name: "NOL carryforward", bookAmount: 0, taxAmount: -roundMoney(nolApplied), adjustment: -roundMoney(nolApplied), authority: "IRC 172", url: "https://www.irs.gov/publications/p536" },
+      { name: "Section 199A QBI deduction", bookAmount: 0, taxAmount: -roundMoney(qbiDeduction), adjustment: -roundMoney(qbiDeduction), authority: "IRC 199A", url: "https://www.irs.gov/newsroom/tax-cuts-and-jobs-act-provision-11011-section-199a" },
+    ],
+    sources: [
+      { title: "IRS Publication 505", url: "https://www.irs.gov/pub/irs-pdf/p505.pdf", relevance: "Individual estimated tax and safe harbor rules." },
+      { title: "IRS Form 2220", url: "https://www.irs.gov/pub/irs-pdf/f2220.pdf", relevance: "Corporate underpayment and annualized income method." },
+      { title: "State estimated tax information", url: stateRule.url || "https://www.irs.gov/businesses/small-businesses-self-employed/estimated-taxes", relevance: "State estimated payment requirements." },
+    ],
+  };
+  result.workbook = buildEstimatedTaxWorkbook(result, payload);
+  result.email = buildEstimatedTaxEmail(result);
+  result.paymentSummary = estimatedPaymentSummary(result);
+  return result;
+}
+
+function calculateExtension(payload = {}) {
+  const year = Number(payload.taxYear || new Date().getFullYear());
+  const returnType = String(payload.returnType || "1040");
+  const fed = federalExtensionDates(returnType, year, payload.dateOfDeath);
+  const stateCode = String(payload.state || "").toUpperCase();
+  const state = STATE_EXTENSION_RULES[stateCode] || { autoWithFederal: true, requiresSeparateForm: false, minimumPayment: "Generally 90% of current year tax", url: "", notes: "Verify specific state extension requirements with the state revenue department." };
+  const est = payload.estimatedTaxLiability || {};
+  const paid = payload.paymentsAlreadyMade || {};
+  const fedPaid = sumNumbers(paid.federalWithholding, paid.federalEstimatedPayments, paid.priorYearOverpaymentApplied);
+  const statePaid = sumNumbers(paid.stateWithholding, paid.stateEstimatedPayments, paid.priorYearStateOverpaymentApplied);
+  const federalMethod1 = Math.max(0, num(est.federalTaxEstimate) - fedPaid);
+  const federalMethod2 = Math.max(0, num(est.priorYearFederalTax) - fedPaid);
+  const stateMethod1 = Math.max(0, num(est.stateTaxEstimate) - statePaid);
+  const stateMethod2 = Math.max(0, num(est.priorYearStateTax) - statePaid);
+  const federalPayment = roundMoney(Math.max(federalMethod1, federalMethod2));
+  const statePayment = roundMoney(state.noStateIncomeTax ? 0 : Math.max(stateMethod1, stateMethod2));
+  const result = {
+    clientName: payload.clientName || "Client",
+    clientEmail: payload.clientEmail || "",
+    ein: payload.ein || "",
+    returnType,
+    taxYear: String(year),
+    state: stateCode,
+    federal: fed,
+    stateRule: state,
+    federalPayment,
+    statePayment,
+    totalPayment: roundMoney(federalPayment + statePayment),
+    federalMethod1: roundMoney(federalMethod1),
+    federalMethod2: roundMoney(federalMethod2),
+    stateMethod1: roundMoney(stateMethod1),
+    stateMethod2: roundMoney(stateMethod2),
+    warning: `Extension extends time to file, not time to pay. Tax must be paid by ${fed.payDeadline} to avoid failure-to-pay penalties under IRC 6651 and interest under IRC 6601.`,
+    filingInstructions: extensionInstructions(returnType, fed, stateCode, state),
+    penaltyAnalysis: extensionPenaltyRows(federalPayment + statePayment),
+  };
+  result.workbook = buildExtensionWorkbook(result, payload);
+  result.email = buildExtensionEmail(result);
+  result.paymentSummary = extensionPaymentSummary(result);
+  return result;
+}
+
+function estimateFederalTax(returnType, taxableIncome, filingStatus) {
+  if (returnType === "1120") return taxableIncome * 0.21;
+  if (["1065", "1120-S", "990"].includes(returnType)) return 0;
+  if (returnType === "990-T") return taxableIncome * 0.21;
+  return individualTax2025(taxableIncome, filingStatus);
+}
+
+function individualTax2025(income, filingStatus = "single") {
+  const mfj = String(filingStatus).toLowerCase() === "mfj";
+  const brackets = mfj
+    ? [[23850, .10], [96950, .12], [206700, .22], [394600, .24], [501050, .32], [751600, .35], [Infinity, .37]]
+    : [[11925, .10], [48475, .12], [103350, .22], [197300, .24], [250525, .32], [626350, .35], [Infinity, .37]];
+  let tax = 0;
+  let last = 0;
+  for (const [limit, rate] of brackets) {
+    const taxableAtRate = Math.max(0, Math.min(income, limit) - last);
+    tax += taxableAtRate * rate;
+    if (income <= limit) break;
+    last = limit;
+  }
+  return tax;
+}
+
+function buildEstimatedTaxWorkbook(result, payload) {
+  return {
+    sheets: [
+      {
+        name: "Estimated Tax Summary",
+        rows: [
+          ["ESTIMATED TAX WORKPAPER"],
+          ["Client", result.clientName, "Return Type", result.returnType],
+          ["Tax Year", result.taxYear, "Quarter", result.quarter],
+          ["State", result.state, "Date Prepared", new Date().toISOString().slice(0, 10)],
+          [],
+          ["PAYMENT SUMMARY"],
+          ["Federal Payment Due", result.federalDue, "Due Date", result.dueDate],
+          [`${result.state || "State"} Payment Due`, result.stateDue, "Due Date", result.dueDate],
+          ["TOTAL DUE", result.totalDue],
+          ["Safe harbor basis", result.safeHarborBasis],
+          ["Effective rate", `${result.effectiveRate}%`],
+        ],
+        styles: [{ r: 0, c: 0, bold: true, fill: "DBEAFE" }, { r: 8, c: 0, bold: true, fill: "BFDBFE" }],
+      },
+      {
+        name: "Annualization",
+        rows: [
+          ["Line", "YTD Amount", "Annualization Factor", "Annualized Amount"],
+          ["Book net income", result.bookNetIncomeYtd, result.annualizationFactor, result.bookNetIncomeAnnual],
+          ["Taxable income after adjustments", "", "", result.taxableIncome],
+          ["Annual federal tax", "", "", result.annualFederalTax],
+          ["Annual state tax", "", "", result.annualStateTax],
+        ],
+      },
+      {
+        name: "Book-to-Tax",
+        rows: [["Adjustment", "Book Amount", "Tax Amount", "Adjustment", "Authority", "Source"], ...result.adjustments.map((a) => [a.name, a.bookAmount, a.taxAmount, a.adjustment, a.authority, a.url])],
+      },
+      {
+        name: "Carryforwards",
+        rows: [
+          ["Carryforward", "Amount", "Description"],
+          ["NOL Carryforward (Federal)", num(payload.carryforward?.netOperatingLoss), ""],
+          ["Capital Loss Carryforward", num(payload.carryforward?.capitalLossCarryover), ""],
+          ["Charitable Contribution Carryforward", num(payload.carryforward?.charitableContributionCarryforward), ""],
+          ["General Business Credit Carryforward", num(payload.carryforward?.generalBusinessCredit), ""],
+          ["Foreign Tax Credit Carryforward", num(payload.carryforward?.foreignTaxCredit), ""],
+          ["State NOL Carryforward", num(payload.carryforward?.stateNetOperatingLoss), ""],
+          ["Other Carryforward", num(payload.carryforward?.otherCarryforward), payload.carryforward?.otherCarryforwardDescription || ""],
+        ],
+      },
+      {
+        name: "Sources",
+        rows: [["Source", "URL", "Relevance"], ...result.sources.map((s) => [s.title, s.url, s.relevance]), ["Additional notes", payload.notes || "", ""]],
+      },
+    ],
+    aiNotes: result.caveats.map((item) => `${item.severity}: ${item.text}`),
+  };
+}
+
+function buildExtensionWorkbook(result) {
+  const stateFormNeeded = result.stateRule.requiresSeparateForm ? "Yes" : "No";
+  return {
+    sheets: [
+      {
+        name: "Extension Summary",
+        rows: [
+          ["EXTENSION WORKPAPER"],
+          ["Client", result.clientName, "Return Type", result.returnType],
+          ["Tax Year", result.taxYear, "State", result.state],
+          ["Date Prepared", new Date().toISOString().slice(0, 10)],
+          [],
+          ["DEADLINES"],
+          ["Federal Original Due Date", result.federal.originalDue],
+          ["Federal Extended Due Date", result.federal.extendedDue],
+          ["Federal Extension Form", `Form ${result.federal.form} - ${result.federal.formName}`],
+          ["FEDERAL PAY BY DATE", result.federal.payDeadline],
+          [],
+          ["State Original Due Date", result.federal.originalDue],
+          ["State Extended Due Date", stateExtendedDue(result)],
+          ["State Extension Form Needed?", stateFormNeeded],
+          ["State Form Number", result.stateRule.stateForm || "N/A"],
+          ["STATE PAY BY DATE", result.federal.payDeadline],
+          [],
+          ["PAYMENT SUMMARY"],
+          ["Federal Payment Recommended", result.federalPayment],
+          ["State Payment Recommended", result.statePayment],
+          [`TOTAL TO PAY BY ${result.federal.payDeadline}`, result.totalPayment],
+          ["Federal Pay At", result.federal.onlinePayUrl],
+          ["State Pay At", result.stateRule.url || "Verify state revenue department"],
+          [],
+          ["IMPORTANT NOTE", result.warning],
+        ],
+        styles: [{ r: 0, c: 0, bold: true, fill: "FFEDD5" }, { r: 20, c: 0, bold: true, fill: "FED7AA" }, { r: 24, c: 0, bold: true, fill: "FEE2E2", fontColor: "991B1B" }],
+      },
+      {
+        name: "Payment Calculation",
+        rows: [
+          ["Extension Balance Due Calculation"],
+          [],
+          ["FEDERAL"],
+          ["Estimated Full Year Federal Tax less payments", result.federalMethod1],
+          ["Prior Year Federal Tax less payments", result.federalMethod2],
+          ["RECOMMENDED FEDERAL PAYMENT", result.federalPayment],
+          ["Basis", "Recommended payment is the larger of current-year balance and safe harbor balance."],
+          [],
+          ["STATE"],
+          ["Estimated Full Year State Tax less payments", result.stateMethod1],
+          ["Prior Year State Tax less payments", result.stateMethod2],
+          ["RECOMMENDED STATE PAYMENT", result.statePayment],
+          ["Basis", result.stateRule.noStateIncomeTax ? "No state income tax." : "Recommended payment is the larger of current-year balance and safe harbor balance."],
+        ],
+        styles: [{ r: 0, c: 0, bold: true, fill: "FFEDD5" }, { r: 5, c: 0, bold: true, fill: "DCFCE7" }, { r: 11, c: 0, bold: true, fill: "DCFCE7" }],
+      },
+      {
+        name: "Penalty Analysis",
+        rows: [["Scenario", "Penalty Rate", "Monthly Cost", "Annual Cost"], ...result.penaltyAnalysis.map((row) => [row.scenario, row.rate, row.monthlyCost, row.annualCost]), [], ["Based on estimated balance of", result.totalPayment], ["Interest note", "IRS interest may also apply under IRC 6601. Verify current federal and state rates."]],
+      },
+    ],
+    aiNotes: [result.warning],
+  };
+}
+
+function buildEstimatedTaxEmail(result) {
+  return {
+    subject: `${result.quarter} ${result.taxYear} estimated tax payment - ${result.clientName}`,
+    body: [
+      `Dear ${result.clientName},`,
+      "",
+      `Based on the year-to-date information provided, the recommended ${result.quarter} estimated tax payments for tax year ${result.taxYear} are:`,
+      "",
+      `Federal (IRS): ${money(result.federalDue)} due ${result.dueDate}`,
+      `${result.state || "State"}: ${money(result.stateDue)} due ${result.dueDate}`,
+      `Total: ${money(result.totalDue)}`,
+      "",
+      result.safeHarborBasis,
+      "",
+      "Please confirm before making payment if your income or withholding differs from the information provided.",
+    ].join("\n"),
+  };
+}
+
+function buildExtensionEmail(result) {
+  const noPayment = result.totalPayment <= 0;
+  return {
+    subject: `${result.returnType} Extension - ${result.clientName} - Tax Year ${result.taxYear}`,
+    body: [
+      `Dear ${result.clientName},`,
+      "",
+      `We are filing an extension for your ${result.returnType} for tax year ${result.taxYear}.`,
+      "",
+      `EXTENSION FILED: Form ${result.federal.form} - extends filing deadline to ${result.federal.extendedDue}.`,
+      "",
+      `PAYMENT REQUIRED BY ${result.federal.payDeadline}:`,
+      noPayment ? "Based on payments already made, no additional payment appears required with this extension." : `Federal (IRS): ${money(result.federalPayment)}\n  Pay at: ${result.federal.onlinePayUrl}\n${result.state}: ${money(result.statePayment)}\n  Pay at: ${result.stateRule.url || "state revenue department website"}`,
+      "",
+      result.warning,
+      "",
+      `Your extended filing deadline is ${result.federal.extendedDue}.`,
+      "",
+      "Disclaimer: The payment amount above is an estimate based on information available. Final tax liability will be determined when the return is prepared.",
+    ].join("\n"),
+  };
+}
+
+function estimatedPaymentSummary(result) {
+  return `Federal: ${money(result.federalDue)} due ${result.dueDate} - pay at https://directpay.irs.gov\nState (${result.state}): ${money(result.stateDue)} due ${result.dueDate}`;
+}
+
+function extensionPaymentSummary(result) {
+  return `Federal extension payment: ${money(result.federalPayment)} due ${result.federal.payDeadline}\nState (${result.state}) extension payment: ${money(result.statePayment)} due ${result.federal.payDeadline}\nTotal to pay: ${money(result.totalPayment)}\nExtended filing deadline: ${result.federal.extendedDue}`;
+}
+
+function federalExtensionDates(returnType, year, dateOfDeath) {
+  const rule = EXTENSION_DEADLINES[returnType] || EXTENSION_DEADLINES["1040"];
+  if (returnType === "706" && dateOfDeath) {
+    const original = addMonths(new Date(`${dateOfDeath}T00:00:00`), 9);
+    const extended = addMonths(new Date(`${dateOfDeath}T00:00:00`), 15);
+    return { ...rule, originalDue: formatDate(original), extendedDue: formatDate(extended), payDeadline: formatDate(original) };
+  }
+  const original = new Date(year + 1, rule.originalMonth - 1, rule.originalDay);
+  const extended = new Date(year + 1, rule.extendedMonth - 1, rule.extendedDay);
+  return { ...rule, originalDue: formatDate(original), extendedDue: formatDate(extended), payDeadline: formatDate(original) };
+}
+
+function extensionInstructions(returnType, fed, stateCode, state) {
+  const instructions = [`File federal Form ${fed.form} by ${fed.originalDue}.`, `Pay estimated federal tax by ${fed.payDeadline}.`];
+  if (state.noStateIncomeTax) instructions.push(`${stateCode} has no state income tax.`);
+  else if (state.requiresSeparateForm) instructions.push(`File ${stateCode} extension form ${state.stateForm || ""} by ${fed.originalDue}.`);
+  else instructions.push(`${stateCode || "State"} extension is generally automatic with federal extension, subject to payment rules.`);
+  return instructions;
+}
+
+function extensionPenaltyRows(balance) {
+  const monthly = roundMoney(Math.max(0, balance) * 0.005);
+  const filingMonthly = roundMoney(Math.max(0, balance) * 0.05);
+  return [
+    { scenario: "Extension filed + full payment", rate: "0%", monthlyCost: 0, annualCost: 0 },
+    { scenario: "Extension filed + no payment", rate: "0.5%/mo", monthlyCost: monthly, annualCost: roundMoney(monthly * 12) },
+    { scenario: "No extension + no payment (filing)", rate: "5%/mo", monthlyCost: filingMonthly, annualCost: roundMoney(filingMonthly * 12) },
+    { scenario: "No extension + no payment (both)", rate: "5.5%/mo", monthlyCost: roundMoney(monthly + filingMonthly), annualCost: roundMoney((monthly + filingMonthly) * 12) },
+  ];
+}
+
+function stateExtendedDue(result) {
+  if (result.stateRule.noStateIncomeTax) return "N/A";
+  return result.federal.extendedDue;
+}
+
+function estimateDueDate(year, quarter, returnType) {
+  const dueYear = quarter === "Q4" ? year + 1 : year;
+  const dates = returnType === "1120" ? { Q1: [4, 15], Q2: [6, 15], Q3: [9, 15], Q4: [12, 15] } : { Q1: [4, 15], Q2: [6, 15], Q3: [9, 15], Q4: [1, 15] };
+  const [month, day] = dates[quarter] || dates.Q1;
+  return formatDate(new Date(dueYear, month - 1, day));
+}
+
+function quarterEndDate(year, quarter) {
+  const dates = { Q1: `${year}-03-31`, Q2: `${year}-06-30`, Q3: `${year}-09-30`, Q4: `${year}-12-31` };
+  return dates[quarter] || dates.Q1;
+}
+
+function priorPaymentsThroughQuarter(prior, label, quarterNumber) {
+  const q1 = num(prior[`q1${label}`]);
+  const q2 = quarterNumber >= 3 ? num(prior[`q2${label}`]) : 0;
+  const q3 = quarterNumber >= 4 ? num(prior[`q3${label}`]) : 0;
+  return q1 + q2 + q3;
+}
+
+function stateRuleFor(state) {
+  return EST_STATE_RULES[String(state || "").toUpperCase()] || { rate: 0.05, url: "", name: state || "State" };
+}
+
+function sumNumbers(...values) {
+  return values.reduce((sum, value) => sum + num(value), 0);
+}
+
+function num(value) {
+  const parsed = Number(String(value ?? "").replace(/[$,]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function money(value) {
+  return `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+}
+
+function addMonths(date, months) {
+  const copy = new Date(date.getTime());
+  copy.setMonth(copy.getMonth() + months);
+  return copy;
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+async function handleLoginPage(_req, res) {
+  sendHtml(res, 200, buildLoginPage());
+}
+
+async function handleLogin(req, res) {
+  const payload = await readJsonBody(req);
+  const username = String(payload.username || "").trim();
+  const password = String(payload.password || "");
+  const user = getAuthUsers().find((candidate) => candidate.username === username);
+
+  if (!user || !verifyPassword(password, user.passwordHash)) {
+    sendJson(res, 401, { error: "Invalid username or password." });
+    return;
+  }
+
+  const sessionUser = authUserForSession(user);
+  const token = signSession({ ...sessionUser, user: sessionUser, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS });
+  res.setHeader("set-cookie", buildSessionCookie(token));
+  sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
+}
+
+async function handleLogout(_req, res) {
+  res.setHeader("set-cookie", clearSessionCookie());
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAuthStatus(req, res) {
+  const session = getSession(req);
+  sendJson(res, 200, {
+    authenticated: Boolean(session),
+    username: session?.username || "",
+    role: session?.role || "",
+    displayName: session?.displayName || session?.username || "",
+    authRequired: AUTH_REQUIRED,
+  });
+}
+
+async function handleGoogleAuth(_req, res) {
+  if (!isGoogleDriveEnabled()) {
+    sendHtml(res, 503, "<p>Google Drive is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.</p>");
+    return;
+  }
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: GOOGLE_OAUTH_SCOPE,
+    access_type: "offline",
+    prompt: "consent",
+  });
+  redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+}
+
+async function handleGoogleCallback(_req, res, requestUrl) {
+  if (!isGoogleDriveEnabled()) {
+    sendHtml(res, 503, "<p>Google Drive is not configured.</p>");
+    return;
+  }
+  const code = requestUrl.searchParams.get("code");
+  if (!code) {
+    sendHtml(res, 400, "<p>Missing Google OAuth code.</p>");
+    return;
+  }
+  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: GOOGLE_REDIRECT_URI,
+      grant_type: "authorization_code",
+    }),
+  });
+  const tokenData = await tokenResponse.json().catch(() => ({}));
+  if (!tokenResponse.ok) {
+    sendHtml(res, 400, `<p>Google OAuth failed: ${escapeHtml(String(tokenData.error_description || tokenData.error || "Unknown error"))}</p>`);
+    return;
+  }
+  writeGoogleTokens(normalizeGoogleTokens(tokenData));
+  sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"google_connected"},"*"); window.close();</script><p>Google connected. You can close this tab.</p></body></html>`);
+}
+
+async function handleQboAuth(req, res) {
+  if (!isQboEnabled()) {
+    sendHtml(res, 503, "<p>QuickBooks Online is not configured. Set QBO_CLIENT_ID and QBO_CLIENT_SECRET.</p>");
+    return;
+  }
+  const session = getSession(req);
+  if (!session?.username) {
+    redirect(res, "/login");
+    return;
+  }
+  const params = new URLSearchParams({
+    client_id: QBO_CLIENT_ID,
+    response_type: "code",
+    scope: QBO_SCOPES,
+    redirect_uri: QBO_REDIRECT_URI,
+    state: session.username,
+  });
+  redirect(res, `https://appcenter.intuit.com/connect/oauth2?${params.toString()}`);
+}
+
+async function handleQboCallback(_req, res, requestUrl) {
+  if (!isQboEnabled()) {
+    sendHtml(res, 503, "<p>QuickBooks Online is not configured.</p>");
+    return;
+  }
+  const code = requestUrl.searchParams.get("code") || "";
+  const realmId = requestUrl.searchParams.get("realmId") || "";
+  const username = requestUrl.searchParams.get("state") || "augusto";
+  if (!code || !realmId) {
+    sendHtml(res, 400, "<p>QuickBooks authorization did not return a code and company id.</p>");
+    return;
+  }
+  const tokenRes = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${Buffer.from(`${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`).toString("base64")}`,
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: QBO_REDIRECT_URI }),
+  });
+  const tokens = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok) {
+    sendHtml(res, 400, `<p>QuickBooks connection failed: ${escapeHtml(tokens.error_description || tokens.error || "Token exchange failed.")}</p>`);
+    return;
+  }
+  writeQboTokenRecord(username, realmId, normalizeQboTokens(tokens, realmId));
+  let companyName = realmId;
+  try {
+    const companyRes = await qboRequest(username, realmId, `/companyinfo/${realmId}`);
+    companyName = companyRes.CompanyInfo?.CompanyName || companyName;
+  } catch (_) {}
+  updateQboCompany(username, realmId, { companyName, realmId, lastSync: new Date().toISOString() });
+  sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"qbo_connected",company:${JSON.stringify(companyName)}},"*"); window.close();</script><p>QuickBooks Online connected. You can close this tab.</p></body></html>`);
+}
+
+function requireAuthenticated(req, res) {
+  if (!AUTH_REQUIRED) return true;
+  if (!isAuthConfigured()) {
+    if (isApiRequest(req)) sendJson(res, 503, { error: "Authentication is not configured." });
+    else sendHtml(res, 503, buildLoginPage("Authentication is not configured for this deployment."));
+    return false;
+  }
+
+  const session = getSession(req);
+  if (session) {
+    req.user = session;
+    return true;
+  }
+
+  if (isApiRequest(req)) sendJson(res, 401, { error: "Authentication required." });
+  else redirect(res, "/login");
+  return false;
+}
+
+function isAuthConfigured() {
+  return !AUTH_REQUIRED || (AUTH_SECRET.length >= 32 && getAuthUsers().length > 0);
+}
+
+function getAuthUsers() {
+  try {
+    const users = JSON.parse(AUTH_USERS_JSON);
+    if (!Array.isArray(users)) return [];
+    return users
+      .filter((user) => user && typeof user.username === "string" && typeof user.passwordHash === "string")
+      .map((user) => ({
+        ...user,
+        role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
+        displayName: String(user.displayName || user.username),
+      }));
+  } catch (_) {
+    return [];
+  }
+}
+
+function authUserForSession(user) {
+  return {
+    username: String(user?.username || ""),
+    role: user?.role === "admin" ? "admin" : "user",
+    displayName: String(user?.displayName || user?.username || ""),
+  };
+}
+
+function verifyPassword(password, storedHash) {
+  const parts = String(storedHash || "").split("$");
+  if (parts.length !== 4 || parts[0] !== "pbkdf2") return false;
+  const iterations = Number(parts[1]);
+  const salt = parts[2];
+  const expected = parts[3];
+  if (!iterations || !salt || !expected) return false;
+  const actual = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256").toString("base64url");
+  return safeEqual(actual, expected);
+}
+
+function signSession(payload) {
+  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = hmac(encodedPayload);
+  return `${encodedPayload}.${signature}`;
+}
+
+function getSession(req) {
+  if (!AUTH_REQUIRED) {
+    return { username: "anonymous", role: "admin", displayName: "Dev Admin", user: { username: "anonymous", role: "admin", displayName: "Dev Admin" } };
+  }
+  const token = parseCookies(req.headers.cookie || "")[SESSION_COOKIE_NAME];
+  if (!token) return null;
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature || !safeEqual(hmac(encodedPayload), signature)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (!payload.username || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    const configuredUser = getAuthUsers().find((user) => user.username === payload.username);
+    const sessionUser = authUserForSession({ ...configuredUser, ...payload });
+    return { ...payload, ...sessionUser, user: sessionUser };
+  } catch (_) {
+    return null;
+  }
+}
+
+function requireAdmin(req, res) {
+  const session = req.user || getSession(req);
+  if (session?.role !== "admin") {
+    sendJson(res, 403, { error: "Admin access required." });
+    return false;
+  }
+  return true;
+}
+
+function hmac(value) {
+  return crypto.createHmac("sha256", AUTH_SECRET).update(value).digest("base64url");
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function ensureDatabase() {
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  fsSync.mkdirSync(CLIENT_FILES_DIR, { recursive: true });
+  if (!fsSync.existsSync(DB_PATH)) writeDb({ clients: {}, sessions: {} });
+  if (!fsSync.existsSync(CLIENTS_PATH)) writeJsonFile(CLIENTS_PATH, { clients: {} });
+  if (!fsSync.existsSync(FIRM_LIBRARY_PATH)) writeJsonFile(FIRM_LIBRARY_PATH, { documents: [], globalInstructions: "" });
+  if (!fsSync.existsSync(DEADLINES_PATH)) writeJsonFile(DEADLINES_PATH, { lastRebuilt: "", upcoming: [] });
+  if (!fsSync.existsSync(AI_LEARNING_PATH)) writeJsonFile(AI_LEARNING_PATH, { globalCorrections: [], clientCorrections: {}, returnTypePatterns: {} });
+  if (!fsSync.existsSync(FEEDBACK_PATH)) writeJsonFile(FEEDBACK_PATH, { entries: [] });
+  if (!fsSync.existsSync(COST_LOG_PATH)) writeJsonFile(COST_LOG_PATH, { entries: [] });
+}
+
+function readJsonFile(filePath, fallback) {
+  try {
+    return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
+  } catch (_) {
+    return structuredCloneSafe(fallback);
+  }
+}
+
+function writeJsonFile(filePath, value) {
+  fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  fsSync.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
+  fsSync.renameSync(tempPath, filePath);
+}
+
+function structuredCloneSafe(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function readDb() {
+  ensureDatabase();
+  try {
+    const db = JSON.parse(fsSync.readFileSync(DB_PATH, "utf8"));
+    const clients = {};
+    Object.entries(db.clients || {}).forEach(([id, client]) => { clients[id] = normalizeClientRecord(client); });
+    return { clients, sessions: db.sessions || {} };
+  } catch (_) {
+    return { clients: {}, sessions: {} };
+  }
+}
+
+function writeDb(db) {
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  const tempPath = `${DB_PATH}.${process.pid}.tmp`;
+  fsSync.writeFileSync(tempPath, JSON.stringify({ clients: db.clients || {}, sessions: db.sessions || {} }, null, 2), "utf8");
+  fsSync.renameSync(tempPath, DB_PATH);
+  writeJsonFile(CLIENTS_PATH, { clients: db.clients || {} });
+}
+
+function pickClientFields(payload = {}) {
+  return {
+    name: String(payload.name || payload.clientName || "").trim(),
+    ein: String(payload.ein || "").trim(),
+    email: String(payload.email || "").trim(),
+    company: String(payload.company || "").trim(),
+    driveFolderId: String(payload.driveFolderId || "").trim(),
+    driveFolderName: String(payload.driveFolderName || "").trim(),
+    entityType: String(payload.entityType || "").trim(),
+    returnType: String(payload.returnType || "").trim(),
+    qboRealmId: String(payload.qboRealmId || "").trim(),
+    qboCompanyName: String(payload.qboCompanyName || "").trim(),
+    qboLinkedAt: String(payload.qboLinkedAt || "").trim(),
+    accountingConnections: payload.accountingConnections && typeof payload.accountingConnections === "object" ? payload.accountingConnections : {},
+    autoSyncDrive: Boolean(payload.autoSyncDrive),
+    tags: Array.isArray(payload.tags) ? payload.tags.map(String) : [],
+    fiscalYearEnd: String(payload.fiscalYearEnd || "").trim(),
+  };
+}
+
+function getOrCreateClient(db, payload = {}) {
+  if (payload.clientId && db.clients[payload.clientId]) return db.clients[payload.clientId];
+  const clientFields = pickClientFields(payload);
+  const existing = Object.values(db.clients).find((client) => client.name.toLowerCase() === clientFields.name.toLowerCase() && clientFields.name);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const client = normalizeClientRecord({ id: crypto.randomUUID(), ...clientFields, name: clientFields.name || "Unnamed client", createdAt: now, updatedAt: now });
+  db.clients[client.id] = client;
+  return client;
+}
+
+function normalizeClientRecord(client = {}) {
+  return {
+    ...client,
+    taxSoftware: normalizeTaxSoftware(client.taxSoftware),
+    permanentInstructions: Array.isArray(client.permanentInstructions) ? client.permanentInstructions : [],
+    relatedParties: Array.isArray(client.relatedParties) ? client.relatedParties : [],
+    auditHistory: Array.isArray(client.auditHistory) ? client.auditHistory : [],
+    communicationLog: Array.isArray(client.communicationLog) ? client.communicationLog : [],
+    documents: Array.isArray(client.documents) ? client.documents : [],
+    reviewHistory: Array.isArray(client.reviewHistory) ? client.reviewHistory : [],
+    accountingConnections: client.accountingConnections && typeof client.accountingConnections === "object" ? client.accountingConnections : {},
+    deadlines: client.deadlines && typeof client.deadlines === "object" ? client.deadlines : {},
+    tags: Array.isArray(client.tags) ? client.tags : [],
+    templateId: client.templateId || null,
+  };
+}
+
+function normalizeTaxSoftware(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    primary: String(source.primary || "").trim(),
+    version: String(source.version || "").trim(),
+    customNotes: String(source.customNotes || "").trim(),
+  };
+}
+
+function normalizeSession(payload = {}) {
+  const now = new Date().toISOString();
+  const session = {
+    id: String(payload.id || crypto.randomUUID()),
+    clientId: String(payload.clientId || ""),
+    taxYear: String(payload.taxYear || ""),
+    returnType: String(payload.returnType || ""),
+    reviewStage: String(payload.reviewStage || "Initial review"),
+    createdAt: payload.createdAt || now,
+    updatedAt: payload.updatedAt || now,
+    reviewResult: payload.reviewResult || null,
+    preparationResult: payload.preparationResult || null,
+    noticeResult: payload.noticeResult || null,
+    organizerResult: payload.organizerResult || null,
+    diagnosticsResult: payload.diagnosticsResult || null,
+    diagnosticsRunAt: payload.diagnosticsRunAt || null,
+    deliverableResult: payload.deliverableResult || null,
+    status: normalizeSessionStatus(payload.status || "in_progress"),
+    issues: payload.issues || { high: 0, medium: 0, low: 0, resolved: 0 },
+    notes: String(payload.notes || ""),
+  };
+  session.issues = countSessionIssues(session);
+  return session;
+}
+
+function normalizeSessionUpdate(payload = {}) {
+  const update = {};
+  ["taxYear", "returnType", "reviewStage", "notes"].forEach((key) => { if (key in payload) update[key] = String(payload[key] || ""); });
+  ["reviewResult", "preparationResult", "noticeResult", "organizerResult", "diagnosticsResult", "diagnosticsRunAt", "deliverableResult"].forEach((key) => { if (key in payload) update[key] = payload[key] || null; });
+  if ("status" in payload) update.status = normalizeSessionStatus(payload.status);
+  return update;
+}
+
+function appendClientDeliverableRecord(client, session, record = {}) {
+  const year = String(record.taxYear || session.taxYear || "unknown").trim() || "unknown";
+  client.taxYears = client.taxYears && typeof client.taxYears === "object" ? client.taxYears : {};
+  client.taxYears[year] = client.taxYears[year] && typeof client.taxYears[year] === "object" ? client.taxYears[year] : {};
+  client.taxYears[year].deliverables = Array.isArray(client.taxYears[year].deliverables) ? client.taxYears[year].deliverables : [];
+  client.taxYears[year].deliverables.push({
+    sentAt: record.sentAt || new Date().toISOString(),
+    to: String(record.to || ""),
+    subject: String(record.subject || ""),
+    attachmentNames: Array.isArray(record.attachmentNames) ? record.attachmentNames.map(String) : [],
+    gmailMessageId: String(record.messageId || record.gmailMessageId || ""),
+  });
+}
+
+function normalizeSessionStatus(status) {
+  const value = String(status || "").toLowerCase();
+  return ["in_progress", "review_complete", "delivered", "filed", "archived"].includes(value) ? value : "in_progress";
+}
+
+function countSessionIssues(session) {
+  const issues = session.reviewResult?.structured?.issues || session.reviewResult?.issues || [];
+  const issueResponses = session.reviewResult?.issueResponses || {};
+  const resolvedFromResponses = Object.values(issueResponses).filter((response) => response && response.status === "resolved").length;
+  const counts = { high: 0, medium: 0, low: 0, resolved: Math.max(Array.isArray(session.resolvedIssues) ? session.resolvedIssues.length : 0, resolvedFromResponses) };
+  if (Array.isArray(issues)) {
+    issues.forEach((issue, index) => {
+      if (issueResponses[index]?.status === "resolved") return;
+      const priority = String(issue.priority || issue.severity || "").toLowerCase();
+      if (priority.includes("high")) counts.high += 1;
+      else if (priority.includes("medium")) counts.medium += 1;
+      else if (priority.includes("low")) counts.low += 1;
+    });
+  }
+  return counts;
+}
+
+function listSessionsWithClients(db) {
+  return Object.values(db.sessions).map((session) => ({ ...session, client: db.clients[session.clientId] || null })).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  cookieHeader.split(";").forEach((part) => {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (!rawKey) return;
+    cookies[rawKey] = decodeURIComponent(rawValue.join("="));
+  });
+  return cookies;
+}
+
+function buildSessionCookie(token) {
+  return [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    COOKIE_SECURE ? "Secure" : "",
+    `Max-Age=${SESSION_TTL_SECONDS}`,
+  ].filter(Boolean).join("; ");
+}
+
+function clearSessionCookie() {
+  return [
+    `${SESSION_COOKIE_NAME}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    COOKIE_SECURE ? "Secure" : "",
+    "Max-Age=0",
+  ].filter(Boolean).join("; ");
+}
+
+function isGoogleDriveEnabled() {
+  return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function normalizeGoogleTokens(tokenData = {}) {
+  const existing = readGoogleTokens() || {};
+  return {
+    access_token: tokenData.access_token || existing.access_token || "",
+    refresh_token: tokenData.refresh_token || existing.refresh_token || "",
+    token_type: tokenData.token_type || existing.token_type || "Bearer",
+    scope: tokenData.scope || existing.scope || GOOGLE_OAUTH_SCOPE,
+    expiry_date: Date.now() + (Number(tokenData.expires_in || 3600) * 1000) - 60000,
+  };
+}
+
+function readGoogleTokens() {
+  try {
+    if (!fsSync.existsSync(GOOGLE_TOKEN_PATH)) return null;
+    return JSON.parse(fsSync.readFileSync(GOOGLE_TOKEN_PATH, "utf8"));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeGoogleTokens(tokens) {
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf8");
+}
+
+function isQboEnabled() {
+  return Boolean(QBO_CLIENT_ID && QBO_CLIENT_SECRET);
+}
+
+function readQboStore() {
+  try {
+    if (!fsSync.existsSync(QBO_TOKEN_PATH)) return { users: {} };
+    const parsed = JSON.parse(fsSync.readFileSync(QBO_TOKEN_PATH, "utf8"));
+    return { users: parsed.users || {} };
+  } catch (_) {
+    return { users: {} };
+  }
+}
+
+function writeQboStore(store) {
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  fsSync.writeFileSync(QBO_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+}
+
+function getQboUserStore(username) {
+  const store = readQboStore();
+  return store.users[username] || { companies: {} };
+}
+
+function writeQboTokenRecord(username, realmId, tokens) {
+  const store = readQboStore();
+  const userStore = store.users[username] || { companies: {} };
+  userStore.companies = userStore.companies || {};
+  userStore.companies[realmId] = { ...(userStore.companies[realmId] || {}), realmId, tokens };
+  store.users[username] = userStore;
+  writeQboStore(store);
+}
+
+function updateQboCompany(username, realmId, info) {
+  const store = readQboStore();
+  const userStore = store.users[username] || { companies: {} };
+  userStore.companies = userStore.companies || {};
+  userStore.companies[realmId] = { ...(userStore.companies[realmId] || {}), ...info, realmId };
+  store.users[username] = userStore;
+  writeQboStore(store);
+}
+
+function deleteQboUser(username) {
+  const store = readQboStore();
+  delete store.users[username];
+  writeQboStore(store);
+}
+
+function normalizeQboTokens(tokens = {}, realmId = "") {
+  return {
+    realmId,
+    access_token: tokens.access_token || "",
+    refresh_token: tokens.refresh_token || "",
+    token_type: tokens.token_type || "Bearer",
+    expires_at: Date.now() + (Number(tokens.expires_in || 3600) * 1000) - 60000,
+    x_refresh_token_expires_in: tokens.x_refresh_token_expires_in || "",
+  };
+}
+
+async function getQboTokens(username, realmId) {
+  const company = getQboUserStore(username).companies?.[realmId];
+  if (!company?.tokens) throw Object.assign(new Error("QuickBooks is not connected for this company."), { statusCode: 401, expose: true });
+  let tokens = company.tokens;
+  if (tokens.access_token && Number(tokens.expires_at || 0) > Date.now()) return tokens;
+  if (!tokens.refresh_token) throw Object.assign(new Error("QuickBooks refresh token is missing. Reconnect QBO."), { statusCode: 401, expose: true });
+  const refresh = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${Buffer.from(`${QBO_CLIENT_ID}:${QBO_CLIENT_SECRET}`).toString("base64")}`,
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token }),
+  });
+  const data = await refresh.json().catch(() => ({}));
+  if (!refresh.ok) throw Object.assign(new Error(data.error_description || data.error || "Could not refresh QuickBooks token."), { statusCode: 401, expose: true });
+  tokens = normalizeQboTokens(data, realmId);
+  writeQboTokenRecord(username, realmId, tokens);
+  return tokens;
+}
+
+function getQboBaseUrl(realmId) {
+  return QBO_ENVIRONMENT === "production"
+    ? `https://quickbooks.api.intuit.com/v3/company/${realmId}`
+    : `https://sandbox-quickbooks.api.intuit.com/v3/company/${realmId}`;
+}
+
+async function qboRequest(username, realmId, pathName, params = {}) {
+  const tokens = await getQboTokens(username, realmId);
+  const query = new URLSearchParams({ minorversion: "70", ...params }).toString();
+  const response = await fetch(`${getQboBaseUrl(realmId)}${pathName}?${query}`, {
+    headers: { authorization: `Bearer ${tokens.access_token}`, accept: "application/json" },
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw Object.assign(new Error(`QBO API error ${response.status}: ${text}`), { statusCode: response.status, expose: true });
+  }
+  return response.json();
+}
+
+function qboCompaniesForUser(username) {
+  const companies = getQboUserStore(username).companies || {};
+  return Object.values(companies).map((company) => ({
+    realmId: company.realmId,
+    companyName: company.companyName || company.realmId,
+    lastSync: company.lastSync || "",
+  }));
+}
+
+function availableQboReports() {
+  return [
+    { id: "ProfitAndLoss", name: "Profit & Loss", category: "income", supportsComparative: true, dateRange: true },
+    { id: "ProfitAndLossDetail", name: "Profit & Loss Detail", category: "income", supportsComparative: false, dateRange: true },
+    { id: "BalanceSheet", name: "Balance Sheet", category: "balance", supportsComparative: true, dateRange: false, asOfDate: true },
+    { id: "BalanceSheetDetail", name: "Balance Sheet Detail", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "TrialBalance", name: "Trial Balance", category: "balance", supportsComparative: false, dateRange: true },
+    { id: "GeneralLedger", name: "General Ledger", category: "detail", supportsComparative: false, dateRange: true },
+    { id: "TransactionList", name: "Transaction List", category: "detail", supportsComparative: false, dateRange: true },
+    { id: "CashFlow", name: "Statement of Cash Flows", category: "income", supportsComparative: false, dateRange: true },
+    { id: "AccountList", name: "Chart of Accounts", category: "setup", supportsComparative: false, dateRange: false },
+    { id: "VendorBalance", name: "Vendor Balance Summary", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "CustomerBalance", name: "Customer Balance Summary", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "AgedReceivables", name: "Accounts Receivable Aging", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "AgedPayables", name: "Accounts Payable Aging", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "InventoryValuationSummary", name: "Inventory Valuation Summary", category: "balance", supportsComparative: false, dateRange: false, asOfDate: true },
+    { id: "PayrollSummary", name: "Payroll Summary", category: "payroll", supportsComparative: false, dateRange: true },
+    { id: "EmployeeDetails", name: "Employee Details", category: "payroll", supportsComparative: false, dateRange: false },
+    { id: "TaxSummary", name: "Sales Tax Liability", category: "tax", supportsComparative: false, dateRange: true },
+    { id: "ExpensesByVendorSummary", name: "Expenses by Vendor Summary", category: "income", supportsComparative: false, dateRange: true },
+    { id: "IncomeByCustomerSummary", name: "Income by Customer Summary", category: "income", supportsComparative: false, dateRange: true },
+    { id: "ClassSummary", name: "Profit & Loss by Class", category: "income", supportsComparative: false, dateRange: true },
+    { id: "DepartmentSummary", name: "Profit & Loss by Location", category: "income", supportsComparative: false, dateRange: true },
+  ];
+}
+
+function parseQboReport(report) {
+  const header = report.Header || {};
+  const columns = report.Columns?.Column || [];
+  const rows = parseQboRows(report.Rows?.Row || [], 0);
+  return {
+    reportName: header.ReportName || "QuickBooks Report",
+    reportBasis: header.ReportBasis || "",
+    startDate: header.StartPeriod || "",
+    endDate: header.EndPeriod || header.Time || "",
+    columns: columns.map((column) => ({ ColTitle: column.ColTitle || "", ColType: column.ColType || "" })),
+    rows,
+    rawJson: report,
+  };
+}
+
+function parseQboRows(rows = [], indent = 0) {
+  const flattened = [];
+  rows.forEach((row) => {
+    if (row.type === "Section") {
+      const headerData = row.Header?.ColData || [];
+      if (headerData.length) flattened.push(qboRowObject("Section", indent, headerData));
+      flattened.push(...parseQboRows(row.Rows?.Row || [], indent + 1));
+      const summaryData = row.Summary?.ColData || [];
+      if (summaryData.length) flattened.push(qboRowObject("Summary", indent, summaryData));
+    } else {
+      const colData = row.ColData || [];
+      if (colData.length) flattened.push(qboRowObject(row.type || "DataRow", indent, colData));
+    }
+  });
+  return flattened;
+}
+
+function qboRowObject(type, indent, colData) {
+  return {
+    type,
+    indent,
+    label: colData[0]?.value || "",
+    values: colData.slice(1).map((item) => item.value || ""),
+  };
+}
+
+function qboReportToCsv(parsed) {
+  const lines = [];
+  lines.push(csvLine([`${parsed.reportName} | ${[parsed.startDate, parsed.endDate].filter(Boolean).join(" - ")}`]));
+  lines.push(csvLine([`${parsed.reportBasis || "Accrual"} Basis`]));
+  lines.push("");
+  const headings = parsed.columns.map((column) => column.ColTitle || "");
+  lines.push(csvLine(headings.length ? headings : ["Account", "Amount"]));
+  parsed.rows.forEach((row) => {
+    lines.push(csvLine([`${"  ".repeat(row.indent)}${row.label}`, ...row.values]));
+  });
+  lines.push("");
+  return lines.join("\n");
+}
+
+function csvLine(values) {
+  return values.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",");
+}
+
+async function fetchQboReport(username, realmId, reportSpec = {}) {
+  const reportId = String(reportSpec.reportId || "");
+  if (!reportId) throw new Error("Missing QBO report id.");
+  const params = {};
+  if (reportSpec.startDate) params.start_date = reportSpec.startDate;
+  if (reportSpec.endDate) params.end_date = reportSpec.endDate;
+  if (reportSpec.asOfDate) params.as_of_date = reportSpec.asOfDate;
+  if (reportSpec.comparative) params.summarize_column_by = "Year";
+  if (reportSpec.summarizeColumnsBy) params.summarize_column_by = reportSpec.summarizeColumnsBy;
+  if (reportSpec.accountingMethod) params.accounting_method = reportSpec.accountingMethod;
+  const raw = await qboRequest(username, realmId, `/reports/${reportId}`, params);
+  const parsed = parseQboReport(raw);
+  return {
+    reportId,
+    reportName: parsed.reportName,
+    startDate: parsed.startDate || reportSpec.startDate || "",
+    endDate: parsed.endDate || reportSpec.endDate || reportSpec.asOfDate || "",
+    csvContent: qboReportToCsv(parsed),
+    rowCount: parsed.rows.length,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+function readAccountingStore() {
+  try {
+    if (!fsSync.existsSync(ACCOUNTING_TOKEN_PATH)) return { users: {} };
+    const parsed = JSON.parse(fsSync.readFileSync(ACCOUNTING_TOKEN_PATH, "utf8"));
+    return { users: parsed.users || {} };
+  } catch (_) {
+    return { users: {} };
+  }
+}
+
+function writeAccountingStore(store) {
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  fsSync.writeFileSync(ACCOUNTING_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+}
+
+function accountingStoreKey(username, softwareId) {
+  return `${softwareId}_${username || "default"}`;
+}
+
+function getAccountingRecord(username, softwareId) {
+  const store = readAccountingStore();
+  return store.users[accountingStoreKey(username, softwareId)] || { softwareId, companies: [], tokens: null };
+}
+
+function updateAccountingRecord(username, softwareId, patch = {}) {
+  const store = readAccountingStore();
+  const key = accountingStoreKey(username, softwareId);
+  store.users[key] = { ...(store.users[key] || { softwareId }), softwareId, ...patch };
+  writeAccountingStore(store);
+  return store.users[key];
+}
+
+function deleteAccountingRecord(username, softwareId) {
+  const store = readAccountingStore();
+  delete store.users[accountingStoreKey(username, softwareId)];
+  writeAccountingStore(store);
+}
+
+function accountingEnvValue(name) {
+  if (name === "QBO_CLIENT_ID") return QBO_CLIENT_ID;
+  if (name === "QBO_CLIENT_SECRET") return QBO_CLIENT_SECRET;
+  if (name === "QBO_REDIRECT_URI") return QBO_REDIRECT_URI;
+  return String(process.env[name] || "").trim();
+}
+
+function accountingConfigured(software) {
+  if (!software || software.id === "manual_upload") return true;
+  return (software.envVars || []).filter((name) => !name.endsWith("_REDIRECT_URI")).every((name) => Boolean(accountingEnvValue(name)));
+}
+
+function accountingPublicSoftware(software, username = "") {
+  const record = getAccountingRecord(username, software.id);
+  const envVarsPresent = {};
+  (software.envVars || []).forEach((name) => { envVarsPresent[name] = Boolean(accountingEnvValue(name)); });
+  return {
+    softwareId: software.id,
+    id: software.id,
+    name: software.name,
+    vendor: software.vendor,
+    logo: software.logo,
+    type: software.type,
+    authType: software.authType,
+    configured: accountingConfigured(software),
+    envVarsPresent,
+    setupUrl: software.setupUrl,
+    note: software.note || "",
+    supportsCash: Boolean(software.supportsCash),
+    supportsMultiCompany: Boolean(software.supportsMultiCompany),
+    connected: software.id === "quickbooks" ? qboCompaniesForUser(username).length > 0 : Boolean((record.companies || []).length),
+  };
+}
+
+function accountingReportDefinitions(softwareId) {
+  if (softwareId === "quickbooks") return availableQboReports();
+  const base = {
+    ProfitAndLoss: { name: "Profit & Loss", category: "income", dateRange: true, supportsComparative: true },
+    ProfitAndLossDetail: { name: "Profit & Loss Detail", category: "income", dateRange: true },
+    BalanceSheet: { name: "Balance Sheet", category: "balance", asOfDate: true, supportsComparative: true },
+    BalanceSheetDetail: { name: "Balance Sheet Detail", category: "balance", asOfDate: true },
+    TrialBalance: { name: "Trial Balance", category: "balance", dateRange: true },
+    GeneralLedger: { name: "General Ledger", category: "detail", dateRange: true },
+    CashFlow: { name: "Cash Flow", category: "income", dateRange: true },
+    CashSummary: { name: "Cash Summary", category: "income", dateRange: true },
+    ExecutiveSummary: { name: "Executive Summary", category: "income", dateRange: true },
+    AgedReceivables: { name: "Accounts Receivable Aging", category: "balance", asOfDate: true },
+    AgedPayables: { name: "Accounts Payable Aging", category: "balance", asOfDate: true },
+    AgedReceivablesByContact: { name: "Aged Receivables by Contact", category: "balance", asOfDate: true },
+    AgedPayablesByContact: { name: "Aged Payables by Contact", category: "balance", asOfDate: true },
+    ExpensesByVendorSummary: { name: "Expenses by Vendor", category: "income", dateRange: true },
+    IncomeByCustomerSummary: { name: "Income by Customer", category: "income", dateRange: true },
+    SalesByCustomer: { name: "Sales by Customer", category: "income", dateRange: true },
+    ExpensesByVendor: { name: "Expenses by Vendor", category: "income", dateRange: true },
+    TaxSummary: { name: "Tax Summary", category: "tax", dateRange: true },
+    ExpenseReport: { name: "Expense Report", category: "detail", dateRange: true },
+    InvoiceDetails: { name: "Invoice Details", category: "detail", dateRange: true },
+    PaymentReport: { name: "Payment Report", category: "detail", dateRange: true },
+    AccountTransactions: { name: "Account Transactions", category: "detail", dateRange: true },
+    FinancialStatements: { name: "Financial Statements", category: "balance", dateRange: true },
+    IncomeStatement: { name: "Income Statement", category: "income", dateRange: true },
+    StatisticalReport: { name: "Statistical Report", category: "detail", dateRange: true },
+  };
+  const software = ACCOUNTING_SOFTWARE[softwareId] || ACCOUNTING_SOFTWARE.manual_upload;
+  return (software.reports || []).map((id) => ({ id, ...(base[id] || { name: id, category: "other", dateRange: true }), supportsCash: software.supportsCash, description: `${base[id]?.name || id} from ${software.name}` }));
+}
+
+function accountingRedirectUri(softwareId) {
+  if (softwareId === "quickbooks") return QBO_REDIRECT_URI;
+  const envMap = {
+    xero: "XERO_REDIRECT_URI",
+    freshbooks: "FRESHBOOKS_REDIRECT_URI",
+    wave: "WAVE_REDIRECT_URI",
+    zoho_books: "ZOHO_REDIRECT_URI",
+  };
+  return accountingEnvValue(envMap[softwareId]) || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/accounting/${softwareId}/callback`;
+}
+
+function accountingOAuthConfig(softwareId) {
+  const software = ACCOUNTING_SOFTWARE[softwareId];
+  if (!software) return null;
+  const scopes = (software.scopes || []).join(" ");
+  const configs = {
+    quickbooks: {
+      authUrl: "https://appcenter.intuit.com/connect/oauth2",
+      tokenUrl: "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+      clientId: QBO_CLIENT_ID,
+      clientSecret: QBO_CLIENT_SECRET,
+      redirectUri: accountingRedirectUri("quickbooks"),
+      scope: QBO_SCOPES,
+    },
+    xero: {
+      authUrl: "https://login.xero.com/identity/connect/authorize",
+      tokenUrl: "https://identity.xero.com/connect/token",
+      clientId: accountingEnvValue("XERO_CLIENT_ID"),
+      clientSecret: accountingEnvValue("XERO_CLIENT_SECRET"),
+      redirectUri: accountingRedirectUri("xero"),
+      scope: scopes,
+    },
+    freshbooks: {
+      authUrl: "https://auth.freshbooks.com/oauth/authorize",
+      tokenUrl: "https://api.freshbooks.com/auth/oauth/token",
+      clientId: accountingEnvValue("FRESHBOOKS_CLIENT_ID"),
+      clientSecret: accountingEnvValue("FRESHBOOKS_CLIENT_SECRET"),
+      redirectUri: accountingRedirectUri("freshbooks"),
+      scope: scopes,
+    },
+    wave: {
+      authUrl: "https://api.waveapps.com/oauth2/authorize/",
+      tokenUrl: "https://api.waveapps.com/oauth2/token/",
+      clientId: accountingEnvValue("WAVE_CLIENT_ID"),
+      clientSecret: accountingEnvValue("WAVE_CLIENT_SECRET"),
+      redirectUri: accountingRedirectUri("wave"),
+      scope: scopes,
+    },
+    zoho_books: {
+      authUrl: "https://accounts.zoho.com/oauth/v2/auth",
+      tokenUrl: "https://accounts.zoho.com/oauth/v2/token",
+      clientId: accountingEnvValue("ZOHO_CLIENT_ID"),
+      clientSecret: accountingEnvValue("ZOHO_CLIENT_SECRET"),
+      redirectUri: accountingRedirectUri("zoho_books"),
+      scope: scopes.join ? scopes.join(" ") : scopes,
+    },
+  };
+  return configs[softwareId] || null;
+}
+
+function buildAccountingAuthUrl(softwareId, username) {
+  const config = accountingOAuthConfig(softwareId);
+  if (!config?.clientId || !config?.clientSecret) throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not configured.`), { statusCode: 503, expose: true });
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    response_type: "code",
+    redirect_uri: config.redirectUri,
+    scope: config.scope,
+    state: Buffer.from(JSON.stringify({ username, softwareId })).toString("base64url"),
+  });
+  if (softwareId === "zoho_books") {
+    params.set("access_type", "offline");
+    params.set("prompt", "consent");
+  }
+  return `${config.authUrl}?${params.toString()}`;
+}
+
+async function exchangeAccountingToken(softwareId, code) {
+  const config = accountingOAuthConfig(softwareId);
+  const headers = { accept: "application/json", "content-type": "application/x-www-form-urlencoded" };
+  const body = new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: config.redirectUri });
+  if (softwareId === "quickbooks" || softwareId === "xero" || softwareId === "freshbooks" || softwareId === "wave") {
+    headers.authorization = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
+  } else {
+    body.set("client_id", config.clientId);
+    body.set("client_secret", config.clientSecret);
+  }
+  const response = await fetch(config.tokenUrl, { method: "POST", headers, body });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error_description || data.error || `Could not connect ${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId}.`), { statusCode: response.status, expose: true });
+  return { ...data, expires_at: Date.now() + (Number(data.expires_in || 3600) * 1000) - 60000 };
+}
+
+async function accountingApiFetch(url, tokens, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { accept: "application/json", authorization: `Bearer ${tokens.access_token}`, ...(options.headers || {}) },
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) throw Object.assign(new Error(data.Detail || data.Message || data.error_description || data.error || `Accounting API error ${response.status}`), { statusCode: response.status, expose: true });
+  return data;
+}
+
+async function fetchAccountingCompanies(softwareId, tokens, params = {}) {
+  if (softwareId === "quickbooks") return [];
+  if (softwareId === "xero") {
+    const connections = await accountingApiFetch("https://api.xero.com/connections", tokens);
+    return (connections || []).map((item) => ({ id: item.tenantId, name: item.tenantName || item.tenantId, country: item.tenantType || "", currency: "" }));
+  }
+  if (softwareId === "freshbooks") {
+    const data = await accountingApiFetch("https://api.freshbooks.com/auth/api/v1/users/me", tokens);
+    const memberships = data.response?.business_memberships || [];
+    return memberships.map((item) => ({ id: item.business?.id || item.business_id, name: item.business?.name || item.business?.id || "FreshBooks Business", currency: item.business?.currency_code || "" })).filter((item) => item.id);
+  }
+  if (softwareId === "wave") {
+    const data = await accountingApiFetch("https://gql.waveapps.com/graphql/public", tokens, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "{ businesses { edges { node { id name } } } }" }),
+    });
+    return (data.data?.businesses?.edges || []).map((edge) => ({ id: edge.node?.id, name: edge.node?.name || edge.node?.id, currency: "" })).filter((item) => item.id);
+  }
+  if (softwareId === "zoho_books") {
+    const data = await accountingApiFetch("https://www.zohoapis.com/books/v3/organizations", tokens);
+    return (data.organizations || []).map((item) => ({ id: item.organization_id, name: item.name || item.organization_name || item.organization_id, country: item.country || "", currency: item.currency_code || "" }));
+  }
+  return params.companyId ? [{ id: params.companyId, name: params.companyName || params.companyId }] : [];
+}
+
+function normalizeAccountingReport(rawData, reportId, context = {}) {
+  const reportName = context.reportName || rawData?.Reports?.[0]?.ReportName || rawData?.Header?.ReportName || rawData?.reportName || reportId;
+  const rows = [];
+  function pushRow(label, values = [], indent = 0, flags = {}) {
+    if (!label && !values.length) return;
+    rows.push({ name: String(label || ""), indent, isHeader: Boolean(flags.isHeader), isSummary: Boolean(flags.isSummary), columns: context.columns || ["Amount"], values: values.map((value) => String(value ?? "")) });
+  }
+  function flattenXero(items = [], indent = 0) {
+    items.forEach((row) => {
+      const cells = row.Cells || [];
+      const label = cells[0]?.Value || row.Title || row.RowType || "";
+      const values = cells.slice(1).map((cell) => cell.Value || "");
+      pushRow(label, values, indent, { isHeader: row.RowType === "Header", isSummary: row.RowType === "SummaryRow" });
+      if (row.Rows) flattenXero(row.Rows, indent + 1);
+    });
+  }
+  if (rawData?.Reports?.[0]?.Rows) flattenXero(rawData.Reports[0].Rows);
+  else if (rawData?.Rows?.Row) parseQboRows(rawData.Rows.Row).forEach((row) => pushRow(row.label, row.values, row.indent, { isSummary: row.type === "Summary" }));
+  else if (rawData && typeof rawData === "object") {
+    Object.entries(rawData.result || rawData).slice(0, 80).forEach(([key, value]) => {
+      if (value && typeof value === "object") pushRow(key, [JSON.stringify(value).slice(0, 500)], 0);
+      else pushRow(key, [value], 0);
+    });
+  }
+  const report = {
+    reportId,
+    reportName,
+    software: context.softwareId || "",
+    companyId: context.companyId || "",
+    companyName: context.companyName || "",
+    startDate: context.startDate || null,
+    endDate: context.endDate || context.asOfDate || null,
+    currency: context.currency || "",
+    basis: context.cash ? "Cash" : context.basis || "Accrual",
+    sections: rows,
+    totals: {},
+  };
+  report.csvContent = buildCSVFromUnifiedReport(report);
+  return report;
+}
+
+function buildCSVFromUnifiedReport(report) {
+  const lines = [
+    csvLine([`${report.reportName} | ${[report.startDate, report.endDate].filter(Boolean).join(" - ")}`]),
+    csvLine([`${report.companyName || report.software || ""} | ${report.basis || "N/A"} Basis`]),
+    "",
+  ];
+  const columns = report.sections.find((row) => row.columns?.length)?.columns || ["Account", "Amount"];
+  lines.push(csvLine(["Line", ...columns]));
+  report.sections.forEach((row) => lines.push(csvLine([`${"  ".repeat(row.indent || 0)}${row.name}`, ...(row.values || [])])));
+  lines.push("");
+  return lines.join("\n");
+}
+
+async function fetchUnifiedAccountingReport(username, softwareId, companyId, spec = {}) {
+  if (softwareId === "quickbooks") {
+    const qboReport = await fetchQboReport(username, companyId, {
+      ...spec,
+      accountingMethod: spec.cash ? "Cash" : spec.accountingMethod || "Accrual",
+    });
+    const company = qboCompaniesForUser(username).find((item) => item.realmId === companyId);
+    return { ...qboReport, software: "quickbooks", companyId, companyName: company?.companyName || companyId };
+  }
+  const record = getAccountingRecord(username, softwareId);
+  const company = (record.companies || []).find((item) => item.id === companyId) || {};
+  if (!record.tokens?.access_token) throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not connected.`), { statusCode: 401, expose: true });
+  let raw = {};
+  if (softwareId === "xero") {
+    const map = {
+      ProfitAndLoss: "ProfitAndLoss",
+      BalanceSheet: "BalanceSheet",
+      TrialBalance: "TrialBalance",
+      CashSummary: "CashSummary",
+      ExecutiveSummary: "ExecutiveSummary",
+      AgedReceivablesByContact: "AgedReceivablesByContact",
+      AgedPayablesByContact: "AgedPayablesByContact",
+    };
+    const query = new URLSearchParams();
+    if (spec.startDate) query.set("fromDate", spec.startDate);
+    if (spec.endDate) query.set("toDate", spec.endDate);
+    query.set("reportingBasis", spec.cash ? "CASH" : "ACCRUAL");
+    raw = await accountingApiFetch(`https://api.xero.com/api.xro/2.0/Reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, record.tokens, { headers: { "xero-tenant-id": companyId } });
+  } else if (softwareId === "zoho_books") {
+    const map = { ProfitAndLoss: "profitandloss", BalanceSheet: "balancesheet", TrialBalance: "trial_balance", CashFlow: "cashflow", GeneralLedger: "generalledger", AgedReceivables: "aging/receivables", AgedPayables: "aging/payables" };
+    const query = new URLSearchParams({ organization_id: companyId });
+    if (spec.startDate) query.set("from_date", spec.startDate);
+    if (spec.endDate) query.set("to_date", spec.endDate);
+    if (spec.cash) query.set("cash_basis", "true");
+    raw = await accountingApiFetch(`https://www.zohoapis.com/books/v3/reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, record.tokens);
+  } else if (softwareId === "freshbooks") {
+    const map = { ProfitAndLoss: "profitloss", BalanceSheet: "balancesheet", TaxSummary: "taxsummary", ExpenseReport: "expenses_report" };
+    const query = new URLSearchParams();
+    if (spec.startDate) query.set("date_from", spec.startDate);
+    if (spec.endDate) query.set("date_to", spec.endDate);
+    raw = await accountingApiFetch(`https://api.freshbooks.com/accounting/account/${companyId}/reports/${map[spec.reportId] || "profitloss"}?${query.toString()}`, record.tokens);
+  } else if (softwareId === "wave") {
+    raw = await accountingApiFetch("https://gql.waveapps.com/graphql/public", record.tokens, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "query($businessId: ID!) { business(id: $businessId) { id name } }", variables: { businessId: companyId } }),
+    });
+  } else {
+    throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} report fetching requires advanced setup and is not available in this local adapter yet.`), { statusCode: 501, expose: true });
+  }
+  const reportDef = accountingReportDefinitions(softwareId).find((item) => item.id === spec.reportId);
+  const parsed = normalizeAccountingReport(raw, spec.reportId, { ...spec, softwareId, companyId, companyName: company.name || companyId, reportName: reportDef?.name || spec.reportId, currency: company.currency || "" });
+  return { ...parsed, rowCount: parsed.sections.length, fetchedAt: new Date().toISOString() };
+}
+
+async function getGoogleAccessToken() {
+  let tokens = readGoogleTokens();
+  if (!tokens) throw Object.assign(new Error("Google Drive is not connected."), { statusCode: 401, expose: true });
+  if (tokens.access_token && Number(tokens.expiry_date || 0) > Date.now()) return tokens.access_token;
+  if (!tokens.refresh_token) throw Object.assign(new Error("Google Drive refresh token is missing."), { statusCode: 401, expose: true });
+  const refresh = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      refresh_token: tokens.refresh_token,
+      grant_type: "refresh_token",
+    }),
+  });
+  const data = await refresh.json().catch(() => ({}));
+  if (!refresh.ok) throw Object.assign(new Error(data.error_description || data.error || "Could not refresh Google token."), { statusCode: 401, expose: true });
+  tokens = normalizeGoogleTokens({ ...data, refresh_token: tokens.refresh_token });
+  writeGoogleTokens(tokens);
+  return tokens.access_token;
+}
+
+async function googleApiFetch(url, options = {}) {
+  const token = await getGoogleAccessToken();
+  return fetch(url, { ...options, headers: { ...(options.headers || {}), authorization: `Bearer ${token}` } });
+}
+
+function parseDriveFileTypes(value) {
+  return String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+function driveMimeFilter(fileTypes = []) {
+  const mimes = new Set();
+  fileTypes.forEach((type) => {
+    if (type === "pdf") mimes.add("application/pdf");
+    if (type === "xlsx") ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "application/vnd.google-apps.spreadsheet"].forEach((mime) => mimes.add(mime));
+    if (type === "docx") ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword", "application/vnd.google-apps.document"].forEach((mime) => mimes.add(mime));
+    if (type === "txt") mimes.add("text/plain");
+    if (type === "json") mimes.add("application/json");
+    if (type === "csv") mimes.add("text/csv");
+    if (type === "image") ["image/png", "image/jpeg", "image/webp", "image/gif"].forEach((mime) => mimes.add(mime));
+    if (type === "zip") ["application/zip", "application/x-zip-compressed", "application/octet-stream"].forEach((mime) => mimes.add(mime));
+  });
+  return mimes.size ? ` and (${Array.from(mimes).map((mime) => `mimeType='${mime}'`).join(" or ")})` : "";
+}
+
+function driveFields() {
+  return "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink),nextPageToken";
+}
+
+async function listDriveFolders(parentId = "root") {
+  const query = parentId === "shared-with-me"
+    ? "sharedWithMe=true and trashed=false and mimeType='application/vnd.google-apps.folder'"
+    : `'${parentId}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`;
+  const q = encodeURIComponent(query);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive folders."), { statusCode: res.status, expose: true });
+  return data.files || [];
+}
+
+async function listDriveFiles(folderId = "root", fileTypes = [], pageToken = "") {
+  const query = folderId === "shared-with-me"
+    ? `sharedWithMe=true and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`
+    : `'${folderId}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`;
+  const q = encodeURIComponent(query);
+  const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true${token}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive files."), { statusCode: res.status, expose: true });
+  return { files: data.files || [], nextPageToken: data.nextPageToken || null };
+}
+
+async function searchDriveFiles(query, fileTypes = []) {
+  const safeQuery = String(query || "").replace(/'/g, "\\'");
+  const q = encodeURIComponent(`name contains '${safeQuery}' and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not search Drive."), { statusCode: res.status, expose: true });
+  return { files: data.files || [], nextPageToken: data.nextPageToken || null };
+}
+
+async function readDriveFile(fileId, fileName, mimeType) {
+  if (!fileId) throw Object.assign(new Error("Missing Drive file id."), { statusCode: 400, expose: true });
+  const exportMime = googleExportMimeType(mimeType);
+  const url = exportMime
+    ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent(exportMime)}`
+    : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
+  const res = await googleApiFetch(url);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(data.error?.message || "Could not read Drive file."), { statusCode: res.status, expose: true });
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const finalMime = exportMime || mimeType || res.headers.get("content-type") || "application/octet-stream";
+  return {
+    fileName: exportMime ? driveExportName(fileName, exportMime) : String(fileName || "drive-file"),
+    mimeType: finalMime,
+    contentBase64: buffer.toString("base64"),
+    sizeBytes: buffer.length,
+  };
+}
+
+async function getDriveFileMetadata(fileId, fields = "id,name,mimeType") {
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}&supportsAllDrives=true`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not read Drive metadata."), { statusCode: res.status, expose: true });
+  return data;
+}
+
+async function loadClientDataFromDriveFolder(folderId) {
+  const folderMeta = await getDriveFileMetadata(folderId, "id,name");
+  const query = encodeURIComponent(`'${folderId}' in parents and trashed=false and (mimeType='text/plain' or mimeType='application/json' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType)&orderBy=name&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not scan client folder."), { statusCode: res.status, expose: true });
+  const files = data.files || [];
+  const priority = ["client_info", "contact", "client", "info"];
+  let clientInfoFile = null;
+  for (const prefix of priority) {
+    clientInfoFile = files.find((file) => String(file.name || "").toLowerCase().startsWith(prefix));
+    if (clientInfoFile) break;
+  }
+  if (!clientInfoFile && files.length) {
+    clientInfoFile = files.find((file) => ["text/plain", "application/json"].includes(file.mimeType)) || files[0];
+  }
+  const clientData = {
+    name: "",
+    email: "",
+    company: "",
+    folderName: folderMeta.name || "",
+    folderId,
+    sourceFile: null,
+    confidence: "low",
+  };
+  if (clientInfoFile) {
+    const content = await readDriveTextForClientInfo(clientInfoFile);
+    Object.assign(clientData, parseClientInfoContent(content));
+    clientData.sourceFile = clientInfoFile.name;
+  }
+  if (!clientData.name && !clientData.company) {
+    clientData.company = folderMeta.name || "";
+    clientData.name = folderMeta.name || "";
+  }
+  return clientData;
+}
+
+async function loadClientDataFromDriveFile(filePayload = {}) {
+  let file = filePayload;
+  let content = "";
+  if (filePayload.fileId) {
+    const meta = await getDriveFileMetadata(filePayload.fileId, "id,name,mimeType");
+    file = { id: meta.id, name: meta.name, mimeType: meta.mimeType };
+    content = await readDriveTextForClientInfo(file);
+  } else if (filePayload.contentBase64) {
+    const buffer = Buffer.from(String(filePayload.contentBase64 || ""), "base64");
+    content = clientInfoBufferToText(buffer, filePayload.mimeType || filePayload.type || "", filePayload.name || "");
+  }
+
+  const parsed = parseClientInfoContent(content);
+  const sourceName = file.name || filePayload.name || "Client info file";
+  if (!parsed.name && !parsed.company) {
+    const fallback = String(sourceName).replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+    parsed.name = fallback;
+    parsed.company = fallback;
+    parsed.confidence = parsed.email ? "medium" : "low";
+  }
+  return {
+    ...parsed,
+    folderName: "",
+    folderId: "",
+    sourceFile: sourceName,
+  };
+}
+
+async function readDriveTextForClientInfo(file) {
+  const exportMime = file.mimeType === "application/vnd.google-apps.document" ? "text/plain" : "";
+  const url = exportMime
+    ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export?mimeType=text/plain`
+    : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`;
+  const res = await googleApiFetch(url);
+  if (!res.ok) return "";
+  const buffer = Buffer.from(await res.arrayBuffer());
+  return clientInfoBufferToText(buffer, exportMime || file.mimeType, file.name);
+}
+
+function clientInfoBufferToText(buffer, mimeType = "", fileName = "") {
+  const lowerName = String(fileName || "").toLowerCase();
+  const lowerMime = String(mimeType || "").toLowerCase();
+  if (lowerName.endsWith(".docx") || lowerMime.includes("wordprocessingml.document")) {
+    return extractDocxText(buffer);
+  }
+  return buffer.toString("utf8");
+}
+
+function extractDocxText(buffer) {
+  try {
+    const xml = readZipEntry(buffer, "word/document.xml") || "";
+    return stripXmlText(xml);
+  } catch (_) {
+    return buffer.toString("utf8");
+  }
+}
+
+function readZipEntry(buffer, wantedName) {
+  let offset = 0;
+  while (offset + 30 < buffer.length) {
+    const signature = buffer.readUInt32LE(offset);
+    if (signature !== 0x04034b50) break;
+    const method = buffer.readUInt16LE(offset + 8);
+    const compressedSize = buffer.readUInt32LE(offset + 18);
+    const fileNameLength = buffer.readUInt16LE(offset + 26);
+    const extraLength = buffer.readUInt16LE(offset + 28);
+    const nameStart = offset + 30;
+    const name = buffer.slice(nameStart, nameStart + fileNameLength).toString("utf8");
+    const dataStart = nameStart + fileNameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (name === wantedName) {
+      const data = buffer.slice(dataStart, dataEnd);
+      return method === 8 ? zlib.inflateRawSync(data).toString("utf8") : data.toString("utf8");
+    }
+    if (compressedSize <= 0 && buffer.readUInt16LE(offset + 6) & 0x0008) break;
+    offset = dataEnd;
+  }
+  return readZipEntryFromCentralDirectory(buffer, wantedName);
+}
+
+function readZipEntryFromCentralDirectory(buffer, wantedName) {
+  const maxComment = Math.min(buffer.length, 66000);
+  let eocd = -1;
+  for (let i = buffer.length - 22; i >= buffer.length - maxComment; i -= 1) {
+    if (i >= 0 && buffer.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return "";
+  const centralSize = buffer.readUInt32LE(eocd + 12);
+  const centralOffset = buffer.readUInt32LE(eocd + 16);
+  let offset = centralOffset;
+  const centralEnd = Math.min(buffer.length, centralOffset + centralSize);
+  while (offset + 46 <= centralEnd) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+    if (name === wantedName && buffer.readUInt32LE(localHeaderOffset) === 0x04034b50) {
+      const localNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+      const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const data = buffer.slice(dataStart, dataStart + compressedSize);
+      return method === 8 ? zlib.inflateRawSync(data).toString("utf8") : data.toString("utf8");
+    }
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+  return "";
+}
+
+function listZipEntryBuffers(buffer, maxEntries = 80) {
+  const entries = [];
+  const maxComment = Math.min(buffer.length, 66000);
+  let eocd = -1;
+  for (let i = buffer.length - 22; i >= buffer.length - maxComment; i -= 1) {
+    if (i >= 0 && buffer.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return entries;
+  const centralSize = buffer.readUInt32LE(eocd + 12);
+  const centralOffset = buffer.readUInt32LE(eocd + 16);
+  let offset = centralOffset;
+  const centralEnd = Math.min(buffer.length, centralOffset + centralSize);
+  while (offset + 46 <= centralEnd && entries.length < maxEntries) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString("utf8");
+    const isDirectory = name.endsWith("/");
+    if (!isDirectory && !name.startsWith("__MACOSX/") && uncompressedSize <= 12 * 1024 * 1024 && buffer.readUInt32LE(localHeaderOffset) === 0x04034b50) {
+      const localNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+      const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const compressed = buffer.slice(dataStart, dataStart + compressedSize);
+      try {
+        const data = method === 8 ? zlib.inflateRawSync(compressed) : compressed;
+        entries.push({ name, data });
+      } catch (_) {}
+    }
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function extractZipPackageTextServer(buffer, packageName = "package.zip") {
+  const parts = [];
+  for (const entry of listZipEntryBuffers(buffer, 80)) {
+    const name = entry.name;
+    if (/\.(png|jpe?g|gif|bmp|tiff?)$/i.test(name)) continue;
+    let text = "";
+    try {
+      if (/\.docx$/i.test(name)) text = extractDocxText(entry.data);
+      else if (/\.xlsx?$/i.test(name)) text = extractXlsxText(entry.data);
+      else if (/\.pdf$/i.test(name)) text = extractPdfPlainText(entry.data);
+      else if (/\.(csv|txt|md|json)$/i.test(name)) text = entry.data.toString("utf8");
+      else continue;
+    } catch (error) {
+      text = `[Could not extract ${name}: ${error.message || "unknown error"}]`;
+    }
+    if (text.trim()) {
+      parts.push(`ZIP PACKAGE: ${packageName}\nINNER FILE: ${name}\n${text.trim().slice(0, 50000)}`);
+    }
+    if (parts.join("\n\n---\n\n").length > 180000) break;
+  }
+  return parts.join("\n\n---\n\n") || `[ZIP package ${packageName} contained no readable supported files.]`;
+}
+
+function stripXmlText(xml) {
+  return String(xml || "")
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function parseClientInfoContent(content) {
+  const data = { name: "", email: "", company: "", confidence: "low" };
+  try {
+    const parsed = JSON.parse(content);
+    data.name = parsed.name || parsed.client_name || parsed.clientName || "";
+    data.email = parsed.email || parsed.client_email || parsed.clientEmail || "";
+    data.company = parsed.company || parsed.firm || parsed.business || "";
+    data.confidence = data.name && data.email && data.company ? "high" : data.email ? "medium" : "low";
+    return data;
+  } catch (_) {}
+  const nameMatch = content.match(/(?:name|client|contact)\s*[:\-]\s*(.+)/i);
+  const emailMatch = content.match(/(?:email|e-mail|mail)\s*[:\-]\s*([^\s@]+@[^\s]+)/i);
+  const companyMatch = content.match(/(?:company|firm|business|entity|organization)\s*[:\-]\s*(.+)/i);
+  const bareEmail = content.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  data.name = nameMatch ? nameMatch[1].trim() : "";
+  data.email = emailMatch ? emailMatch[1].trim() : bareEmail ? bareEmail[0] : "";
+  data.company = companyMatch ? companyMatch[1].trim() : "";
+  data.confidence = data.email ? "medium" : "low";
+  return data;
+}
+
+async function readDriveFolder(folderId, folderName, fileTypes = []) {
+  if (!folderId || folderId === "shared-with-me") throw Object.assign(new Error("Select a specific Drive folder first."), { statusCode: 400, expose: true });
+  const files = [];
+  await collectDriveFolderFiles(folderId, folderName || "Drive folder", fileTypes, files, 0);
+  return { folderName: folderName || "Drive folder", files, truncated: files.length >= MAX_DRIVE_FOLDER_FILES, maxFiles: MAX_DRIVE_FOLDER_FILES };
+}
+
+async function collectDriveFolderFiles(folderId, folderPath, fileTypes, files, depth) {
+  if (files.length >= MAX_DRIVE_FOLDER_FILES || depth > 10) return;
+  let pageToken = "";
+  do {
+    const page = await listDriveFiles(folderId, fileTypes, pageToken);
+    for (const item of page.files) {
+      if (files.length >= MAX_DRIVE_FOLDER_FILES) return;
+      const downloaded = await readDriveFile(item.id, item.name, item.mimeType);
+      downloaded.fileName = `${folderPath}/${downloaded.fileName}`;
+      downloaded.driveFileId = item.id;
+      downloaded.driveWebViewLink = item.webViewLink || "";
+      files.push(downloaded);
+    }
+    pageToken = page.nextPageToken || "";
+  } while (pageToken && files.length < MAX_DRIVE_FOLDER_FILES);
+
+  const folders = await listDriveFolders(folderId);
+  for (const folder of folders) {
+    if (files.length >= MAX_DRIVE_FOLDER_FILES) return;
+    await collectDriveFolderFiles(folder.id, `${folderPath}/${folder.name}`, fileTypes, files, depth + 1);
+  }
+}
+
+function googleExportMimeType(mimeType) {
+  if (mimeType === "application/vnd.google-apps.document") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (mimeType === "application/vnd.google-apps.spreadsheet") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (mimeType === "application/vnd.google-apps.presentation") return "application/pdf";
+  return "";
+}
+
+function driveExportName(fileName, mimeType) {
+  const ext = mimeType.includes("spreadsheet") ? ".xlsx" : mimeType.includes("wordprocessingml") ? ".docx" : ".pdf";
+  return `${String(fileName || "google-drive-file").replace(/\.[^.]+$/, "")}${ext}`;
+}
+
+function isApiRequest(req) {
+  return req.url.startsWith("/api/");
+}
+
+async function handleCostApi(req, res, requestUrl) {
+  if (req.method === "GET" && requestUrl.pathname === "/api/cost/estimate") {
+    sendJson(res, 200, estimateCost({
+      action: requestUrl.searchParams.get("action") || "review",
+      returnType: requestUrl.searchParams.get("returnType") || "",
+      hasWorkpaper: requestUrl.searchParams.get("hasWorkpaper") === "true",
+      hasImage: requestUrl.searchParams.get("hasImage") === "true",
+      model: requestUrl.searchParams.get("model") || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514",
+    }));
+    return;
+  }
+
+  if (!requireAdmin(req, res)) return;
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/cost/log") {
+    const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams);
+    sendJson(res, 200, {
+      entries,
+      total: roundMoney(entries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+      calls: entries.length,
+      grouped: groupCostEntries(entries, requestUrl.searchParams.get("groupBy") || "action"),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/cost/summary") {
+    sendJson(res, 200, buildCostSummary(readCostLog().entries || []));
+    return;
+  }
+
+  sendJson(res, 404, { error: "Cost route not found." });
+}
+
+function readCostLog() {
+  ensureDatabase();
+  return readJsonFile(COST_LOG_PATH, { entries: [] });
+}
+
+function saveCostLog(log) {
+  writeJsonFile(COST_LOG_PATH, { entries: Array.isArray(log.entries) ? log.entries : [] });
+}
+
+function estimateCost({ action, hasWorkpaper, hasImage, model }) {
+  const estimates = {
+    review: { base: 8000, withWorkpaper: 12000, outputAvg: 3000 },
+    preparation: { base: 5000, withWorkpaper: 9000, outputAvg: 4000 },
+    notices: { base: 4000, withImage: 5500, outputAvg: 2500 },
+    diagnostics: { base: 2000, withImage: 3500, outputAvg: 1500 },
+    data_entry_guide: { base: 5000, outputAvg: 5000 },
+    organizer: { base: 3000, outputAvg: 3000 },
+    deliverable: { base: 2000, outputAvg: 1500 },
+    learning: { base: 500, outputAvg: 300 },
+    research: { base: 8000, outputAvg: 4000 },
+  };
+  const est = estimates[action] || { base: 3000, outputAvg: 2000 };
+  let inputEst = est.base;
+  if (hasWorkpaper && est.withWorkpaper) inputEst = est.withWorkpaper;
+  if (hasImage && est.withImage) inputEst = est.withImage;
+  const rates = costRatesForModel(model);
+  const inputCostEst = (inputEst / 1_000_000) * rates.inputPerMTok;
+  const outputCostEst = ((est.outputAvg || 0) / 1_000_000) * rates.outputPerMTok;
+  const total = inputCostEst + outputCostEst;
+  return {
+    estimatedInputTokens: inputEst,
+    estimatedOutputTokens: est.outputAvg || 0,
+    estimatedTotalCost: roundMoney(total),
+    estimatedRange: { low: roundMoney(total * 0.7), high: roundMoney(total * 1.5) },
+    model,
+    note: "Estimate only. Actual cost depends on document size.",
+  };
+}
+
+function costRatesForModel(model) {
+  return MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-20250514"];
+}
+
+function calculateCost(usage, model) {
+  const rates = costRatesForModel(model);
+  const inputTokens = Number(usage?.input_tokens || 0);
+  const outputTokens = Number(usage?.output_tokens || 0);
+  const cacheCreationTokens = Number(usage?.cache_creation_input_tokens || 0);
+  const cacheReadTokens = Number(usage?.cache_read_input_tokens || 0);
+  const inputCost = (inputTokens / 1_000_000) * rates.inputPerMTok;
+  const outputCost = (outputTokens / 1_000_000) * rates.outputPerMTok;
+  const cacheCost = (cacheCreationTokens / 1_000_000) * rates.cacheWritePerMTok + (cacheReadTokens / 1_000_000) * rates.cacheReadPerMTok;
+  return {
+    inputTokens,
+    outputTokens,
+    cacheCreationTokens,
+    cacheReadTokens,
+    inputCost: roundMoney(inputCost),
+    outputCost: roundMoney(outputCost),
+    cacheCost: roundMoney(cacheCost),
+    totalCost: roundMoney(inputCost + outputCost + cacheCost),
+  };
+}
+
+function logClaudeCost(req, result, action, tab, payload = {}, startedAt = Date.now()) {
+  const usage = result?.data?.usage;
+  if (!usage) return;
+  const model = result.data.model || result.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514";
+  const now = new Date();
+  const cost = calculateCost(usage, model);
+  const entry = {
+    id: crypto.randomUUID(),
+    timestamp: now.toISOString(),
+    date: now.toISOString().slice(0, 10),
+    week: isoWeekKey(now),
+    month: now.toISOString().slice(0, 7),
+    action,
+    tab,
+    model,
+    ...cost,
+    clientName: resolveClientNameFromPayload(payload),
+    returnType: resolveReturnTypeFromPayload(payload) || null,
+    taxYear: String(payload.metadata?.taxYear || payload.taxYear || payload.context?.taxYear || ""),
+    username: req.user?.username || getSession(req)?.username || "unknown",
+    durationMs: Math.max(0, Date.now() - startedAt),
+  };
+  const log = readCostLog();
+  log.entries.push(entry);
+  saveCostLog(log);
+}
+
+function resolveClientNameFromPayload(payload = {}) {
+  return String(payload.client?.name || payload.clientName || payload.metadata?.clientName || payload.metadata?.entityName || payload.entityName || payload.context?.clientName || "") || null;
+}
+
+function isoWeekKey(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function filterCostEntries(entries, params) {
+  const period = params.get("period") || "all";
+  const action = params.get("action") || "";
+  const today = new Date().toISOString().slice(0, 10);
+  const week = isoWeekKey(new Date());
+  const month = today.slice(0, 7);
+  const startDate = params.get("startDate") || "";
+  const endDate = params.get("endDate") || "";
+  return entries.filter((entry) => {
+    if (action && entry.action !== action) return false;
+    if (period === "today" && entry.date !== today) return false;
+    if (period === "week" && entry.week !== week) return false;
+    if (period === "month" && entry.month !== month) return false;
+    if (startDate && entry.date < startDate) return false;
+    if (endDate && entry.date > endDate) return false;
+    return true;
+  }).sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+}
+
+function groupCostEntries(entries, groupBy) {
+  const grouped = new Map();
+  entries.forEach((entry) => {
+    const key = String(entry[groupBy] || entry.action || "unknown");
+    const current = grouped.get(key) || { key, total: 0, calls: 0 };
+    current.total += Number(entry.totalCost || 0);
+    current.calls += 1;
+    grouped.set(key, current);
+  });
+  return Array.from(grouped.values()).map((item) => ({ ...item, total: roundMoney(item.total), avgCost: roundMoney(item.calls ? item.total / item.calls : 0) }));
+}
+
+function buildCostSummary(entries) {
+  const today = new Date().toISOString().slice(0, 10);
+  const thisWeek = isoWeekKey(new Date());
+  const thisMonth = today.slice(0, 7);
+  const summarize = (filtered) => ({
+    total: roundMoney(filtered.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+    calls: filtered.length,
+    byAction: Object.fromEntries(groupCostEntries(filtered, "action").map((item) => [item.key, item])),
+  });
+  const sorted = entries.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+  return {
+    today: summarize(entries.filter((entry) => entry.date === today)),
+    thisWeek: summarize(entries.filter((entry) => entry.week === thisWeek)),
+    thisMonth: summarize(entries.filter((entry) => entry.month === thisMonth)),
+    allTime: summarize(entries),
+    topCostActions: groupCostEntries(entries, "action").sort((a, b) => b.total - a.total).slice(0, 12),
+    dailyTrend: buildDailyCostTrend(entries, 30),
+    modelBreakdown: groupCostEntries(entries, "model").sort((a, b) => b.total - a.total),
+    recentEntries: sorted.slice(0, 50),
+  };
+}
+
+function buildDailyCostTrend(entries, days) {
+  const output = [];
+  const now = new Date();
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - index);
+    const date = d.toISOString().slice(0, 10);
+    const dayEntries = entries.filter((entry) => entry.date === date);
+    output.push({ date, total: roundMoney(dayEntries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)), calls: dayEntries.length });
+  }
+  return output;
+}
+
+function roundMoney(value) {
+  return Number(Number(value || 0).toFixed(6));
+}
+
+function buildLoginPage(error = "") {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign in - RAG Tax AI</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #f8fafc; }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; }
+      .login-page { display: flex; min-height: 100vh; }
+      .login-left-panel {
+        flex: 0 0 45%; min-height: 100vh; padding: 48px 52px;
+        background: linear-gradient(135deg, #0f1e3d 0%, #1B3A6B 45%, #2563eb 100%);
+        color: white; display: flex; flex-direction: column; justify-content: space-between;
+        position: relative; overflow: hidden;
+      }
+      .login-bg-shapes, .shape { position: absolute; pointer-events: none; }
+      .login-bg-shapes { inset: 0; }
+      .shape { border-radius: 999px; border: 1px solid rgba(255,255,255,.08); }
+      .shape-1 { width: 420px; height: 420px; top: -120px; right: -120px; background: radial-gradient(circle, rgba(37,99,235,.18), transparent 70%); }
+      .shape-2 { width: 280px; height: 280px; bottom: 60px; left: -80px; background: radial-gradient(circle, rgba(255,255,255,.06), transparent 70%); }
+      .shape-3 { width: 180px; height: 180px; top: 45%; right: 20%; }
+      .login-brand, .login-features, .login-left-footer { position: relative; z-index: 1; }
+      .login-logo-mark {
+        width: 68px; height: 68px; border-radius: 16px; margin-bottom: 18px;
+        background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22);
+        display: grid; place-items: center; box-shadow: 0 20px 45px rgba(0,0,0,.18);
+      }
+      .login-app-name { margin: 0; font-size: 42px; line-height: 1; font-weight: 850; letter-spacing: 0; }
+      .login-slogan { margin: 12px 0 0; color: rgba(255,255,255,.72); font-size: 16px; line-height: 1.5; }
+      .login-features { display: grid; gap: 14px; }
+      .login-feature-item { display: flex; align-items: center; gap: 14px; color: rgba(255,255,255,.84); font-size: 14px; }
+      .login-feature-icon { width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; background: rgba(255,255,255,.12); font-weight: 800; }
+      .login-left-footer { display: flex; gap: 8px; color: rgba(255,255,255,.42); font-size: 12px; }
+      .login-right-panel { flex: 1; display: grid; place-items: center; padding: 40px; background: #f8fafc; }
+      .login-form-container { width: min(400px, 100%); }
+      .login-form-title { margin: 0 0 4px; color: #0f1e3d; font-size: 28px; }
+      .login-form-subtitle { margin: 0 0 28px; color: #64748b; font-size: 14px; }
+      .login-role-selector { display: flex; gap: 8px; padding: 4px; margin-bottom: 24px; border-radius: 10px; background: #e2e8f0; }
+      .login-role-btn { flex: 1; border: 0; border-radius: 8px; padding: 9px 12px; background: transparent; color: #64748b; font-weight: 700; cursor: pointer; }
+      .login-role-btn.active { background: white; color: #0f1e3d; box-shadow: 0 1px 4px rgba(15,23,42,.12); }
+      .login-field { margin-bottom: 16px; }
+      .login-field label { display: block; margin-bottom: 6px; color: #374151; font-size: 13px; font-weight: 750; }
+      .login-field input { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 11px 14px; color: #111827; font: inherit; background: white; }
+      .login-field input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+      .login-password-wrapper { position: relative; }
+      .login-show-password { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: #64748b; cursor: pointer; font-weight: 700; }
+      .login-error { border: 1px solid #fca5a5; border-radius: 8px; background: #fef2f2; color: #b91c1c; padding: 10px 12px; margin-bottom: 16px; font-size: 13px; font-weight: 700; }
+      .login-submit-btn { width: 100%; min-height: 44px; border: 0; border-radius: 8px; background: linear-gradient(135deg, #1B3A6B, #2563eb); color: white; cursor: pointer; font-size: 15px; font-weight: 800; display: grid; place-items: center; }
+      .login-submit-btn:hover { opacity: .93; }
+      .login-submit-btn:disabled { opacity: .62; cursor: not-allowed; }
+      .login-version { margin-top: 24px; text-align: center; color: #94a3b8; font-size: 11px; }
+      .spinner { width: 17px; height: 17px; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 7px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (max-width: 820px) {
+        .login-page { display: block; }
+        .login-left-panel { min-height: auto; padding: 30px 24px; }
+        .login-features, .login-left-footer { display: none; }
+        .login-app-name { font-size: 32px; }
+        .login-right-panel { padding: 32px 20px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="login-page">
+      <section class="login-left-panel">
+        <div class="login-bg-shapes"><div class="shape shape-1"></div><div class="shape shape-2"></div><div class="shape shape-3"></div></div>
+        <div class="login-brand">
+          <div class="login-logo-mark" aria-hidden="true">
+            <svg width="52" height="52" viewBox="0 0 64 64" fill="none">
+              <path d="M15 13h24c8 0 14 6 14 13.5S47 40 39 40h-7l18 16H36L18 40h-3V29h24c2 0 4-1 4-3s-2-4-5-4H15V13Z" fill="white"/>
+              <path d="M14 42h13l10 9H14v-9Z" fill="#60a5fa"/>
+            </svg>
+          </div>
+          <h1 class="login-app-name">RAG Tax AI</h1>
+          <p class="login-slogan">Built for CPA firms. Powered by AI.</p>
+        </div>
+        <div class="login-features">
+          <div class="login-feature-item"><span class="login-feature-icon">AI</span><span>AI-powered tax return review</span></div>
+          <div class="login-feature-item"><span class="login-feature-icon">WP</span><span>Automated workpaper preparation</span></div>
+          <div class="login-feature-item"><span class="login-feature-icon">QB</span><span>Direct accounting software integration</span></div>
+          <div class="login-feature-item"><span class="login-feature-icon">GD</span><span>Google Drive and Gmail workflows</span></div>
+        </div>
+        <div class="login-left-footer"><span>Â© 2026 RAG Tax AI</span><span>Â·</span><span>Certifai CPA</span></div>
+      </section>
+      <section class="login-right-panel">
+        <div class="login-form-container">
+          <h2 class="login-form-title">Welcome back</h2>
+          <p class="login-form-subtitle">Sign in to your account</p>
+          <div class="login-role-selector" aria-label="Role selector">
+            <button class="login-role-btn active" data-role="user" type="button">User</button>
+            <button class="login-role-btn" data-role="admin" type="button">Administrator</button>
+          </div>
+          ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : '<div id="error" class="login-error" hidden></div>'}
+          <form id="loginForm">
+            <div class="login-field"><label for="username">Username</label><input id="username" autocomplete="username" placeholder="Enter your username" required /></div>
+            <div class="login-field">
+              <label for="password">Password</label>
+              <div class="login-password-wrapper">
+                <input id="password" type="password" autocomplete="current-password" placeholder="Enter your password" required />
+                <button class="login-show-password" type="button" id="showPasswordButton">Show</button>
+              </div>
+            </div>
+            <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
+          </form>
+          <div class="login-version">RAG Tax AI v2.0 Â· Powered by Claude</div>
+        </div>
+      </section>
+    </main>
+    <script>
+      document.querySelectorAll(".login-role-btn").forEach((button) => {
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".login-role-btn").forEach((item) => item.classList.toggle("active", item === button));
+        });
+      });
+      document.getElementById("showPasswordButton").addEventListener("click", () => {
+        const input = document.getElementById("password");
+        input.type = input.type === "password" ? "text" : "password";
+        document.getElementById("showPasswordButton").textContent = input.type === "password" ? "Show" : "Hide";
+      });
+      document.getElementById("loginForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submit = document.getElementById("loginSubmit");
+        const text = document.getElementById("loginText");
+        const spinner = document.getElementById("loginSpinner");
+        submit.disabled = true;
+        text.hidden = true;
+        spinner.hidden = false;
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (response.ok) {
+          window.location.href = "/";
+          return;
+        }
+        const payload = await response.json().catch(() => ({}));
+        const error = document.getElementById("error");
+        error.hidden = false;
+        error.textContent = payload.error || "Login failed.";
+        submit.disabled = false;
+        text.hidden = false;
+        spinner.hidden = true;
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Review handler
+// ---------------------------------------------------------------------------
+async function handleConfig(_req, res) {
+  const knowledgeBase = await loadContextFiles(KNOWLEDGE_BASE_DIR, "knowledge_base", { includeBackendOnly: false });
+  const reviewExamples = await loadContextFiles(REVIEW_EXAMPLES_DIR, "review_examples", { includeBackendOnly: false });
+  sendJson(res, 200, {
+    apiKeyConfigured: Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim()),
+    webSearchEnabled: WEB_SEARCH_ENABLED,
+    webSearchMaxUses: WEB_SEARCH_MAX_USES,
+    webSearchAllowedDomains: WEB_SEARCH_ALLOWED_DOMAINS,
+    knowledgeBaseCount: knowledgeBase.length,
+    reviewExampleCount: reviewExamples.length,
+    knowledgeBaseFiles: knowledgeBase.map((file) => file.name),
+    reviewExampleFiles: reviewExamples.map((file) => file.name),
+    masterPromptConfigured: Boolean(MASTER_REVIEW_PROMPT),
+    modelFallbacks: MODEL_FALLBACKS,
+    maxFilesPerReview: MAX_FILES_PER_REVIEW,
+    maxUploadMb: MAX_UPLOAD_MB,
+    costModel: {
+      currency: "USD",
+      inputCostPerMillionTokens: CLAUDE_INPUT_COST_PER_MTOK,
+      outputCostPerMillionTokens: CLAUDE_OUTPUT_COST_PER_MTOK,
+    },
+  });
+}
+
+async function handleContextList(req, res) {
+  const requestedUrl = new URL(req.url, `http://${req.headers.host}`);
+  const kind = normalizeContextKind(requestedUrl.searchParams.get("kind") || "");
+  if (!kind) {
+    sendJson(res, 400, { error: "Invalid context kind." });
+    return;
+  }
+
+  const directory = contextDirectoryForKind(kind);
+  const files = await loadContextFiles(directory, kind, { includeBackendOnly: false });
+  sendJson(res, 200, {
+    kind,
+    count: files.length,
+    files: files.map((file) => ({ name: file.name, chars: file.text.length })),
+  });
+}
+
+async function handleContextUpload(req, res) {
+  const payload = await readJsonBody(req);
+  const kind = normalizeContextKind(payload.kind);
+  if (!kind) {
+    sendJson(res, 400, { error: "Invalid context kind." });
+    return;
+  }
+  if (!Array.isArray(payload.files) || !payload.files.length) {
+    sendJson(res, 400, { error: "Upload at least one readable context file." });
+    return;
+  }
+  if (payload.files.length > MAX_CONTEXT_UPLOAD_FILES) {
+    sendJson(res, 400, { error: `Upload at most ${MAX_CONTEXT_UPLOAD_FILES} context files at once.` });
+    return;
+  }
+
+  const directory = contextDirectoryForKind(kind);
+  const saved = [];
+  const skipped = [];
+  await fs.mkdir(directory, { recursive: true });
+
+  for (const file of payload.files) {
+    const name = safeContextRelativePath(file.name || file.originalName || "context.txt");
+    const text = String(file.text || "").trim();
+    if (!text) {
+      skipped.push({ name, reason: "No readable text was extracted." });
+      continue;
+    }
+
+    const ext = path.extname(name).toLowerCase();
+    const finalName = READABLE_CONTEXT_EXTENSIONS.has(ext) ? name : `${name}.txt`;
+    const target = path.join(directory, finalName);
+    const relativeTarget = path.relative(directory, target);
+    if (relativeTarget.startsWith("..") || path.isAbsolute(relativeTarget)) {
+      skipped.push({ name, reason: "Invalid file path." });
+      continue;
+    }
+
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, text, "utf8");
+    saved.push(finalName);
+  }
+
+  sendJson(res, 200, { ok: true, kind, saved, skipped });
+}
+
+function clientFromDbOr404(db, clientId, res) {
+  const client = db.clients[clientId];
+  if (!client) {
+    sendJson(res, 404, { error: "Client not found." });
+    return null;
+  }
+  db.clients[clientId] = normalizeClientRecord(client);
+  return db.clients[clientId];
+}
+
+function addCollectionItem(client, collection, payload, defaults = {}) {
+  client[collection] = Array.isArray(client[collection]) ? client[collection] : [];
+  const now = new Date().toISOString();
+  const item = { id: crypto.randomUUID(), ...defaults, ...payload, addedAt: payload.addedAt || now };
+  client[collection].push(item);
+  client.updatedAt = now;
+  return item;
+}
+
+function updateCollectionItem(client, collection, itemId, payload) {
+  client[collection] = Array.isArray(client[collection]) ? client[collection] : [];
+  const item = client[collection].find((entry) => entry.id === itemId);
+  if (!item) return null;
+  Object.assign(item, payload, { updatedAt: new Date().toISOString() });
+  client.updatedAt = new Date().toISOString();
+  return item;
+}
+
+function deleteCollectionItem(client, collection, itemId) {
+  client[collection] = Array.isArray(client[collection]) ? client[collection] : [];
+  const before = client[collection].length;
+  client[collection] = client[collection].filter((entry) => entry.id !== itemId);
+  client.updatedAt = new Date().toISOString();
+  return before !== client[collection].length;
+}
+
+function saveClientDocument(client, payload = {}) {
+  const now = new Date().toISOString();
+  const doc = {
+    id: crypto.randomUUID(),
+    name: String(payload.name || "document").trim(),
+    description: String(payload.description || ""),
+    category: String(payload.category || "other"),
+    taxYear: payload.taxYear ? String(payload.taxYear) : null,
+    contentBase64: null,
+    driveFolderId: payload.driveFolderId || client.driveFolderId || null,
+    driveFileId: payload.driveFileId || null,
+    driveWebViewLink: payload.driveWebViewLink || null,
+    localPath: null,
+    addedAt: now,
+    tags: Array.isArray(payload.tags) ? payload.tags.map(String) : [],
+  };
+  const contentBase64 = String(payload.contentBase64 || payload.content || "");
+  if (contentBase64) {
+    const buffer = Buffer.from(contentBase64, "base64");
+    if (buffer.length <= 10 * 1024 && /text|json|csv|markdown|xml/i.test(String(payload.mimeType || ""))) {
+      doc.contentBase64 = contentBase64;
+    } else {
+      const safeName = safeFileName(doc.name);
+      const relPath = path.join("data", "client_files", client.id, `${doc.id}-${safeName}`).replace(/\\/g, "/");
+      const absPath = path.join(ROOT, relPath);
+      fsSync.mkdirSync(path.dirname(absPath), { recursive: true });
+      fsSync.writeFileSync(absPath, buffer);
+      doc.localPath = `./${relPath}`;
+    }
+  }
+  client.documents = Array.isArray(client.documents) ? client.documents : [];
+  client.documents.push(doc);
+  client.updatedAt = now;
+  return doc;
+}
+
+function safeFileName(name) {
+  return String(name || "file").replace(/[<>:"/\\|?*\x00-\x1F]+/g, "-").slice(0, 120) || "file";
+}
+
+function handleClientSubresource(req, res, parts) {
+  const clientId = parts[2];
+  const resource = parts[3];
+  const itemId = parts[4];
+  const db = readDb();
+  const client = clientFromDbOr404(db, clientId, res);
+  if (!client) return true;
+
+  const collectionMap = {
+    instructions: "permanentInstructions",
+    "related-parties": "relatedParties",
+    "communication-log": "communicationLog",
+  };
+  if (resource in collectionMap) {
+    const collection = collectionMap[resource];
+    if (req.method === "POST" && parts.length === 4) {
+      readJsonBody(req).then((payload) => {
+        const item = addCollectionItem(client, collection, payload, resource === "instructions" ? { active: true, category: "other" } : {});
+        writeDb(db);
+        sendJson(res, 200, { item, client });
+      }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save item." }));
+      return true;
+    }
+    if (req.method === "PUT" && parts.length === 5) {
+      readJsonBody(req).then((payload) => {
+        const item = updateCollectionItem(client, collection, itemId, payload);
+        if (!item) { sendJson(res, 404, { error: "Item not found." }); return; }
+        writeDb(db);
+        sendJson(res, 200, { item, client });
+      }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update item." }));
+      return true;
+    }
+    if (req.method === "DELETE" && parts.length === 5) {
+      if (!deleteCollectionItem(client, collection, itemId)) { sendJson(res, 404, { error: "Item not found." }); return true; }
+      writeDb(db);
+      sendJson(res, 200, { ok: true, client });
+      return true;
+    }
+  }
+
+  if (resource === "documents") {
+    if (req.method === "POST" && parts.length === 4) {
+      readJsonBody(req).then((payload) => {
+        const document = saveClientDocument(client, payload);
+        writeDb(db);
+        sendJson(res, 200, { document, client });
+      }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save document." }));
+      return true;
+    }
+    if (req.method === "DELETE" && parts.length === 5) {
+      if (!deleteCollectionItem(client, "documents", itemId)) { sendJson(res, 404, { error: "Document not found." }); return true; }
+      writeDb(db);
+      sendJson(res, 200, { ok: true, client });
+      return true;
+    }
+    if (req.method === "GET" && parts.length === 6 && parts[5] === "download") {
+      const doc = (client.documents || []).find((item) => item.id === itemId);
+      if (!doc) { sendJson(res, 404, { error: "Document not found." }); return true; }
+      if (doc.contentBase64) { sendJson(res, 200, { name: doc.name, contentBase64: doc.contentBase64 }); return true; }
+      if (doc.localPath) {
+        const absPath = path.resolve(ROOT, doc.localPath.replace(/^\.\//, ""));
+        if (fsSync.existsSync(absPath)) { sendJson(res, 200, { name: doc.name, contentBase64: fsSync.readFileSync(absPath).toString("base64") }); return true; }
+      }
+      sendJson(res, 404, { error: "Document content is not stored locally." });
+      return true;
+    }
+  }
+
+  if (resource === "deadlines" && req.method === "POST" && parts.length === 5) {
+    readJsonBody(req).then((payload) => {
+      client.deadlines = client.deadlines && typeof client.deadlines === "object" ? client.deadlines : {};
+      client.deadlines[itemId] = { ...(client.deadlines[itemId] || {}), ...payload };
+      client.updatedAt = new Date().toISOString();
+      writeDb(db);
+      rebuildDeadlinesIndex();
+      sendJson(res, 200, { client, deadlines: client.deadlines[itemId] });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save deadline." }));
+    return true;
+  }
+
+  return false;
+}
+
+function handleClientApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (parts.length >= 4 && handleClientSubresource(req, res, parts)) return;
+  if (parts.length === 4 && parts[3] === "tax-software" && req.method === "PUT") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const client = db.clients[parts[2]];
+      if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      client.taxSoftware = normalizeTaxSoftware(payload);
+      client.updatedAt = new Date().toISOString();
+      writeDb(db);
+      sendJson(res, 200, { ok: true, client });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update tax software." }));
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "link-accounting" && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const client = db.clients[parts[2]];
+      if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      const softwareId = String(payload.softwareId || "").trim();
+      const companyId = String(payload.companyId || "").trim();
+      if (!softwareId || !companyId) { sendJson(res, 400, { error: "Missing accounting software or company." }); return; }
+      client.accountingConnections = client.accountingConnections && typeof client.accountingConnections === "object" ? client.accountingConnections : {};
+      client.accountingConnections[softwareId] = {
+        companyId,
+        companyName: String(payload.companyName || companyId).trim(),
+        linkedAt: new Date().toISOString(),
+      };
+      client.updatedAt = new Date().toISOString();
+      writeDb(db);
+      sendJson(res, 200, { ok: true, connection: client.accountingConnections[softwareId] });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not link accounting software." }));
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "link-qbo" && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const client = db.clients[parts[2]];
+      if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      const realmId = String(payload.realmId || "");
+      const company = Object.values(readQboStore().users || {}).flatMap((user) => Object.values(user.companies || {})).find((item) => item.realmId === realmId);
+      client.qboRealmId = realmId;
+      client.qboCompanyName = company?.companyName || realmId;
+      client.qboLinkedAt = new Date().toISOString();
+      client.updatedAt = new Date().toISOString();
+      writeDb(db);
+      sendJson(res, 200, { ok: true, companyName: client.qboCompanyName });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not link QBO company." }));
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "link-qbo" && req.method === "DELETE") {
+    const db = readDb();
+    const client = db.clients[parts[2]];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    delete client.qboRealmId;
+    delete client.qboCompanyName;
+    delete client.qboLinkedAt;
+    client.updatedAt = new Date().toISOString();
+    writeDb(db);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (parts.length === 2 && req.method === "GET") {
+    const db = readDb();
+    sendJson(res, 200, { clients: Object.values(db.clients).sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+    return;
+  }
+  if (parts.length === 2 && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const now = new Date().toISOString();
+      const client = { id: crypto.randomUUID(), ...pickClientFields(payload), name: String(payload.name || "Unnamed client").trim(), createdAt: now, updatedAt: now };
+      db.clients[client.id] = client;
+      writeDb(db);
+      sendJson(res, 200, { client });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not create client." }));
+    return;
+  }
+  if (parts.length === 3 && req.method === "GET") {
+    const db = readDb();
+    const client = db.clients[parts[2]];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    sendJson(res, 200, { client, sessions: Object.values(db.sessions).filter((session) => session.clientId === client.id) });
+    return;
+  }
+  if (parts.length === 3 && req.method === "PUT") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const client = db.clients[parts[2]];
+      if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      Object.assign(client, pickClientFields(payload), { updatedAt: new Date().toISOString() });
+      writeDb(db);
+      sendJson(res, 200, { client });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update client." }));
+    return;
+  }
+  sendJson(res, 405, { error: "Client route not supported." });
+}
+
+function readFirmLibrary() {
+  const library = readJsonFile(FIRM_LIBRARY_PATH, { documents: [], globalInstructions: "", defaultTaxSoftware: "" });
+  return {
+    documents: Array.isArray(library.documents) ? library.documents : [],
+    globalInstructions: String(library.globalInstructions || ""),
+    driveFolderId: library.driveFolderId || null,
+    defaultTaxSoftware: String(library.defaultTaxSoftware || ""),
+  };
+}
+
+function writeFirmLibrary(library) {
+  writeJsonFile(FIRM_LIBRARY_PATH, {
+    documents: Array.isArray(library.documents) ? library.documents : [],
+    globalInstructions: String(library.globalInstructions || ""),
+    driveFolderId: library.driveFolderId || null,
+    defaultTaxSoftware: String(library.defaultTaxSoftware || ""),
+  });
+}
+
+function readLearning() {
+  const learning = readJsonFile(AI_LEARNING_PATH, { globalCorrections: [], clientCorrections: {}, returnTypePatterns: {} });
+  return {
+    globalCorrections: Array.isArray(learning.globalCorrections) ? learning.globalCorrections : [],
+    clientCorrections: learning.clientCorrections && typeof learning.clientCorrections === "object" ? learning.clientCorrections : {},
+    returnTypePatterns: learning.returnTypePatterns && typeof learning.returnTypePatterns === "object" ? learning.returnTypePatterns : {},
+  };
+}
+
+function writeLearning(learning) {
+  writeJsonFile(AI_LEARNING_PATH, {
+    globalCorrections: Array.isArray(learning.globalCorrections) ? learning.globalCorrections : [],
+    clientCorrections: learning.clientCorrections && typeof learning.clientCorrections === "object" ? learning.clientCorrections : {},
+    returnTypePatterns: learning.returnTypePatterns && typeof learning.returnTypePatterns === "object" ? learning.returnTypePatterns : {},
+  });
+}
+
+function readFeedbackStore() {
+  const feedback = readJsonFile(FEEDBACK_PATH, { entries: [] });
+  return { entries: Array.isArray(feedback.entries) ? feedback.entries : [] };
+}
+
+function writeFeedbackStore(feedback) {
+  writeJsonFile(FEEDBACK_PATH, { entries: Array.isArray(feedback.entries) ? feedback.entries : [] });
+}
+
+function handleLibraryApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const library = readFirmLibrary();
+  if (req.method === "GET" && requestUrl.pathname === "/api/library") {
+    sendJson(res, 200, library);
+    return;
+  }
+  if (requestUrl.pathname === "/api/library/global-instructions") {
+    if (req.method === "GET") {
+      sendJson(res, 200, { globalInstructions: library.globalInstructions });
+      return;
+    }
+    if (req.method === "PUT") {
+      readJsonBody(req).then((payload) => {
+        library.globalInstructions = String(payload.globalInstructions ?? payload.text ?? "");
+        writeFirmLibrary(library);
+        sendJson(res, 200, { globalInstructions: library.globalInstructions, savedAt: new Date().toISOString() });
+      }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save global instructions." }));
+      return;
+    }
+  }
+  if (requestUrl.pathname === "/api/library/default-tax-software") {
+    if (req.method === "GET") {
+      sendJson(res, 200, { defaultTaxSoftware: library.defaultTaxSoftware || "" });
+      return;
+    }
+    if (req.method === "PUT") {
+      readJsonBody(req).then((payload) => {
+        library.defaultTaxSoftware = String(payload.defaultTaxSoftware || payload.primary || "").trim();
+        writeFirmLibrary(library);
+        sendJson(res, 200, { defaultTaxSoftware: library.defaultTaxSoftware, savedAt: new Date().toISOString() });
+      }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save default tax software." }));
+      return;
+    }
+  }
+  if (parts.length === 2 && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const now = new Date().toISOString();
+      const doc = {
+        id: crypto.randomUUID(),
+        title: String(payload.title || "Untitled document").trim(),
+        category: String(payload.category || "reference"),
+        applicableTo: Array.isArray(payload.applicableTo) && payload.applicableTo.length ? payload.applicableTo.map(String) : ["all"],
+        content: String(payload.content || ""),
+        contentBase64: payload.contentBase64 || null,
+        mimeType: payload.mimeType || null,
+        driveFolderId: payload.driveFolderId || null,
+        driveFileId: payload.driveFileId || null,
+        driveWebViewLink: payload.driveWebViewLink || null,
+        tags: Array.isArray(payload.tags) ? payload.tags.map(String) : [],
+        alwaysInject: Boolean(payload.alwaysInject),
+        active: payload.active !== false,
+        addedBy: String(payload.addedBy || "local user"),
+        addedAt: now,
+        updatedAt: now,
+      };
+      library.documents.push(doc);
+      writeFirmLibrary(library);
+      sendJson(res, 200, { document: doc, library });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not add library item." }));
+    return;
+  }
+  if (parts.length === 3 && req.method === "PUT") {
+    readJsonBody(req).then((payload) => {
+      const doc = library.documents.find((item) => item.id === parts[2]);
+      if (!doc) { sendJson(res, 404, { error: "Library item not found." }); return; }
+      Object.assign(doc, payload, { updatedAt: new Date().toISOString() });
+      if (payload.applicableTo) doc.applicableTo = Array.isArray(payload.applicableTo) ? payload.applicableTo.map(String) : ["all"];
+      if (payload.tags) doc.tags = Array.isArray(payload.tags) ? payload.tags.map(String) : [];
+      writeFirmLibrary(library);
+      sendJson(res, 200, { document: doc, library });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update library item." }));
+    return;
+  }
+  if (parts.length === 3 && req.method === "DELETE") {
+    const before = library.documents.length;
+    library.documents = library.documents.filter((item) => item.id !== parts[2]);
+    if (before === library.documents.length) { sendJson(res, 404, { error: "Library item not found." }); return; }
+    writeFirmLibrary(library);
+    sendJson(res, 200, { ok: true, library });
+    return;
+  }
+  sendJson(res, 404, { error: "Library route not found." });
+}
+
+function parseIsoDate(date) {
+  const parsed = new Date(date);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function standardDeadline(returnType, taxYear, extended = false) {
+  const year = Number(taxYear) + 1;
+  const type = normalizeReturnType(returnType);
+  const dates = {
+    "1040": extended ? [year, 9, 15] : [year, 3, 15],
+    "1041": extended ? [year, 8, 30] : [year, 3, 15],
+    "1065": extended ? [year, 8, 15] : [year, 2, 15],
+    "1120": extended ? [year, 9, 15] : [year, 3, 15],
+    "1120-S": extended ? [year, 8, 15] : [year, 2, 15],
+    "990": extended ? [year, 10, 15] : [year, 4, 15],
+    "706": [year, 8, 30],
+    "709": [year, 3, 15],
+    "2290": [Number(taxYear), 7, 31],
+  };
+  const parts = dates[type] || dates["1120"];
+  return new Date(Date.UTC(parts[0], parts[1], parts[2]));
+}
+
+function calculateDeadlines(client, taxYear) {
+  const year = String(taxYear);
+  const configured = client.deadlines?.[year] || {};
+  const returnType = client.returnType || client.entityType || "1120";
+  const original = parseIsoDate(configured.originalDeadline) || standardDeadline(returnType, year, false);
+  const extended = configured.extendedDeadline ? parseIsoDate(configured.extendedDeadline) : standardDeadline(returnType, year, true);
+  const extensionFiled = Boolean(configured.extensionFiled);
+  const primaryDue = extensionFiled && extended ? extended : original;
+  const now = new Date();
+  const base = [{
+    clientId: client.id,
+    clientName: client.name,
+    returnType,
+    taxYear: year,
+    deadlineType: extensionFiled ? "extended" : "original",
+    deadlineLabel: `${returnType || "Return"} Filing Deadline`,
+    dueDate: primaryDue.toISOString(),
+    daysUntil: Math.ceil((primaryDue.getTime() - now.getTime()) / 86400000),
+    extensionFiled,
+    notificationsSent: {
+      "90days": Boolean(configured.notifications?.["90days"]?.sent),
+      "60days": Boolean(configured.notifications?.["60days"]?.sent),
+      "30days": Boolean(configured.notifications?.["30days"]?.sent),
+      "15days": Boolean(configured.notifications?.["15days"]?.sent),
+    },
+  }];
+  const estimates = Array.isArray(configured.estimatedPaymentDates) ? configured.estimatedPaymentDates : [];
+  estimates.forEach((date) => {
+    const due = parseIsoDate(date);
+    if (!due) return;
+    base.push({
+      clientId: client.id,
+      clientName: client.name,
+      returnType,
+      taxYear: year,
+      deadlineType: "estimated_payment",
+      deadlineLabel: "Estimated Tax Payment",
+      dueDate: due.toISOString(),
+      daysUntil: Math.ceil((due.getTime() - now.getTime()) / 86400000),
+      extensionFiled,
+      notificationsSent: {},
+    });
+  });
+  (configured.customDeadlines || []).forEach((item) => {
+    const due = parseIsoDate(item.date);
+    if (!due) return;
+    base.push({
+      clientId: client.id,
+      clientName: client.name,
+      returnType,
+      taxYear: year,
+      deadlineType: "custom",
+      deadlineLabel: item.label || "Custom Deadline",
+      dueDate: due.toISOString(),
+      daysUntil: Math.ceil((due.getTime() - now.getTime()) / 86400000),
+      extensionFiled,
+      notificationsSent: {},
+    });
+  });
+  return base.filter((item) => item.daysUntil >= 0);
+}
+
+function rebuildDeadlinesIndex() {
+  const db = readDb();
+  const upcoming = [];
+  Object.values(db.clients || {}).forEach((client) => {
+    const years = new Set(Object.keys(client.taxYears || {}));
+    Object.keys(client.deadlines || {}).forEach((year) => years.add(year));
+    const currentYear = new Date().getFullYear() - 1;
+    if (years.size === 0) years.add(String(currentYear));
+    years.forEach((year) => upcoming.push(...calculateDeadlines(client, year)));
+  });
+  upcoming.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  const index = { lastRebuilt: new Date().toISOString(), upcoming };
+  writeJsonFile(DEADLINES_PATH, index);
+  return index;
+}
+
+function checkDeadlineNotifications() {
+  const db = readDb();
+  const notifications = [];
+  const thresholds = [90, 60, 30, 15];
+  Object.values(db.clients || {}).forEach((client) => {
+    Object.keys(client.deadlines || {}).forEach((year) => {
+      const configured = client.deadlines[year] || {};
+      configured.notifications = configured.notifications || {};
+      calculateDeadlines(client, year).forEach((deadline) => {
+        thresholds.forEach((days) => {
+          const key = `${days}days`;
+          configured.notifications[key] = configured.notifications[key] || { sent: false, sentAt: null };
+          if (deadline.daysUntil <= days && !configured.notifications[key].sent) {
+            notifications.push({ threshold: key, ...deadline });
+            configured.notifications[key] = { sent: true, sentAt: new Date().toISOString() };
+          }
+        });
+      });
+      client.deadlines[year] = configured;
+    });
+  });
+  writeDb(db);
+  rebuildDeadlinesIndex();
+  return { notifications };
+}
+
+function handleDeadlinesApi(req, res, requestUrl) {
+  if (req.method === "GET" && requestUrl.pathname === "/api/deadlines") {
+    sendJson(res, 200, readJsonFile(DEADLINES_PATH, { lastRebuilt: "", upcoming: [] }));
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/deadlines/urgent") {
+    const index = readJsonFile(DEADLINES_PATH, { upcoming: [] });
+    sendJson(res, 200, { upcoming: (index.upcoming || []).filter((item) => item.daysUntil <= 90) });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/deadlines/check") {
+    sendJson(res, 200, checkDeadlineNotifications());
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/deadlines/rebuild") {
+    sendJson(res, 200, rebuildDeadlinesIndex());
+    return;
+  }
+  sendJson(res, 404, { error: "Deadline route not found." });
+}
+
+function handleLearningApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const learning = readLearning();
+  if (req.method === "GET" && parts.length === 2) {
+    sendJson(res, 200, learning);
+    return;
+  }
+  if (req.method === "POST" && parts.length === 3 && parts[2] === "global") {
+    readJsonBody(req).then((payload) => {
+      const item = {
+        id: crypto.randomUUID(),
+        correction: String(payload.correction || payload.text || "").trim(),
+        appliesTo: Array.isArray(payload.appliesTo) && payload.appliesTo.length ? payload.appliesTo.map(String) : ["all"],
+        source: String(payload.source || "manual"),
+        confidence: String(payload.confidence || "medium"),
+        usageCount: 0,
+        addedAt: new Date().toISOString(),
+        active: payload.active !== false,
+      };
+      if (!item.correction) { sendJson(res, 400, { error: "Correction text is required." }); return; }
+      learning.globalCorrections.push(item);
+      writeLearning(learning);
+      sendJson(res, 200, { correction: item, learning });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not add correction." }));
+    return;
+  }
+  if (req.method === "POST" && parts.length === 4 && parts[2] === "client") {
+    readJsonBody(req).then((payload) => {
+      const clientId = parts[3];
+      const item = {
+        id: crypto.randomUUID(),
+        correction: String(payload.correction || payload.text || "").trim(),
+        context: String(payload.context || ""),
+        source: String(payload.source || "manual"),
+        addedAt: new Date().toISOString(),
+        active: payload.active !== false,
+      };
+      if (!item.correction) { sendJson(res, 400, { error: "Correction text is required." }); return; }
+      learning.clientCorrections[clientId] = Array.isArray(learning.clientCorrections[clientId]) ? learning.clientCorrections[clientId] : [];
+      learning.clientCorrections[clientId].push(item);
+      writeLearning(learning);
+      sendJson(res, 200, { correction: item, learning });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not add client correction." }));
+    return;
+  }
+  if (req.method === "PUT" && parts.length === 3) {
+    readJsonBody(req).then((payload) => {
+      const item = findLearningCorrection(learning, parts[2]);
+      if (!item) { sendJson(res, 404, { error: "Correction not found." }); return; }
+      Object.assign(item, payload, { updatedAt: new Date().toISOString() });
+      writeLearning(learning);
+      sendJson(res, 200, { correction: item, learning });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update correction." }));
+    return;
+  }
+  if (req.method === "DELETE" && parts.length === 3) {
+    const item = findLearningCorrection(learning, parts[2]);
+    if (!item) { sendJson(res, 404, { error: "Correction not found." }); return; }
+    item.active = false;
+    writeLearning(learning);
+    sendJson(res, 200, { ok: true, learning });
+    return;
+  }
+  if (req.method === "POST" && parts.length === 4 && parts[2] === "from-feedback") {
+    promoteFeedbackToLearning(parts[3]);
+    sendJson(res, 200, { ok: true, learning: readLearning(), feedback: readFeedbackStore() });
+    return;
+  }
+  sendJson(res, 404, { error: "Learning route not found." });
+}
+
+function findLearningCorrection(learning, id) {
+  const global = learning.globalCorrections.find((item) => item.id === id);
+  if (global) return global;
+  for (const list of Object.values(learning.clientCorrections || {})) {
+    const found = (list || []).find((item) => item.id === id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function handleFeedbackApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const feedback = readFeedbackStore();
+  if (req.method === "GET" && requestUrl.pathname === "/api/feedback/stats") {
+    const stats = { totalEntries: feedback.entries.length, byType: {}, byRating: {}, byTab: {} };
+    feedback.entries.forEach((entry) => {
+      stats.byType[entry.feedbackType || "general"] = (stats.byType[entry.feedbackType || "general"] || 0) + 1;
+      if (entry.rating) stats.byRating[entry.rating] = (stats.byRating[entry.rating] || 0) + 1;
+      stats.byTab[entry.tab || "general"] = (stats.byTab[entry.tab || "general"] || 0) + 1;
+    });
+    sendJson(res, 200, stats);
+    return;
+  }
+  if (req.method === "GET" && parts.length === 2) {
+    sendJson(res, 200, feedback);
+    return;
+  }
+  if (req.method === "POST" && parts.length === 2) {
+    readJsonBody(req).then((payload) => {
+      const entry = {
+        id: crypto.randomUUID(),
+        sessionId: payload.sessionId || null,
+        clientId: payload.clientId || null,
+        returnType: payload.returnType || null,
+        taxYear: payload.taxYear || null,
+        tab: String(payload.tab || "general"),
+        feedbackType: String(payload.feedbackType || "general"),
+        rating: payload.rating ? Number(payload.rating) : null,
+        issueRef: payload.issueRef || null,
+        originalAIOutput: String(payload.originalAIOutput || ""),
+        preparerCorrection: String(payload.preparerCorrection || payload.correction || ""),
+        learnFromThis: Boolean(payload.learnFromThis),
+        addedToLearning: false,
+        addedAt: new Date().toISOString(),
+      };
+      feedback.entries.push(entry);
+      writeFeedbackStore(feedback);
+      if (entry.learnFromThis && entry.preparerCorrection) promoteFeedbackToLearning(entry.id);
+      sendJson(res, 200, { entry, feedback: readFeedbackStore() });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not submit feedback." }));
+    return;
+  }
+  if (req.method === "POST" && parts.length === 4 && parts[3] === "learn") {
+    promoteFeedbackToLearning(parts[2]);
+    sendJson(res, 200, { ok: true, learning: readLearning(), feedback: readFeedbackStore() });
+    return;
+  }
+  sendJson(res, 404, { error: "Feedback route not found." });
+}
+
+function promoteFeedbackToLearning(feedbackId) {
+  const feedback = readFeedbackStore();
+  const entry = feedback.entries.find((item) => item.id === feedbackId);
+  if (!entry || entry.addedToLearning || !entry.preparerCorrection) return null;
+  const learning = readLearning();
+  const correction = {
+    id: crypto.randomUUID(),
+    correction: cleanLearningCorrection(entry.preparerCorrection),
+    source: "feedback",
+    addedAt: new Date().toISOString(),
+    active: true,
+  };
+  if (entry.clientId) {
+    learning.clientCorrections[entry.clientId] = Array.isArray(learning.clientCorrections[entry.clientId]) ? learning.clientCorrections[entry.clientId] : [];
+    learning.clientCorrections[entry.clientId].push({ ...correction, context: entry.originalAIOutput || "" });
+  } else {
+    learning.globalCorrections.push({ ...correction, appliesTo: [entry.returnType || "all"], confidence: "medium", usageCount: 0 });
+  }
+  entry.addedToLearning = true;
+  entry.learnFromThis = true;
+  writeLearning(learning);
+  writeFeedbackStore(feedback);
+  return correction;
+}
+
+function cleanLearningCorrection(text) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, 700);
+}
+
+async function handleDatabaseDriveSyncApi(req, res, requestUrl) {
+  if (req.method !== "POST") { sendJson(res, 405, { error: "Drive sync route requires POST." }); return; }
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (parts[2] === "client" && parts[3]) {
+    const db = readDb();
+    const client = db.clients[parts[3]];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    sendJson(res, 200, { ok: true, folderId: client.driveFolderId || null, message: "Drive sync metadata recorded. Use the Drive picker to attach Drive-hosted files." });
+    return;
+  }
+  if (parts[2] === "auto-upload") {
+    sendJson(res, 200, { ok: true, message: "Auto-upload is queued when Google Drive write access is available." });
+    return;
+  }
+  sendJson(res, 404, { error: "Drive sync route not found." });
+}
+
+async function handleRequestsApi(req, res, requestUrl) {
+  if (req.method === "POST" && requestUrl.pathname === "/api/requests/search-files") {
+    const payload = await readJsonBody(req);
+    const db = readDb();
+    const client = db.clients[String(payload.clientId || "")];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    const results = await searchClientRequestFiles(client, payload);
+    sendJson(res, 200, { results, total: results.length, clientName: client.name });
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/requests/read-files") {
+    const payload = await readJsonBody(req);
+    const db = readDb();
+    const client = db.clients[String(payload.clientId || "")];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    const result = await readClientRequestFiles(client, Array.isArray(payload.files) ? payload.files : []);
+    sendJson(res, 200, result);
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/requests/generate-email") {
+    await handleRequestGenerateEmail(req, res);
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/requests/log") {
+    const payload = await readJsonBody(req);
+    const db = readDb();
+    const client = db.clients[String(payload.clientId || "")];
+    if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    const sentAt = payload.sentAt || new Date().toISOString();
+    const filesSent = Array.isArray(payload.filesSent) ? payload.filesSent : [];
+    client.communicationLog = Array.isArray(client.communicationLog) ? client.communicationLog : [];
+    client.communicationLog.push({
+      id: crypto.randomUUID(),
+      date: sentAt,
+      type: "email",
+      summary: `Sent ${filesSent.length} document(s) per client request: ${filesSent.map((file) => file.name).join(", ")}`,
+      sentTo: payload.sentTo || "",
+      gmailMessageId: payload.gmailMessageId || null,
+      addedBy: "Client Requests",
+      addedAt: new Date().toISOString(),
+    });
+    client.updatedAt = new Date().toISOString();
+    writeDb(db);
+    sendJson(res, 200, { ok: true, client });
+    return;
+  }
+  sendJson(res, 404, { error: "Client request route not found." });
+}
+
+async function searchClientRequestFiles(client, payload = {}) {
+  const query = String(payload.query || "").trim().toLowerCase();
+  const sources = Array.isArray(payload.sources) && payload.sources.length ? payload.sources : ["database", "drive"];
+  const fileTypes = Array.isArray(payload.fileTypes) && payload.fileTypes.length ? payload.fileTypes.map((item) => String(item).toLowerCase()) : ["all"];
+  const taxYear = payload.taxYear ? String(payload.taxYear) : "";
+  const results = [];
+
+  if (sources.includes("database")) {
+    (client.documents || []).filter((doc) => {
+      const haystack = [doc.name, doc.description, doc.category, ...(doc.tags || [])].join(" ").toLowerCase();
+      const matchesQuery = !query || query.split(/\s+/).some((term) => haystack.includes(term));
+      const matchesYear = !taxYear || String(doc.taxYear || "") === taxYear;
+      const matchesType = fileMatchesType(doc.name, doc.mimeType, fileTypes);
+      return matchesQuery && matchesYear && matchesType;
+    }).forEach((doc) => {
+      results.push({
+        id: doc.id,
+        name: doc.name,
+        description: doc.description || "",
+        category: doc.category || "other",
+        taxYear: doc.taxYear || extractYearFromName(doc.name),
+        source: "database",
+        mimeType: doc.mimeType || mimeFromName(doc.name),
+        size: doc.size || null,
+        driveFileId: doc.driveFileId || null,
+        driveWebViewLink: doc.driveWebViewLink || null,
+        hasLocalCopy: Boolean(doc.contentBase64 || doc.localPath),
+        hasDriveCopy: Boolean(doc.driveFileId),
+        addedAt: doc.addedAt || "",
+      });
+    });
+  }
+
+  if (sources.includes("drive") && client.driveFolderId && isGoogleDriveEnabled() && readGoogleTokens()) {
+    try {
+      const safeTerms = query ? query.split(/\s+/).filter(Boolean) : [];
+      const queryFilter = safeTerms.length ? ` and (${safeTerms.map((term) => `name contains '${term.replace(/'/g, "\\'")}'`).join(" or ")})` : "";
+      const q = encodeURIComponent(`'${client.driveFolderId}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'${queryFilter}${driveMimeFilter(fileTypes)}`);
+      const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent("files(id,name,mimeType,size,modifiedTime,webViewLink)")}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const existingDriveIds = new Set((client.documents || []).map((doc) => doc.driveFileId).filter(Boolean));
+        (data.files || []).forEach((file) => {
+          if (existingDriveIds.has(file.id)) return;
+          const year = extractYearFromName(file.name);
+          if (taxYear && year !== taxYear) return;
+          results.push({
+            id: `drive_${file.id}`,
+            name: file.name,
+            description: "",
+            category: "drive",
+            taxYear: year,
+            source: "drive_only",
+            mimeType: file.mimeType || mimeFromName(file.name),
+            size: file.size ? Number(file.size) : null,
+            driveFileId: file.id,
+            driveWebViewLink: file.webViewLink || null,
+            hasLocalCopy: false,
+            hasDriveCopy: true,
+            modifiedTime: file.modifiedTime || "",
+          });
+        });
+      }
+    } catch (error) {
+      console.warn("[Requests] Drive search failed:", error.message);
+    }
+  }
+
+  results.sort((a, b) => {
+    if (a.source === "database" && b.source !== "database") return -1;
+    if (b.source === "database" && a.source !== "database") return 1;
+    if (a.taxYear && b.taxYear && a.taxYear !== b.taxYear) return String(b.taxYear).localeCompare(String(a.taxYear));
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+  return results;
+}
+
+function fileMatchesType(name, mimeType, fileTypes = ["all"]) {
+  if (fileTypes.includes("all")) return true;
+  const lowerName = String(name || "").toLowerCase();
+  const lowerMime = String(mimeType || "").toLowerCase();
+  return fileTypes.some((type) => {
+    if (type === "pdf") return lowerName.endsWith(".pdf") || lowerMime.includes("pdf");
+    if (type === "xlsx" || type === "excel") return /\.(xlsx|xls|csv)$/.test(lowerName) || lowerMime.includes("spreadsheet") || lowerMime.includes("excel") || lowerMime.includes("csv");
+    if (type === "docx" || type === "word") return /\.(docx|doc)$/.test(lowerName) || lowerMime.includes("word") || lowerMime.includes("document");
+    return lowerName.endsWith(`.${type}`) || lowerMime.includes(type);
+  });
+}
+
+function mimeFromName(name = "") {
+  const ext = path.extname(String(name).toLowerCase());
+  if (ext === ".pdf") return "application/pdf";
+  if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (ext === ".xls") return "application/vnd.ms-excel";
+  if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (ext === ".doc") return "application/msword";
+  if (ext === ".csv") return "text/csv";
+  if (ext === ".txt") return "text/plain";
+  return "application/octet-stream";
+}
+
+function extractYearFromName(filename = "") {
+  const match = String(filename).match(/\b(20[2-3][0-9])\b/);
+  return match ? match[1] : null;
+}
+
+async function readClientRequestFiles(client, files) {
+  const output = [];
+  const errors = [];
+  for (const item of files) {
+    try {
+      if (item.source === "drive_only") {
+        const file = await readDriveFile(item.driveFileId, item.name || "drive-file", item.mimeType || "");
+        output.push({ name: file.fileName, mimeType: file.mimeType, contentBase64: file.contentBase64, size: file.sizeBytes });
+        continue;
+      }
+      const doc = (client.documents || []).find((entry) => entry.id === item.id);
+      if (!doc) throw new Error("Document not found in client database.");
+      if (doc.contentBase64) {
+        output.push({ name: doc.name, mimeType: doc.mimeType || mimeFromName(doc.name), contentBase64: doc.contentBase64, size: Buffer.byteLength(doc.contentBase64, "base64") });
+        continue;
+      }
+      if (doc.localPath) {
+        const absPath = path.resolve(ROOT, doc.localPath.replace(/^\.\//, ""));
+        if (!fsSync.existsSync(absPath)) throw new Error("Local copy is missing.");
+        const buffer = fsSync.readFileSync(absPath);
+        output.push({ name: doc.name, mimeType: doc.mimeType || mimeFromName(doc.name), contentBase64: buffer.toString("base64"), size: buffer.length });
+        continue;
+      }
+      if (doc.driveFileId) {
+        const file = await readDriveFile(doc.driveFileId, doc.name, doc.mimeType || "");
+        output.push({ name: file.fileName, mimeType: file.mimeType, contentBase64: file.contentBase64, size: file.sizeBytes });
+        continue;
+      }
+      throw new Error("No local or Drive copy is available.");
+    } catch (error) {
+      errors.push({ name: item.name || item.id || "file", error: error.message });
+    }
+  }
+  return { files: output, errors };
+}
+
+async function handleRequestGenerateEmail(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
+  const prompt = [
+    "Generate a routine client document delivery email.",
+    "",
+    `Client: ${JSON.stringify(payload.client || {})}`,
+    `Preparer: ${JSON.stringify(payload.preparer || {})}`,
+    `Files selected: ${JSON.stringify(payload.files || [])}`,
+    `Client request context: ${payload.requestContext || "Not provided"}`,
+    `Tone: ${payload.tone || "friendly"}`,
+  ].join("\n");
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, [{ type: "text", text: prompt }], { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 1600,
+    webSearch: false,
+    system: [{ type: "text", text: buildClientRequestEmailSystemPrompt() }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "deliverable", "client_requests", payload, startedAt);
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw) || {};
+  const body = String(parsed.body || raw || "");
+  sendJson(res, 200, {
+    subject: String(parsed.subject || "Requested documents"),
+    body,
+    bodyHtml: String(parsed.bodyHtml || plainTextToHtml(body)),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+function buildClientRequestEmailSystemPrompt() {
+  return [
+    "You are a senior CPA at a professional accounting firm responding to a client document request. The client has requested documents and you are sending them.",
+    "Write a short, professional email that greets the client by name, confirms the requested documents are attached, lists what is attached with one short sentence per document, notes any unavailable documents if applicable, includes a professional closing, and is signed by the preparer.",
+    "Keep it concise. This is a routine document delivery email, not a complex tax communication. Use 3-6 sentences for the body.",
+    "Tone rules: formal uses Dear [Last Name] and no contractions; friendly uses Hi [First Name] and warm professional language; brief uses 2-3 sentences max.",
+    'Return only valid JSON inside ```json``` fences: {"subject":"string","body":"string with newline breaks","bodyHtml":"HTML version"}',
+  ].join("\n");
+}
+
+function handleSessionApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (parts.length === 2 && req.method === "GET") {
+    sendJson(res, 200, { sessions: listSessionsWithClients(readDb()) });
+    return;
+  }
+  if (parts.length === 2 && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const client = getOrCreateClient(db, payload.client || payload);
+      const now = new Date().toISOString();
+      const session = normalizeSession({ ...payload, id: crypto.randomUUID(), clientId: client.id, returnType: payload.returnType || client.returnType || "", createdAt: now, updatedAt: now });
+      db.sessions[session.id] = session;
+      writeDb(db);
+      sendJson(res, 200, { session, client });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not create session." }));
+    return;
+  }
+  if (parts.length === 3 && req.method === "GET") {
+    const db = readDb();
+    const session = db.sessions[parts[2]];
+    if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+    sendJson(res, 200, { session, client: db.clients[session.clientId] || null });
+    return;
+  }
+  if (parts.length === 3 && req.method === "PUT") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const session = db.sessions[parts[2]];
+      if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+      Object.assign(session, normalizeSessionUpdate(payload), { updatedAt: new Date().toISOString() });
+      session.issues = countSessionIssues(session);
+      if (payload.client && db.clients[session.clientId]) Object.assign(db.clients[session.clientId], pickClientFields(payload.client), { updatedAt: new Date().toISOString() });
+      if (payload.deliverableSent && db.clients[session.clientId]) appendClientDeliverableRecord(db.clients[session.clientId], session, payload.deliverableSent);
+      writeDb(db);
+      sendJson(res, 200, { session, client: db.clients[session.clientId] || null });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update session." }));
+    return;
+  }
+  if (parts.length === 3 && req.method === "DELETE") {
+    const db = readDb();
+    if (!db.sessions[parts[2]]) { sendJson(res, 404, { error: "Session not found." }); return; }
+    delete db.sessions[parts[2]];
+    writeDb(db);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "resolve-issue" && req.method === "POST") {
+    readJsonBody(req).then((payload) => {
+      const db = readDb();
+      const session = db.sessions[parts[2]];
+      if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+      session.resolvedIssues = Array.isArray(session.resolvedIssues) ? session.resolvedIssues : [];
+      session.resolvedIssues.push({ issueIndex: Number(payload.issueIndex), resolution: String(payload.resolution || ""), resolvedAt: new Date().toISOString() });
+      session.issues = countSessionIssues(session);
+      session.updatedAt = new Date().toISOString();
+      writeDb(db);
+      sendJson(res, 200, { session });
+    }).catch((error) => sendJson(res, 400, { error: error.message || "Could not resolve issue." }));
+    return;
+  }
+  sendJson(res, 405, { error: "Session route not supported." });
+}
+
+async function handleDriveApi(req, res, requestUrl) {
+  if (req.method === "GET" && requestUrl.pathname === "/api/drive/status") {
+    const tokens = readGoogleTokens();
+    const status = { enabled: isGoogleDriveEnabled(), connected: Boolean(tokens?.refresh_token || tokens?.access_token), email: "" };
+    if (status.enabled && status.connected) {
+      const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo").then((r) => r.ok ? r.json() : {}).catch(() => ({}));
+      status.email = profile.email || "";
+    }
+    sendJson(res, 200, status);
+    return;
+  }
+
+  if (!isGoogleDriveEnabled()) { sendJson(res, 503, { enabled: false, connected: false, error: "Google Drive is not configured." }); return; }
+  if (!readGoogleTokens()) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
+
+  if (req.method === "GET" && requestUrl.pathname === "/api/drive/folders") {
+    const parentId = requestUrl.searchParams.get("parentId") || "root";
+    const folders = await listDriveFolders(parentId);
+    sendJson(res, 200, { folders });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/drive/files") {
+    const folderId = requestUrl.searchParams.get("folderId") || "root";
+    const fileTypes = parseDriveFileTypes(requestUrl.searchParams.get("fileTypes"));
+    const pageToken = requestUrl.searchParams.get("pageToken") || "";
+    const payload = await listDriveFiles(folderId, fileTypes, pageToken);
+    sendJson(res, 200, payload);
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/drive/search") {
+    const q = requestUrl.searchParams.get("q") || "";
+    const fileTypes = parseDriveFileTypes(requestUrl.searchParams.get("fileTypes"));
+    const payload = await searchDriveFiles(q, fileTypes);
+    sendJson(res, 200, payload);
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/drive/read-file") {
+    const payload = await readJsonBody(req);
+    const file = await readDriveFile(payload.fileId, payload.fileName, payload.mimeType);
+    sendJson(res, 200, file);
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/drive/read-folder") {
+    const payload = await readJsonBody(req);
+    const fileTypes = parseDriveFileTypes(payload.fileTypes);
+    const result = await readDriveFolder(payload.folderId, payload.folderName, fileTypes);
+    sendJson(res, 200, result);
+    return;
+  }
+  sendJson(res, 404, { error: "Drive route not found." });
+}
+
+async function handleQboApi(req, res, requestUrl) {
+  const username = req.user?.username || "augusto";
+  if (req.method === "GET" && requestUrl.pathname === "/api/qbo/status") {
+    const companies = qboCompaniesForUser(username);
+    sendJson(res, 200, { enabled: isQboEnabled(), connected: companies.length > 0, companies });
+    return;
+  }
+  if (!isQboEnabled()) {
+    sendJson(res, 503, { enabled: false, connected: false, error: "QuickBooks Online is not configured." });
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/qbo/disconnect") {
+    deleteQboUser(username);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/qbo/companies") {
+    sendJson(res, 200, { companies: qboCompaniesForUser(username) });
+    return;
+  }
+  if (req.method === "GET" && requestUrl.pathname === "/api/qbo/reports/available") {
+    sendJson(res, 200, availableQboReports());
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/qbo/reports/fetch") {
+    const payload = await readJsonBody(req);
+    const realmId = String(payload.realmId || "");
+    const reportSpecs = Array.isArray(payload.reports) ? payload.reports : [];
+    if (!realmId) { sendJson(res, 400, { error: "Select a QuickBooks company first." }); return; }
+    const results = await Promise.all(reportSpecs.map(async (spec) => {
+      try {
+        return { report: await fetchQboReport(username, realmId, spec) };
+      } catch (error) {
+        return { error: { reportId: spec.reportId || "", error: error.message || "Report failed." } };
+      }
+    }));
+    const reports = results.filter((item) => item.report).map((item) => item.report);
+    const errors = results.filter((item) => item.error).map((item) => item.error);
+    const company = getQboUserStore(username).companies?.[realmId];
+    if (company) updateQboCompany(username, realmId, { ...company, lastSync: new Date().toISOString() });
+    sendJson(res, 200, { ok: true, reports, errors });
+    return;
+  }
+  sendJson(res, 404, { error: "QBO route not found." });
+}
+
+async function handleAccountingAuthRoute(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const softwareId = parts[2];
+  const isCallback = parts[3] === "callback";
+  const username = req.user?.username || readSession(req)?.username || "augusto";
+  const software = ACCOUNTING_SOFTWARE[softwareId];
+  if (!software) { sendHtml(res, 404, "<p>Accounting software not found.</p>"); return; }
+  if (software.authType === "none") { redirect(res, "/?accounting=manual"); return; }
+  if (software.authType !== "oauth2") {
+    sendHtml(res, 400, `<p>${escapeHtml(software.name)} does not use a browser OAuth redirect. Configure it in environment variables and restart the app.</p>`);
+    return;
+  }
+  if (!isCallback) {
+    redirect(res, buildAccountingAuthUrl(softwareId, username));
+    return;
+  }
+  const code = requestUrl.searchParams.get("code");
+  const realmId = requestUrl.searchParams.get("realmId");
+  let state = {};
+  try { state = JSON.parse(Buffer.from(requestUrl.searchParams.get("state") || "", "base64url").toString("utf8")); } catch (_) {}
+  const owner = state.username || username;
+  if (!code) { sendHtml(res, 400, "<p>Accounting authorization did not return a code.</p>"); return; }
+  const tokens = await exchangeAccountingToken(softwareId, code);
+  if (softwareId === "quickbooks") {
+    const qboTokens = normalizeQboTokens(tokens, realmId || "");
+    writeQboTokenRecord(owner, realmId || "", qboTokens);
+    let companyName = realmId || "QuickBooks company";
+    try {
+      const companyRes = await qboRequest(owner, realmId, `/companyinfo/${realmId}`);
+      companyName = companyRes.CompanyInfo?.CompanyName || companyName;
+    } catch (_) {}
+    updateQboCompany(owner, realmId || "", { companyName, lastSync: new Date().toISOString() });
+    sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"accounting_connected",software:"quickbooks"},"*"); window.close();</script><p>QuickBooks Online connected. You can close this tab.</p></body></html>`);
+    return;
+  }
+  const companies = await fetchAccountingCompanies(softwareId, tokens).catch((error) => [{ id: "default", name: `${software.name} connected`, error: error.message }]);
+  updateAccountingRecord(owner, softwareId, { tokens, companies, connectedAt: new Date().toISOString() });
+  sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"accounting_connected",software:${JSON.stringify(softwareId)}},"*"); window.close();</script><p>${escapeHtml(software.name)} connected. You can close this tab.</p></body></html>`);
+}
+
+async function handleAccountingApi(req, res, requestUrl) {
+  const username = req.user?.username || "augusto";
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (req.method === "GET" && requestUrl.pathname === "/api/accounting/status") {
+    const available = Object.values(ACCOUNTING_SOFTWARE).map((software) => accountingPublicSoftware(software, username));
+    const connected = available.filter((item) => item.connected).map((item) => {
+      const companies = item.softwareId === "quickbooks"
+        ? qboCompaniesForUser(username).map((company) => ({ id: company.realmId, name: company.companyName || company.realmId }))
+        : (getAccountingRecord(username, item.softwareId).companies || []);
+      return { softwareId: item.softwareId, name: item.name, logo: item.logo, companies };
+    });
+    sendJson(res, 200, { connected, available });
+    return;
+  }
+  if (parts.length === 4 && parts[2] === "reports" && parts[3] === "fetch" && req.method === "POST") {
+    const payload = await readJsonBody(req);
+    const softwareId = String(payload.softwareId || "quickbooks");
+    const companyId = String(payload.companyId || "");
+    const reportSpecs = Array.isArray(payload.reports) ? payload.reports : [];
+    if (!companyId) { sendJson(res, 400, { error: "Select a company first." }); return; }
+    const results = await Promise.allSettled(reportSpecs.map((spec) => fetchUnifiedAccountingReport(username, softwareId, companyId, spec)));
+    const reports = [];
+    const errors = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") reports.push(result.value);
+      else errors.push({ reportId: reportSpecs[index]?.reportId || "", error: result.reason?.message || "Report failed." });
+    });
+    sendJson(res, 200, { ok: true, reports, errors });
+    return;
+  }
+  if (parts.length === 5 && parts[2] === "reports" && parts[3] === "available" && req.method === "GET") {
+    const softwareId = parts[4];
+    sendJson(res, 200, accountingReportDefinitions(softwareId));
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "companies" && req.method === "GET") {
+    const softwareId = parts[2];
+    const companies = softwareId === "quickbooks"
+      ? qboCompaniesForUser(username).map((company) => ({ id: company.realmId, name: company.companyName || company.realmId, currency: "", country: "" }))
+      : (getAccountingRecord(username, softwareId).companies || []);
+    sendJson(res, 200, { companies });
+    return;
+  }
+  if (parts.length === 4 && parts[3] === "disconnect" && req.method === "POST") {
+    const softwareId = parts[2];
+    if (softwareId === "quickbooks") deleteQboUser(username);
+    else deleteAccountingRecord(username, softwareId);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 404, { error: "Accounting route not found." });
+}
+
+async function handleHealth(_req, res) {
+  sendJson(res, 200, {
+    ok: true,
+    service: "ai-tax-agent",
+    apiKeyConfigured: Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim()),
+  });
+}
+
+async function handleReview(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!Array.isArray(payload.files) || payload.files.length === 0) {
+    sendJson(res, 400, { error: "Upload at least one document before starting the review." });
+    return;
+  }
+  const startedAt = Date.now();
+  const result = await callClaudeWithFallbacks(apiKey, payload);
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "review", "review", payload, startedAt);
+
+  const raw = extractText(result.data);
+
+  const structured = parseClaudeJson(raw);
+  const savedReviewHistory = saveReviewHistoryFromResult(payload, structured, raw);
+
+  sendJson(res, 200, {
+    review: raw,
+    structured,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+    context: result.context || null,
+    savedReviewHistory,
+  });
+}
+
+function saveReviewHistoryFromResult(payload, structured, raw) {
+  const clientId = resolveClientIdFromPayload(payload);
+  if (!clientId || !structured) return null;
+  const db = readDb();
+  const client = db.clients[clientId];
+  if (!client) return null;
+  const issues = Array.isArray(structured.issues) ? structured.issues : [];
+  const summary = {
+    high: issues.filter((issue) => String(issue.priority || "").toLowerCase() === "high").length,
+    medium: issues.filter((issue) => String(issue.priority || "").toLowerCase() === "medium").length,
+    low: issues.filter((issue) => String(issue.priority || "").toLowerCase() === "low").length,
+  };
+  const entry = {
+    id: crypto.randomUUID(),
+    sessionId: payload.sessionId || payload.metadata?.sessionId || "",
+    taxYear: String(payload.metadata?.taxYear || payload.taxYear || ""),
+    returnType: resolveReturnTypeFromPayload(payload),
+    reviewStage: String(payload.metadata?.reviewStage || payload.reviewStage || "Initial"),
+    runAt: new Date().toISOString(),
+    issuesSummary: summary,
+    executiveSummary: String(structured.executiveSummary || raw || "").slice(0, 500),
+    issues,
+    filingReadiness: String(structured.finalConclusion || ""),
+    feedback: [],
+  };
+  client.reviewHistory = Array.isArray(client.reviewHistory) ? client.reviewHistory : [];
+  client.reviewHistory.unshift(entry);
+  client.reviewHistory = client.reviewHistory.slice(0, 20);
+  client.updatedAt = new Date().toISOString();
+  writeDb(db);
+  return entry;
+}
+
+async function handleReviewResponse(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+
+  const issues = payload.originalReview?.structured?.issues || payload.originalReview?.issues || [];
+  const issueIndex = Number(payload.issueIndex);
+  const issue = Array.isArray(issues) ? issues[issueIndex] : null;
+  if (!issue) {
+    sendJson(res, 400, { error: "Issue not found in the original review." });
+    return;
+  }
+  if (!String(payload.preparerResponse || "").trim()) {
+    sendJson(res, 400, { error: "Write a preparer response before submitting." });
+    return;
+  }
+
+  const content = buildReviewResponseContent(issue, payload);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 1800,
+    webSearch: false,
+    system: [{
+      type: "text",
+      text: "You are a senior tax reviewer evaluating a preparer's response to a flagged issue. Given the original issue and the preparer's response, determine: (1) Is the response adequate to resolve the issue? (2) If yes, what is the correct treatment? (3) If no, what additional information is still needed? Return JSON: { resolved: boolean, resolution: string, followUpRequired: boolean, followUpQuestion: string }",
+    }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "review_response", "review", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw) || {};
+  sendJson(res, 200, {
+    resolved: Boolean(parsed.resolved),
+    resolution: String(parsed.resolution || raw || ""),
+    followUpRequired: Boolean(parsed.followUpRequired),
+    followUpQuestion: String(parsed.followUpQuestion || ""),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleIrsInstructions(_req, res, requestUrl) {
+  const form = String(requestUrl.searchParams.get("form") || "").trim();
+  const year = String(requestUrl.searchParams.get("year") || "").trim();
+  const match = await findIrsInstructionUrl(form, year);
+  if (!match) {
+    sendJson(res, 404, { error: "No IRS instructions URL found for that form and year." });
+    return;
+  }
+  sendJson(res, 200, match);
+}
+
+async function handlePresentationsGenerate(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
+  if (!String(payload.instructions || "").trim()) { sendJson(res, 400, { error: "Write presentation instructions before generating." }); return; }
+
+  const context = buildUploadedFileContext(payload.files || []);
+  const content = buildPresentationContent(payload, context);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 8000,
+    webSearch: false,
+    models: ["claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    system: [{ type: "text", text: buildPresentationSystemPrompt(payload, context.text) }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "presentations", "presentations", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed?.slides?.length) {
+    sendJson(res, 502, { error: "Claude did not return valid presentation JSON. No PowerPoint file was generated.", raw });
+    return;
+  }
+  const spec = normalizePresentationSpec(parsed, payload);
+  let pptxBuffer;
+  try {
+    pptxBuffer = await buildPresentation(spec);
+  } catch (error) {
+    sendJson(res, 502, { error: `PowerPoint file generation failed: ${error.message || "unknown error"}` });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    filename: safeFileName(`${spec.presentationTitle || "Client_Presentation"}_${payload.clientName || "Client"}.pptx`),
+    contentBase64: pptxBuffer.toString("base64"),
+    slideCount: spec.slides.length,
+    slideOutline: spec.slides.map((slide) => ({ slideNumber: slide.slideNumber, title: slide.title, type: slide.type })),
+    tokensUsed: result.data.usage || null,
+    cost: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleCalculationsRun(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
+  if (!String(payload.instructions || "").trim()) { sendJson(res, 400, { error: "Write calculation instructions before running." }); return; }
+
+  const context = buildUploadedFileContext(payload.files || []);
+  const content = buildCalculationContent(payload, context);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 12000,
+    webSearch: false,
+    system: [{ type: "text", text: buildCalculationSystemPrompt(payload, context.text) }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "calculations", "calculations", payload, startedAt);
+
+  const raw = extractText(result.data);
+  let parsed = parseClaudeJson(raw);
+  let repairedRaw = "";
+  if (!parsed) {
+    const repairStartedAt = Date.now();
+    const repair = await repairCalculationJson(apiKey, raw, payload, context.text);
+    if (repair.ok) {
+      logClaudeCost(req, repair, "calculations", "calculations", { ...payload, repair: true }, repairStartedAt);
+      repairedRaw = extractText(repair.data);
+      parsed = parseClaudeJson(repairedRaw);
+    }
+  }
+  if (!parsed) {
+    sendJson(res, 502, { error: "Claude did not return valid calculation JSON. No Excel workbook was generated.", raw, repairedRaw });
+    return;
+  }
+  let workbook;
+  try {
+    workbook = normalizeCalculationWorkbook(parsed, payload);
+  } catch (error) {
+    sendJson(res, 502, { error: error.message || "Claude did not return usable workbook sheets.", raw });
+    return;
+  }
+  let xlsxBuffer;
+  try {
+    xlsxBuffer = buildSimpleXlsx(workbook);
+  } catch (error) {
+    sendJson(res, 502, { error: `Excel file generation failed: ${error.message || "unknown error"}` });
+    return;
+  }
+  sendJson(res, 200, {
+    ok: true,
+    filename: safeFileName(`Calculations_${payload.clientName || "Client"}_${payload.calculationTitle || "Analysis"}.xlsx`),
+    contentBase64: xlsxBuffer.toString("base64"),
+    workbook,
+    sheetNames: workbook.sheets.map((sheet) => sheet.name),
+    executiveSummary: String(parsed.executiveSummary || ""),
+    flagCount: countCalculationFlags(parsed),
+    tokensUsed: result.data.usage || null,
+    cost: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+function buildUploadedFileContext(files = []) {
+  const textParts = [];
+  const images = [];
+  for (const file of Array.isArray(files) ? files.slice(0, 30) : []) {
+    const name = String(file.name || "Uploaded file");
+    const type = String(file.type || mimeFromName(name) || "");
+    const content = String(file.content || file.contentBase64 || "");
+    const workbookTemplates = [
+      file.workbookTemplate,
+      ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : []),
+    ].filter((template) => template?.sheets?.length);
+    if (String(file.text || "").trim()) {
+      const templateBlock = workbookTemplates.length
+        ? ["", "=== STRUCTURED WORKBOOK TEMPLATE TO MIRROR ===", safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
+        : "";
+      textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n${String(file.text).trim().slice(0, 60000)}${templateBlock}`);
+      continue;
+    }
+    if (!content) {
+      if (workbookTemplates.length) {
+        textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n=== STRUCTURED WORKBOOK TEMPLATE TO MIRROR ===\n${safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)}`);
+      }
+      continue;
+    }
+    const buffer = Buffer.from(content, "base64");
+    if (/^image\//i.test(type) || /\.(png|jpe?g)$/i.test(name)) {
+      images.push({ name, type: type || "image/png", content });
+      continue;
+    }
+    let extracted = "";
+    try {
+      if (/\.docx$/i.test(name) || type.includes("wordprocessingml.document")) extracted = extractDocxText(buffer);
+      else if (/\.xlsx$/i.test(name) || type.includes("spreadsheet")) extracted = extractXlsxText(buffer);
+      else if (/\.zip$/i.test(name) || type.includes("zip")) extracted = extractZipPackageTextServer(buffer, name);
+      else if (/\.csv$/i.test(name) || type.includes("csv")) extracted = buffer.toString("utf8");
+      else if (/\.json$/i.test(name) || type.includes("json")) extracted = buffer.toString("utf8");
+      else if (/\.txt$/i.test(name) || type.startsWith("text/")) extracted = buffer.toString("utf8");
+      else if (/\.pdf$/i.test(name) || type.includes("pdf")) extracted = extractPdfPlainText(buffer);
+      else extracted = buffer.toString("utf8").replace(/[^\x09\x0A\x0D\x20-\x7E]+/g, " ").slice(0, 12000);
+    } catch (error) {
+      extracted = `[Could not extract text from ${name}: ${error.message || "unknown error"}]`;
+    }
+    if (extracted.trim() || workbookTemplates.length) {
+      const templateBlock = workbookTemplates.length
+        ? ["", "=== STRUCTURED WORKBOOK TEMPLATE TO MIRROR ===", safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
+        : "";
+      textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n${extracted.trim().slice(0, 60000)}${templateBlock}`);
+    }
+  }
+  return { text: textParts.join("\n\n---\n\n").slice(0, 180000), images };
+}
+
+function extractPdfPlainText(buffer) {
+  const text = buffer.toString("latin1").replace(/\r/g, "\n");
+  const matches = Array.from(text.matchAll(/\(([^()]|\\.){3,}\)\s*Tj/g)).map((m) => m[0].replace(/\)\s*Tj$/, "").slice(1).replace(/\\([()\\])/g, "$1"));
+  const joined = matches.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return joined || "[PDF uploaded. Server could not extract readable text from this PDF; use visible document metadata and any image analysis if available.]";
+}
+
+function extractXlsxText(buffer) {
+  const sharedXml = readZipEntry(buffer, "xl/sharedStrings.xml") || "";
+  const shared = Array.from(sharedXml.matchAll(/<si[\s\S]*?<\/si>/g)).map((m) => stripXmlText(m[0]));
+  const parts = [];
+  for (let index = 1; index <= 20; index += 1) {
+    const xml = readZipEntry(buffer, `xl/worksheets/sheet${index}.xml`);
+    if (!xml) continue;
+    const rows = [];
+    for (const rowMatch of xml.matchAll(/<row[\s\S]*?<\/row>/g)) {
+      const values = [];
+      for (const cellMatch of rowMatch[0].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+        const attrs = cellMatch[1] || "";
+        const body = cellMatch[2] || "";
+        const valueMatch = body.match(/<v>([\s\S]*?)<\/v>/);
+        const inlineMatch = body.match(/<t[^>]*>([\s\S]*?)<\/t>/);
+        let value = inlineMatch ? stripXmlText(inlineMatch[1]) : valueMatch ? stripXmlText(valueMatch[1]) : "";
+        if (/\bt="s"/.test(attrs)) value = shared[Number(value)] || value;
+        values.push(value);
+      }
+      if (values.some(Boolean)) rows.push(values.join(", "));
+      if (rows.length >= 100) break;
+    }
+    if (rows.length) parts.push(`Sheet ${index}\n${rows.join("\n")}`);
+  }
+  return parts.join("\n\n");
+}
+
+function buildPresentationContent(payload, context) {
+  const blocks = context.images.slice(0, 6).map((image) => ({
+    type: "image",
+    source: { type: "base64", media_type: image.type || "image/png", data: image.content },
+  }));
+  blocks.push({ type: "text", text: buildPresentationUserPrompt(payload, context.text) });
+  return blocks;
+}
+
+function buildPresentationSystemPrompt(payload, extractedText) {
+  return `You are a professional presentation designer and financial communicator specializing in CPA firm client presentations.
+
+Create clear PowerPoint presentations that explain financial and tax information to clients.
+
+Rules:
+- Each slide has one clear message.
+- Use short bullets, max 5 words where possible.
+- Format numbers with dollar signs and commas.
+- Explain tax jargon.
+- Include visual suggestions.
+- Return ONLY valid JSON inside \`\`\`json fences.
+
+Client: ${payload.clientName || "Client"}
+Firm: ${payload.firmName || "CPA Firm"}
+Prepared by: ${payload.preparedBy || "CPA"}
+Tax Year: ${payload.taxYear || ""}
+Language: ${payload.language || "en"}
+
+Uploaded content:
+${extractedText || "(No readable text extracted.)"}`;
+}
+
+function buildPresentationUserPrompt(payload, extractedText) {
+  return `Build a ${payload.style || "professional"} client presentation.
+Requested slide count: ${payload.slideCount || "auto"}
+Include agenda: ${Boolean(payload.includeAgenda)}
+Include executive summary: ${Boolean(payload.includeSummary)}
+
+User instructions:
+${payload.instructions || ""}
+
+Output schema:
+{
+  "presentationTitle": "string",
+  "subtitle": "string",
+  "totalSlides": 5,
+  "theme": {"primaryColor":"1B3A6B","secondaryColor":"2563EB","accentColor":"60A5FA","backgroundColor":"FFFFFF","textColor":"0F172A","fontTitle":"Aptos Display","fontBody":"Aptos"},
+  "slides": [
+    {"slideNumber":1,"type":"title_slide|agenda|two_column|bullets|big_number|table|timeline|comparison|action_items|closing","title":"string","subtitle":null,"bullets":["string"],"columns":[{"header":"string","content":"string"}],"tableData":{"headers":["string"],"rows":[["string"]]},"chartData":null,"bigNumbers":[{"value":"string","label":"string","change":null}],"timelineItems":[{"date":"string","event":"string","description":"string"}],"actionItems":[{"number":1,"action":"string","owner":"string","deadline":"string"}],"quote":null,"speakerNotes":"string","visualSuggestion":"string","backgroundColor":null}
+  ]
+}
+
+Use this extracted source content:
+${extractedText || "(No readable text extracted.)"}`;
+}
+
+function buildCalculationContent(payload, context) {
+  const blocks = context.images.slice(0, 8).map((image) => ({
+    type: "image",
+    source: { type: "base64", media_type: image.type || "image/png", data: image.content },
+  }));
+  blocks.push({ type: "text", text: buildCalculationUserPrompt(payload, context.text) });
+  return blocks;
+}
+
+function buildCalculationSystemPrompt(payload, extractedText) {
+  return `You are a senior CPA and financial analyst. Perform the user's requested calculations from uploaded financial data.
+
+Rules:
+- Show all work and make every number traceable.
+- Label every row clearly.
+- Round currency and percentages appropriately.
+- Flag missing data, discrepancies, and totals that do not tie.
+- Return ONLY one valid JSON object. Do not include prose before or after it.
+- Every sheet must contain either sections with columns/rows or direct rows.
+- Every material number must include a source row, note, or formula/reference in the workbook content.
+- If data is missing, create a flag. Do not invent amounts.
+
+Uploaded content:
+${extractedText || "(No readable text extracted.)"}`;
+}
+
+function buildCalculationUserPrompt(payload, extractedText) {
+  return `Client: ${payload.clientName || "Client"}
+Calculation title: ${payload.calculationTitle || "Misc Calculation"}
+Instructions:
+${payload.instructions || ""}
+
+Output options:
+${JSON.stringify(payload.outputFormat || {}, null, 2)}
+
+Return this schema:
+{
+  "calculationTitle": "string",
+  "clientName": "string",
+  "dateGenerated": "YYYY-MM-DD",
+  "executiveSummary": "string",
+  "sheets": [
+    {
+      "sheetName": "Summary",
+      "sheetType": "summary",
+      "description": "string",
+      "sections": [
+        {
+          "sectionTitle": "string",
+          "sectionDescription": "string",
+          "columns": [{"header":"Description","dataType":"text","width":24},{"header":"Amount","dataType":"currency","width":14}],
+          "rows": [{"cells":["Label",123.45],"source":"file/page/line","notes":"string","flag":null}],
+          "totals": [{"label":"Total","value":123.45}]
+        }
+      ]
+    }
+  ],
+  "flags": [{"severity":"high|medium|low","message":"string","sheet":"string","row":"string"}]
+}
+
+Source content:
+${extractedText || "(No readable text extracted.)"}`;
+}
+
+async function repairCalculationJson(apiKey, raw, payload, extractedText) {
+  const repairPrompt = `The prior response did not parse as JSON. Convert it into ONE valid JSON object matching this schema. Do not add markdown fences or explanation.
+
+Required schema:
+{
+  "calculationTitle": "string",
+  "clientName": "string",
+  "dateGenerated": "YYYY-MM-DD",
+  "executiveSummary": "string",
+  "sheets": [
+    {
+      "sheetName": "Summary",
+      "sheetType": "summary|detail|support",
+      "description": "string",
+      "sections": [
+        {
+          "sectionTitle": "string",
+          "sectionDescription": "string",
+          "columns": [{"header":"Description","dataType":"text","width":24},{"header":"Amount","dataType":"currency","width":14},{"header":"Source","dataType":"text","width":32}],
+          "rows": [{"cells":["Label",123.45,"source file / line"],"source":"file/page/line","notes":"string","flag":null}],
+          "totals": [{"label":"Total","value":123.45}]
+        }
+      ]
+    }
+  ],
+  "flags": [{"severity":"high|medium|low","message":"string","sheet":"string","row":"string"}]
+}
+
+Client: ${payload.clientName || "Client"}
+Calculation title: ${payload.calculationTitle || "Misc Calculation"}
+User instructions:
+${payload.instructions || ""}
+
+Available uploaded content summary:
+${String(extractedText || "(No readable text extracted.)").slice(0, 60000)}
+
+Prior response to convert:
+${String(raw || "").slice(0, 60000)}`;
+
+  return callClaudeContentWithFallbacks(apiKey, [{ type: "text", text: repairPrompt }], { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 10000,
+    webSearch: false,
+    system: [{ type: "text", text: "You are a strict JSON repair engine. Return only valid JSON. Do not use markdown fences. Do not invent missing amounts; flag missing data instead." }],
+  });
+}
+
+function normalizePresentationSpec(parsed, payload) {
+  const theme = parsed.theme || {};
+  const defaultTheme = presentationTheme(payload.style);
+  return {
+    presentationTitle: String(parsed.presentationTitle || payload.instructions || "Client Presentation").slice(0, 120),
+    subtitle: String(parsed.subtitle || `${payload.clientName || "Client"} ${payload.taxYear || ""}`).trim(),
+    firmName: String(payload.firmName || "CPA Firm"),
+    preparedBy: String(payload.preparedBy || "CPA"),
+    theme: {
+      primaryColor: cleanHex(theme.primaryColor, defaultTheme.primaryColor),
+      secondaryColor: cleanHex(theme.secondaryColor, defaultTheme.secondaryColor),
+      accentColor: cleanHex(theme.accentColor, defaultTheme.accentColor),
+      backgroundColor: cleanHex(theme.backgroundColor, defaultTheme.backgroundColor),
+      textColor: cleanHex(theme.textColor, defaultTheme.textColor),
+      fontTitle: String(theme.fontTitle || "Aptos Display"),
+      fontBody: String(theme.fontBody || "Aptos"),
+    },
+    slides: parsed.slides.slice(0, 20).map((slide, index) => ({
+      slideNumber: Number(slide.slideNumber || index + 1),
+      type: String(slide.type || (index === 0 ? "title_slide" : "bullets")),
+      title: String(slide.title || `Slide ${index + 1}`),
+      subtitle: slide.subtitle ? String(slide.subtitle) : "",
+      bullets: Array.isArray(slide.bullets) ? slide.bullets.map(String).slice(0, 8) : [],
+      columns: Array.isArray(slide.columns) ? slide.columns.slice(0, 3).map((col) => ({ header: String(col.header || ""), content: String(col.content || "") })) : [],
+      tableData: slide.tableData && Array.isArray(slide.tableData.headers) ? slide.tableData : null,
+      bigNumbers: Array.isArray(slide.bigNumbers) ? slide.bigNumbers.slice(0, 3) : [],
+      timelineItems: Array.isArray(slide.timelineItems) ? slide.timelineItems.slice(0, 6) : [],
+      actionItems: Array.isArray(slide.actionItems) ? slide.actionItems.slice(0, 8) : [],
+      quote: slide.quote ? String(slide.quote) : "",
+      speakerNotes: String(slide.speakerNotes || ""),
+      visualSuggestion: String(slide.visualSuggestion || ""),
+      backgroundColor: slide.backgroundColor ? cleanHex(slide.backgroundColor, "") : "",
+    })),
+  };
+}
+
+function normalizeCalculationWorkbook(parsed, payload) {
+  parsed = coerceCalculationParsedShape(parsed, payload);
+  const sheets = [];
+  const summaryRows = [["Calculation", parsed.calculationTitle || payload.calculationTitle || "Misc Calculation"], ["Client", parsed.clientName || payload.clientName || ""], ["Generated", parsed.dateGenerated || new Date().toISOString().slice(0, 10)], [], ["Executive Summary"], [parsed.executiveSummary || ""]];
+  if (payload.outputFormat?.includeSummarySheet !== false) sheets.push({ name: "Summary", rows: summaryRows, cols: [{ wch: 22 }, { wch: 80 }], styles: [{ r: 0, c: 0, bold: true }, { r: 4, c: 0, bold: true }] });
+  for (const sheet of Array.isArray(parsed.sheets) ? parsed.sheets : []) {
+    const rows = [];
+    if (Array.isArray(sheet.rows) && sheet.rows.length) {
+      for (const row of sheet.rows) rows.push(Array.isArray(row) ? row.map(normalizeCellValue) : Object.values(row).map(normalizeCellValue));
+    }
+    for (const section of Array.isArray(sheet.sections) ? sheet.sections : []) {
+      if (section.sectionTitle) rows.push([String(section.sectionTitle)]);
+      const headers = Array.isArray(section.columns) ? section.columns.map((col) => String(col.header || "")) : [];
+      if (headers.length) rows.push(headers);
+      for (const row of Array.isArray(section.rows) ? section.rows : []) {
+        rows.push(Array.isArray(row.cells) ? row.cells.map(normalizeCellValue) : Object.values(row).map(normalizeCellValue));
+      }
+      for (const total of Array.isArray(section.totals) ? section.totals : []) rows.push([String(total.label || "Total"), normalizeCellValue(total.value)]);
+      rows.push([]);
+    }
+    if (rows.length) sheets.push({ name: String(sheet.sheetName || sheet.name || "Detail").slice(0, 31), rows, cols: [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }] });
+  }
+  const flags = Array.isArray(parsed.flags) ? parsed.flags : [];
+  if (flags.length) sheets.push({ name: "Flags", rows: [["Severity", "Message", "Sheet", "Row"], ...flags.map((f) => [f.severity || "", f.message || "", f.sheet || "", f.row || ""])], cols: [{ wch: 12 }, { wch: 70 }, { wch: 22 }, { wch: 16 }] });
+  if (!sheets.length) throw new Error("Calculation JSON did not contain usable sheets.");
+  return normalizeWorkbook({ sheets }, "", payload);
+}
+
+function coerceCalculationParsedShape(parsed, payload) {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  if (source.workbook?.sheets && !source.sheets) source.sheets = source.workbook.sheets;
+  if (Array.isArray(source.tables) && !source.sheets) {
+    source.sheets = source.tables.map((table, index) => ({
+      sheetName: table.name || table.title || `Table ${index + 1}`,
+      sheetType: "detail",
+      sections: [{
+        sectionTitle: table.title || table.name || `Table ${index + 1}`,
+        sectionDescription: table.description || "",
+        columns: Array.isArray(table.headers) ? table.headers.map((header) => ({ header: String(header), dataType: "text", width: 18 })) : [],
+        rows: Array.isArray(table.rows) ? table.rows.map((row) => ({ cells: Array.isArray(row) ? row : Object.values(row || {}) })) : [],
+        totals: Array.isArray(table.totals) ? table.totals : [],
+      }],
+    }));
+  }
+  if (Array.isArray(source.sections) && !source.sheets) {
+    source.sheets = [{ sheetName: "Calculation", sheetType: "detail", sections: source.sections }];
+  }
+  if (Array.isArray(source.rows) && !source.sheets) {
+    source.sheets = [{ sheetName: "Calculation", sheetType: "detail", rows: source.rows }];
+  }
+  source.calculationTitle = source.calculationTitle || source.title || payload.calculationTitle || "Misc Calculation";
+  source.clientName = source.clientName || payload.clientName || "";
+  source.executiveSummary = source.executiveSummary || source.summary || source.analysisSummary || "";
+  source.flags = Array.isArray(source.flags) ? source.flags : [];
+  return source;
+}
+
+function normalizeCellValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  return String(value);
+}
+
+function countCalculationFlags(parsed) {
+  return Array.isArray(parsed.flags) ? parsed.flags.length : 0;
+}
+
+function presentationTheme(style) {
+  const themes = {
+    modern: { primaryColor: "1D4ED8", secondaryColor: "0F172A", accentColor: "38BDF8", backgroundColor: "FFFFFF", textColor: "0F172A" },
+    minimal: { primaryColor: "0F172A", secondaryColor: "475569", accentColor: "2563EB", backgroundColor: "FFFFFF", textColor: "111827" },
+    bold: { primaryColor: "0B1220", secondaryColor: "2563EB", accentColor: "60A5FA", backgroundColor: "FFFFFF", textColor: "0F172A" },
+    professional: { primaryColor: "1B3A6B", secondaryColor: "2563EB", accentColor: "60A5FA", backgroundColor: "FFFFFF", textColor: "0F172A" },
+  };
+  return themes[String(style || "").toLowerCase()] || themes.professional;
+}
+
+function cleanHex(value, fallback) {
+  const hex = String(value || "").replace("#", "").trim();
+  return /^[0-9a-f]{6}$/i.test(hex) ? hex.toUpperCase() : fallback;
+}
+
+function buildSimpleXlsx(workbook) {
+  const sheets = workbook.sheets.slice(0, 30);
+  const sheetXml = {};
+  sheets.forEach((sheet, index) => { sheetXml[`xl/worksheets/sheet${index + 1}.xml`] = worksheetXml(sheet); });
+  const sheetDefs = sheets.map((sheet, index) => `<sheet name="${escapeXml(safeSheetName(sheet.name || `Sheet ${index + 1}`))}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("");
+  const rels = sheets.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("");
+  const overrides = sheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
+  return createZipStore({
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}</Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetDefs}</sheets></workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+    "xl/styles.xml": `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEFF6FF"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf fontId="0" fillId="0" borderId="0" xfId="0"/><xf fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>`,
+    ...sheetXml,
+  });
+}
+
+function worksheetXml(sheet) {
+  const rows = normalizeRows(sheet.rows).slice(0, 5000);
+  const xmlRows = rows.map((row, rIdx) => `<row r="${rIdx + 1}">${row.map((cell, cIdx) => cellXml(cell, rIdx + 1, cIdx + 1, rIdx === 0 ? 1 : 0)).join("")}</row>`).join("");
+  const cols = Array.isArray(sheet.cols) && sheet.cols.length ? `<cols>${sheet.cols.slice(0, 50).map((col, idx) => `<col min="${idx + 1}" max="${idx + 1}" width="${Number(col.wch || col.width || 14)}" customWidth="1"/>`).join("")}</cols>` : "";
+  return `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${cols}<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>${xmlRows}</sheetData></worksheet>`;
+}
+
+function cellXml(value, row, col, style) {
+  const ref = `${columnName(col)}${row}`;
+  if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"${style ? ` s="${style}"` : ""}><v>${value}</v></c>`;
+  return `<c r="${ref}" t="inlineStr"${style ? ` s="${style}"` : ""}><is><t>${escapeXml(String(value ?? ""))}</t></is></c>`;
+}
+
+function columnName(number) {
+  let name = "";
+  let n = number;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    name = String.fromCharCode(65 + rem) + name;
+    n = Math.floor((n - 1) / 26);
+  }
+  return name;
+}
+
+function safeSheetName(name) {
+  return String(name || "Sheet").replace(/[\\/?*\[\]:]/g, " ").slice(0, 31).trim() || "Sheet";
+}
+
+function safeFileName(name) {
+  return String(name || "download").replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_");
+}
+
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function createZipStore(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  Object.entries(files).forEach(([name, value]) => {
+    const data = Buffer.isBuffer(value) ? value : Buffer.from(String(value), "utf8");
+    const nameBuf = Buffer.from(name, "utf8");
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(0, 10);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, nameBuf, data);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt32LE(0, 12);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBuf.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBuf);
+    offset += local.length + nameBuf.length + data.length;
+  });
+  const centralStart = offset;
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralStart, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+let CRC32_TABLE = null;
+function crc32(buffer) {
+  if (!CRC32_TABLE) {
+    CRC32_TABLE = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+  }
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function handlePrepareWorkpaper(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!String(payload.metadata?.instructions || "").trim()) {
+    sendJson(res, 400, { error: "Write preparer instructions before generating the workbook." });
+    return;
+  }
+  if (!Array.isArray(payload.files) || payload.files.length === 0) {
+    sendJson(res, 400, { error: "Upload at least one preparation file before generating the workbook." });
+    return;
+  }
+
+  const taxSoftware = resolveTaxSoftwareFromPayload(payload);
+  const returnType = resolveReturnTypeFromPayload(payload);
+  const taxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
+  payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
+  const content = buildPreparerContent(payload);
+  const softwareContext = buildSoftwareContext(taxSoftware, returnType, taxYear);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 16000,
+    webSearch: false,
+    system: [{
+      type: "text",
+      text: withDatabaseContext(`${softwareContext}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper.`, payload, "preparation"),
+    }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "preparation", "preparation", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed) {
+    sendJson(res, 502, {
+      error: "Claude did not return valid workbook JSON. No Excel file was generated because raw JSON/text is not an acceptable workpaper output.",
+      raw,
+    });
+    return;
+  }
+  let workbook;
+  try {
+    workbook = normalizeWorkbook(parsed, raw, payload);
+  } catch (error) {
+    sendJson(res, 502, {
+      error: error.message || "Claude did not return usable workbook sheets. No Excel file was generated.",
+      raw,
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    workbook,
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handlePreparationDataEntryGuide(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+
+  const returnType = String(payload.returnType || "1120").trim();
+  const taxYear = String(payload.taxYear || new Date().getFullYear()).trim();
+  const taxSoftware = String(payload.taxSoftware || "proconnect").trim();
+  const content = [{
+    type: "text",
+    text: buildDataEntryGuidePrompt({
+      ...payload,
+      returnType,
+      taxYear,
+      taxSoftware,
+      highReviewIssues: highReviewIssuesForEntryGuide(payload.reviewResult),
+    }),
+  }];
+
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 6500,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware), payload, "preparation") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "data_entry_guide", "preparation", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed) {
+    sendJson(res, 502, { error: "Claude did not return valid entry guide JSON.", raw });
+    return;
+  }
+
+  const guide = normalizeEntryGuide(parsed, { ...payload, returnType, taxYear, taxSoftware });
+  sendJson(res, 200, {
+    guide,
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleNotices(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!payload.noticeFile || !payload.noticeFile.content) {
+    sendJson(res, 400, { error: "Upload a notice document before analysis." });
+    return;
+  }
+
+  const content = buildNoticeContent(payload);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 5000,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildNoticeSystemPrompt(), payload, "notices") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "notices", "notices", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    notice: parsed || { internalNotes: raw },
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleDiagnostics(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  const hasText = Boolean(String(payload.errorInput || "").trim());
+  const hasImage = Boolean(payload.errorImage?.contentBase64 && payload.errorImage?.mimeType);
+  if (!payload.taxSoftware) {
+    sendJson(res, 400, { error: "Select tax software before analyzing diagnostics." });
+    return;
+  }
+  if (!hasText && !hasImage) {
+    sendJson(res, 400, { error: "Paste diagnostic text or upload an error screenshot." });
+    return;
+  }
+
+  const content = buildDiagnosticsContent(payload);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 6000,
+    webSearch: true,
+    models: ["claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    system: [{ type: "text", text: withDatabaseContext(buildDiagnosticsSystemPrompt(), payload, "diagnostics") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "diagnostics", "diagnostics", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    diagnostics: normalizeDiagnostics(parsed, raw, payload),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleOrganizer(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!payload.priorYearReturn || !payload.priorYearReturn.content) {
+    sendJson(res, 400, { error: "Upload a prior year return before generating the organizer." });
+    return;
+  }
+
+  const content = buildOrganizerContent(payload);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 7000,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildOrganizerSystemPrompt(), payload, "database") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "organizer", "database", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    organizer: normalizeOrganizer(parsed, raw, payload),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleDeliverable(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!payload.reviewResult || typeof payload.reviewResult !== "object") {
+    sendJson(res, 400, { error: "Run a Senior Review first, then generate deliverables." });
+    return;
+  }
+
+  const content = buildDeliverableContent(payload);
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 6000,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildDeliverableSystemPrompt(), payload, "deliverable") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "deliverable", "deliverable", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    deliverable: normalizeDeliverable(parsed, raw),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleDeliverableEmailDraft(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+    return;
+  }
+  if (!payload.reviewResult || typeof payload.reviewResult !== "object") {
+    sendJson(res, 400, { error: "Run a Senior Review first, then draft the client email." });
+    return;
+  }
+
+  const content = buildDeliverableContent({ ...payload, deliverableType: "email" });
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 3500,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildDeliverableSystemPrompt(), payload, "deliverable") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "deliverable", "deliverable", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    deliverable: normalizeDeliverable(parsed, raw),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleDeliverableLoadClientFolder(req, res) {
+  const payload = await readJsonBody(req);
+  const folderId = String(payload.folderId || "").trim();
+  const fileId = String(payload.fileId || payload.file?.driveFileId || "").trim();
+  const filePayload = payload.file || null;
+  if (!folderId && !fileId && !filePayload?.contentBase64) { sendJson(res, 400, { error: "Select a Google Drive folder or client info file first." }); return; }
+  try {
+    if (fileId || filePayload?.contentBase64) {
+      sendJson(res, 200, await loadClientDataFromDriveFile({
+        ...(filePayload || {}),
+        fileId,
+        mimeType: filePayload?.mimeType || filePayload?.type || payload.mimeType,
+        name: filePayload?.name || payload.fileName,
+      }));
+      return;
+    }
+    sendJson(res, 200, await loadClientDataFromDriveFolder(folderId));
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, { error: error.expose ? error.message : "Could not read the client info source." });
+  }
+}
+
+async function handleDeliverableGenerateDraft(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
+  if (!payload.client?.email) { sendJson(res, 400, { error: "Client email is required before generating a deliverable email." }); return; }
+
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, [{ type: "text", text: buildDeliverableDraftPrompt(payload) }], { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 3500,
+    webSearch: false,
+    system: [{ type: "text", text: withDatabaseContext(buildDeliverableDraftSystemPrompt(), payload, "deliverable") }],
+  });
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "deliverable", "deliverable", payload, startedAt);
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  sendJson(res, 200, {
+    draft: normalizeEmailDraft(parsed, raw),
+    raw,
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function handleDeliverableGmailStatus(_req, res) {
+  const status = await gmailAuthorizationStatus();
+  sendJson(res, 200, { ...status, enabled: isGoogleDriveEnabled() });
+}
+
+async function handleDeliverableSendGmail(req, res) {
+  const payload = await readJsonBody(req);
+  if (!payload.to || !payload.subject || (!payload.bodyHtml && !payload.bodyText)) {
+    sendJson(res, 400, { error: "Recipient, subject, and email body are required." });
+    return;
+  }
+  const totalSize = (payload.attachments || []).reduce((sum, item) => sum + Buffer.byteLength(String(item.contentBase64 || ""), "base64"), 0);
+  if (totalSize > 25 * 1024 * 1024) {
+    sendJson(res, 400, { error: "Total attachments exceed Gmail's 25MB limit. Consider sending Drive links instead." });
+    return;
+  }
+  const gmailStatus = await gmailAuthorizationStatus();
+  if (!gmailStatus.authorized) {
+    sendJson(res, 403, { error: "Gmail send permission is not authorized. Reconnect Google and grant Gmail permission." });
+    return;
+  }
+  const rawEmail = buildMimeEmail({
+    to: payload.to,
+    cc: [payload.ccPreparer ? payload.preparerEmail : "", payload.cc].filter(Boolean).join(", "),
+    subject: payload.subject,
+    bodyText: payload.bodyText || htmlToPlainText(payload.bodyHtml || ""),
+    bodyHtml: payload.bodyHtml || plainTextToHtml(payload.bodyText || ""),
+    attachments: payload.attachments || [],
+  });
+  const encodedEmail = Buffer.from(rawEmail).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const response = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ raw: encodedEmail }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sendJson(res, response.status, { error: data.error?.message || "Gmail could not send the email." });
+    return;
+  }
+  sendJson(res, 200, { ok: true, messageId: data.id, threadId: data.threadId });
+}
+
+async function handleDeliverableCreateGmailDraft(req, res) {
+  const payload = await readJsonBody(req);
+  if (!payload.to || !payload.subject || (!payload.bodyHtml && !payload.bodyText)) {
+    sendJson(res, 400, { error: "Recipient, subject, and email body are required before creating a Gmail draft." });
+    return;
+  }
+  const totalSize = (payload.attachments || []).reduce((sum, item) => sum + Buffer.byteLength(String(item.contentBase64 || ""), "base64"), 0);
+  if (totalSize > 25 * 1024 * 1024) {
+    sendJson(res, 400, { error: "Total attachments exceed Gmail's 25MB limit. Consider sending Drive links instead." });
+    return;
+  }
+  const gmailStatus = await gmailAuthorizationStatus();
+  if (!gmailStatus.authorized) {
+    sendJson(res, 403, { error: "Gmail permission is not authorized. Reconnect Google and grant Gmail permission." });
+    return;
+  }
+  const rawEmail = buildMimeEmail({
+    to: payload.to,
+    cc: [payload.ccPreparer ? payload.preparerEmail : "", payload.cc].filter(Boolean).join(", "),
+    subject: payload.subject,
+    bodyText: payload.bodyText || htmlToPlainText(payload.bodyHtml || ""),
+    bodyHtml: payload.bodyHtml || plainTextToHtml(payload.bodyText || ""),
+    attachments: payload.attachments || [],
+  });
+  const encodedEmail = Buffer.from(rawEmail).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const response = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: { raw: encodedEmail } }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    sendJson(res, response.status, { error: data.error?.message || "Gmail could not create the draft." });
+    return;
+  }
+  const draftId = data.id || "";
+  sendJson(res, 200, {
+    ok: true,
+    draftId,
+    messageId: data.message?.id || "",
+    gmailUrl: "https://mail.google.com/mail/u/0/#drafts",
+  });
+}
+
+async function handleResearchChat(req, res) {
+  const startedAt = Date.now();
+  const payload = await readJsonBody(req);
+  const question = String(payload.question || "").trim();
+  if (!question) {
+    sendJson(res, 400, { error: "Question is required." });
+    return;
+  }
+  if (!ANTHROPIC_API_KEY) {
+    sendJson(res, 503, { error: "Claude API key is not configured." });
+    return;
+  }
+
+  const username = req.user?.username || getSession(req)?.username || "anonymous";
+  const suppliedHistory = Array.isArray(payload.messages) ? payload.messages : [];
+  const savedHistory = researchHistories.get(username) || [];
+  const history = normalizeResearchHistory(suppliedHistory.length ? suppliedHistory : savedHistory);
+  const result = await callResearchClaude({
+    question,
+    history,
+    context: payload.context || {},
+    useThinking: payload.useThinking !== false,
+    webSearch: payload.webSearch !== false,
+  });
+
+  if (!result.ok) {
+    sendJson(res, result.status || 502, { error: result.error || "Tax research failed." });
+    return;
+  }
+
+  const answer = extractResearchText(result.data);
+  const thinking = extractResearchThinking(result.data);
+  const sources = parseSourcesFromAnswer(answer);
+  const nextHistory = [...history, { role: "user", content: question }, { role: "assistant", content: answer }].slice(-20);
+  researchHistories.set(username, nextHistory);
+  logClaudeCost(req, result, "research", "research", { context: payload.context || {}, question }, startedAt);
+  const usage = result.data.usage || {};
+  const cost = calculateCost(usage, result.data.model || result.model);
+  sendJson(res, 200, {
+    answer,
+    thinking,
+    sources,
+    model: result.data.model || result.model,
+    inputTokens: Number(usage.input_tokens || 0),
+    outputTokens: Number(usage.output_tokens || 0),
+    thinkingTokens: Number(usage.output_tokens || 0),
+    totalCost: cost.totalCost,
+  });
+}
+
+async function handleResearchClear(req, res) {
+  const username = req.user?.username || getSession(req)?.username || "anonymous";
+  researchHistories.set(username, []);
+  sendJson(res, 200, { ok: true });
+}
+
+function normalizeResearchHistory(messages) {
+  return messages
+    .filter((message) => message && (message.role === "user" || message.role === "assistant"))
+    .map((message) => ({ role: message.role, content: String(message.content || "").slice(0, 12000) }))
+    .filter((message) => message.content.trim())
+    .slice(-20);
+}
+
+async function callResearchClaude({ question, history, context, useThinking, webSearch }) {
+  const model = "claude-sonnet-4-5-20251001";
+  const system = [{ type: "text", text: buildResearchSystemPrompt(context) }];
+  const messages = [...history, { role: "user", content: buildResearchQuestion(question, context) }];
+  const baseBody = {
+    model,
+    max_tokens: 16000,
+    system,
+    messages,
+  };
+  if (useThinking) baseBody.thinking = { type: "enabled", budget_tokens: 10000 };
+  if (WEB_SEARCH_ENABLED && webSearch) {
+    baseBody.tools = [buildWebSearchTool()];
+    baseBody.tool_choice = { type: "auto" };
+  }
+
+  const first = await postClaudeResearchBody(baseBody);
+  if (first.ok) return { ok: true, data: first.data, model };
+  const errorText = String(first.error || "").toLowerCase();
+  const fallbackBody = {
+    model: MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514",
+    max_tokens: 8000,
+    system,
+    messages,
+  };
+  if (WEB_SEARCH_ENABLED && webSearch && !errorText.includes("tool")) {
+    fallbackBody.tools = [buildWebSearchTool()];
+    fallbackBody.tool_choice = { type: "auto" };
+  }
+  const fallback = await postClaudeResearchBody(fallbackBody);
+  if (fallback.ok) return { ok: true, data: fallback.data, model: fallbackBody.model };
+  return { ok: false, status: fallback.status || first.status, error: `${first.error || "Research model failed."} Fallback: ${fallback.error || "failed."}` };
+}
+
+async function postClaudeResearchBody(body) {
+  const response = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": ANTHROPIC_VERSION },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.ok) return { ok: true, data };
+  return { ok: false, status: response.status, error: data.error?.message || data.message || "Claude API request failed." };
+}
+
+function extractResearchText(data) {
+  return (data.content || []).filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n\n").trim() || "Claude returned no answer text.";
+}
+
+function extractResearchThinking(data) {
+  return (data.content || []).filter((block) => block.type === "thinking" && block.thinking).map((block) => block.thinking).join("\n\n").trim();
+}
+
+function parseSourcesFromAnswer(answerText) {
+  const sources = [];
+  const sourcePattern = /\[(\d+)\]\s+(.+?)(?:\s+[â€”-]\s+(.+?))?\n\s+URL:\s+(https?:\/\/\S+)\n\s+Relevance:\s+(.+?)(?=\n\[\d+\]|\n\*\*|$)/gs;
+  let match;
+  while ((match = sourcePattern.exec(String(answerText || ""))) !== null) {
+    sources.push({
+      index: Number(match[1]),
+      title: match[2].trim(),
+      section: (match[3] || "").trim(),
+      url: match[4].trim().replace(/[),.]+$/, ""),
+      relevance: match[5].trim(),
+    });
+  }
+  return sources;
+}
+
+function buildResearchQuestion(question, context = {}) {
+  const contextLines = [
+    context.returnType ? `Return type: ${context.returnType}` : "",
+    context.taxYear ? `Tax year: ${context.taxYear}` : "",
+    context.state ? `State: ${context.state}` : "",
+    context.clientType ? `Client type: ${context.clientType}` : "",
+  ].filter(Boolean);
+  return `${contextLines.length ? `Context:\n${contextLines.join("\n")}\n\n` : ""}Question:\n${question}`;
+}
+
+function buildResearchSystemPrompt(context = {}) {
+  return `You are a senior US tax research specialist at a CPA firm with expertise across federal and all 50 state tax jurisdictions.
+
+YOUR PRIMARY JOB:
+Answer tax questions with precision, citing the specific IRS publication, IRC section, Treasury Regulation, revenue procedure, revenue ruling, court authority, or state tax authority that supports each statement you make.
+
+RESEARCH APPROACH:
+For every question, identify relevant IRC sections, Treasury Regulations, IRS publications or form instructions, Revenue Rulings or Procedures, state authority if a state is mentioned, and recent changes affecting the answer.
+
+CITATION REQUIREMENTS:
+- Every factual claim must be tied to a citation.
+- Citations must include source name, direct URL, and specific section, page, line, chapter, or paragraph.
+- Use current-year IRS sources unless the user asks about a prior year.
+- If you cannot find a source for a claim, say so explicitly.
+
+IRS URL PATTERNS:
+Publications: https://www.irs.gov/publications/p[N]
+Instructions: https://www.irs.gov/instructions/i[form]
+Forms: https://www.irs.gov/pub/irs-pdf/f[form].pdf
+IRC sections: https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section[N]
+Regulations: https://www.ecfr.gov/current/title-26/chapter-I/subchapter-A/part-1/section-1.[N]
+
+STATE SOURCES:
+Use the official state revenue department website for any state-specific answer. Prefer irs.gov, uscode.house.gov, ecfr.gov, and official state tax authority domains over secondary commentary.
+
+CURRENT USER CONTEXT:
+Return type: ${context.returnType || "not specified"}
+Tax year: ${context.taxYear || "not specified"}
+State: ${context.state || "federal or not specified"}
+Client type: ${context.clientType || "not specified"}
+
+OUTPUT FORMAT:
+**Answer:**
+[Direct answer in 1-3 paragraphs]
+
+**Key Rules & Requirements:**
+- [Rule] â€” [IRC section / regulation / publication]
+
+**Sources & Citations:**
+[1] [Document name] â€” [specific section]
+    URL: [direct link]
+    Relevance: [why this source applies]
+
+[2] [Document name] â€” [specific section]
+    URL: [direct link]
+    Relevance: [why this source applies]
+
+**Important Caveats:**
+[Exceptions, limitations, uncertainty, or recent changes]
+
+**Related Questions to Consider:**
+[1-3 follow-up questions]
+
+Tone: Professional, precise, direct, and suitable for licensed CPAs. If uncertain, say what must be verified and where.`;
+}
+
+function parseClaudeJson(raw) {
+  const text = String(raw || "").trim();
+  const candidates = [];
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) candidates.push(match[1]);
+  candidates.push(text);
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(text.slice(firstBrace, lastBrace + 1));
+  candidates.push(...extractBalancedJsonObjects(text));
+
+  for (const candidate of candidates) {
+    const cleaned = String(candidate || "")
+      .trim()
+      .replace(/^json\s*/i, "")
+      .replace(/^```(?:json)?/i, "")
+      .replace(/```$/i, "")
+      .trim();
+    try {
+      const parsed = JSON.parse(cleaned);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (_) {}
+  }
+  return null;
+}
+
+function extractBalancedJsonObjects(text) {
+  const output = [];
+  const value = String(text || "");
+  for (let start = 0; start < value.length; start += 1) {
+    if (value[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < value.length; index += 1) {
+      const char = value[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === "{") depth += 1;
+      if (char === "}") depth -= 1;
+      if (depth === 0) {
+        output.push(value.slice(start, index + 1));
+        break;
+      }
+    }
+  }
+  return output.sort((a, b) => b.length - a.length).slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Claude API
+// ---------------------------------------------------------------------------
+async function callClaudeWithFallbacks(apiKey, payload) {
+  const context = await loadReviewContext();
+  context.databaseContext = buildDatabaseContext(resolveClientIdFromPayload(payload), resolveReturnTypeFromPayload(payload), "review");
+  const content = buildClaudeContent(payload, context);
+  return callClaudeContentWithFallbacks(apiKey, content, context, { maxTokens: 4500 });
+}
+
+async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
+  let lastError = "Claude API request failed.";
+  let lastStatus = 500;
+
+  const models = Array.from(new Set(options.models || MODEL_FALLBACKS));
+  for (const model of models) {
+    const requestBody = {
+      model,
+      max_tokens: options.maxTokens || 4500,
+      system: options.system || buildSystemBlocks(context),
+      messages: [{ role: "user", content }],
+    };
+    if (options.thinking && /sonnet-4-5/i.test(model)) requestBody.thinking = options.thinking;
+    if (WEB_SEARCH_ENABLED && options.webSearch !== false) requestBody.tools = [buildWebSearchTool()];
+
+    const res = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      body: JSON.stringify(requestBody),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return {
+      ok: true,
+      data,
+      model,
+      context: {
+        knowledgeBaseCount: context.knowledgeBase.length,
+        reviewExampleCount: context.reviewExamples.length,
+        knowledgeBaseFiles: context.knowledgeBase.map((file) => file.name),
+        reviewExampleFiles: context.reviewExamples.map((file) => file.name),
+        databaseContextTokens: estimateTokens(context.databaseContext || ""),
+      },
+    };
+    const message = data.error?.message || data.message || "Failed.";
+    lastError = `Model ${model}: ${message}`;
+    lastStatus = res.status;
+    if (isRateLimitError(res.status, message)) break;
+    if (!shouldTryNextModel(res.status, message)) break;
+  }
+  return { ok: false, status: lastStatus, error: `${lastError} Tried: ${models.join(", ")}.` };
+}
+
+function isRateLimitError(status, message) {
+  const lower = String(message || "").toLowerCase();
+  return status === 429 || lower.includes("rate limit") || lower.includes("tokens per minute");
+}
+
+function buildWebSearchTool() {
+  const tool = {
+    type: "web_search_20250305",
+    name: "web_search",
+    max_uses: WEB_SEARCH_MAX_USES,
+  };
+  if (WEB_SEARCH_ALLOWED_DOMAINS.length) tool.allowed_domains = WEB_SEARCH_ALLOWED_DOMAINS;
+  return tool;
+}
+
+function shouldTryNextModel(status, message) {
+  return status === 400 || status === 404 || String(message).toLowerCase().includes("model");
+}
+
+function selectMasterPromptForReturn(payload = {}) {
+  if (!MASTER_REVIEW_PROMPT) return "";
+  const returnType = String(payload.metadata?.returnType || payload.returnType || "").trim();
+  const sharedEnd = MASTER_REVIEW_PROMPT.search(/\n\s*â•+\s*\nFORM\s+/i);
+  const sharedRules = sharedEnd > 0 ? MASTER_REVIEW_PROMPT.slice(0, sharedEnd).trim() : MASTER_REVIEW_PROMPT.slice(0, 18000).trim();
+  const formPrompt = extractFormPrompt(returnType);
+  const selected = [
+    sharedRules,
+    formPrompt || `FORM-SPECIFIC RULES: Return type "${returnType || "not specified"}" was not matched to a configured form section. Apply shared rules, uploaded documents, knowledge base, and official web research where enabled.`,
+  ].join("\n\n");
+  return truncateMiddle(selected, 26000);
+}
+
+function extractFormPrompt(returnType) {
+  const normalized = normalizeReturnType(returnType);
+  if (!normalized) return "";
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const startMatch = MASTER_REVIEW_PROMPT.match(new RegExp(`\\nFORM\\s+${escaped}\\b[\\s\\S]*`, "i"));
+  if (!startMatch || typeof startMatch.index !== "number") return "";
+  const start = startMatch.index + 1;
+  const next = MASTER_REVIEW_PROMPT.slice(start + 1).search(/\n\s*â•+\s*\nFORM\s+/i);
+  const end = next >= 0 ? start + 1 + next : MASTER_REVIEW_PROMPT.length;
+  return MASTER_REVIEW_PROMPT.slice(start, end).trim();
+}
+
+function normalizeReturnType(returnType) {
+  const value = String(returnType || "").toUpperCase().replace(/\s+/g, "");
+  if (!value) return "";
+  if (value.includes("1120-S") || value.includes("1120S")) return "1120-S";
+  if (value.includes("1040-NR") || value.includes("1040NR")) return "1040-NR";
+  if (value.includes("1040-SS") || value.includes("1040SS")) return "1040-SS";
+  if (value.includes("1040-PR") || value.includes("1040PR")) return "1040-PR";
+  const match = value.match(/1040|1041|1065|1120|990|706|709|720|2290/);
+  return match ? match[0] : "";
+}
+
+function resolveReturnTypeFromPayload(payload = {}) {
+  return String(
+    payload.metadata?.returnType ||
+    payload.returnType ||
+    payload.context?.returnType ||
+    payload.client?.returnType ||
+    payload.client?.entityType ||
+    ""
+  ).trim();
+}
+
+function resolveClientIdFromPayload(payload = {}) {
+  const explicit = payload.clientId || payload.metadata?.clientId || payload.context?.clientId || payload.client?.id;
+  if (explicit) return String(explicit);
+  const name = String(
+    payload.metadata?.clientName ||
+    payload.metadata?.entityName ||
+    payload.clientName ||
+    payload.client?.name ||
+    payload.client?.company ||
+    payload.client?.companyName ||
+    ""
+  ).trim().toLowerCase();
+  if (!name) return "";
+  const db = readDb();
+  const match = Object.values(db.clients || {}).find((client) => String(client.name || "").trim().toLowerCase() === name);
+  return match?.id || "";
+}
+
+function withDatabaseContext(systemText, payload = {}, tab = "review") {
+  const context = buildDatabaseContext(resolveClientIdFromPayload(payload), resolveReturnTypeFromPayload(payload), tab);
+  return context ? `${context}\n\n${systemText}` : systemText;
+}
+
+function pushContextSection(parts, title, lines, maxChars) {
+  const cleanLines = (Array.isArray(lines) ? lines : [lines]).map((line) => String(line || "").trim()).filter(Boolean);
+  if (!cleanLines.length) return;
+  parts.push(truncateMiddle([`${title}:`, ...cleanLines].join("\n"), maxChars));
+}
+
+function estimateTokens(text) {
+  return Math.ceil(String(text || "").length / 4);
+}
+
+function buildDatabaseContext(clientId, returnType, tab) {
+  const type = normalizeReturnType(returnType) || String(returnType || "all");
+  const parts = [];
+  const library = readFirmLibrary();
+  const learning = readLearning();
+
+  pushContextSection(parts, "DATABASE CONTEXT - FIRM-WIDE INSTRUCTIONS", library.globalInstructions, 2000);
+
+  const activeDocs = library.documents.filter((doc) => doc.active !== false);
+  pushContextSection(parts, "DATABASE CONTEXT - ALWAYS-INJECT FIRM LIBRARY", activeDocs.filter((doc) => doc.alwaysInject).map((doc) => `- ${doc.title}: ${doc.content || doc.driveWebViewLink || "File attached in firm library."}`), 1800);
+
+  const applicableDocs = activeDocs.filter((doc) => {
+    const applies = Array.isArray(doc.applicableTo) ? doc.applicableTo.map((item) => normalizeReturnType(item) || String(item).toLowerCase()) : ["all"];
+    return !doc.alwaysInject && (applies.includes("all") || applies.includes(type) || applies.includes(String(returnType || "").toLowerCase()));
+  });
+  pushContextSection(parts, `DATABASE CONTEXT - FIRM LIBRARY FOR ${type || "THIS RETURN"}`, applicableDocs.map((doc) => `- ${doc.title}: ${doc.content || doc.driveWebViewLink || "File attached in firm library."}`), 1600);
+
+  const client = clientId ? readDb().clients?.[clientId] : null;
+  if (client) {
+    pushContextSection(parts, `DATABASE CONTEXT - PERMANENT INSTRUCTIONS FOR ${client.name}`, (client.permanentInstructions || []).filter((item) => item.active !== false).map((item) => `- [${item.category || "other"}] ${item.text}`), 1600);
+    pushContextSection(parts, `DATABASE CONTEXT - RELATED PARTIES FOR ${client.name}`, (client.relatedParties || []).map((item) => `- ${item.name} (${item.relationship || "relationship not specified"})${item.ein ? ` EIN: ${item.ein}` : ""}${item.notes ? ` - ${item.notes}` : ""}`), 900);
+    pushContextSection(parts, `DATABASE CONTEXT - CARRYFORWARDS FOR ${client.name}`, Object.entries(client.carryforwards || {}).filter(([, value]) => value && String(value) !== "0").map(([key, value]) => `- ${key}: ${value}`), 700);
+    pushContextSection(parts, `DATABASE CONTEXT - AUDIT HISTORY FOR ${client.name}`, (client.auditHistory || []).map((item) => `- TY${item.year || ""} ${item.authority || ""}: ${item.outcome || ""}${item.notes ? ` - ${item.notes}` : ""}`), 700);
+    const recentReviews = (client.reviewHistory || []).slice().sort((a, b) => new Date(b.runAt || 0) - new Date(a.runAt || 0)).slice(0, 2);
+    pushContextSection(parts, `DATABASE CONTEXT - PRIOR REVIEW HISTORY FOR ${client.name}`, recentReviews.map((review) => `- TY${review.taxYear || ""} ${review.reviewStage || ""}: ${(review.executiveSummary || "").slice(0, 300)} Issues: H${review.issuesSummary?.high || 0}/M${review.issuesSummary?.medium || 0}/L${review.issuesSummary?.low || 0}`), 1100);
+    pushContextSection(parts, `DATABASE CONTEXT - LEARNED CLIENT CORRECTIONS FOR ${client.name}`, (learning.clientCorrections?.[clientId] || []).filter((item) => item.active !== false).map((item) => `- ${item.correction}`), 1200);
+  }
+
+  const globalCorrections = (learning.globalCorrections || []).filter((item) => {
+    const applies = Array.isArray(item.appliesTo) ? item.appliesTo.map((value) => normalizeReturnType(value) || String(value).toLowerCase()) : ["all"];
+    return item.active !== false && (applies.includes("all") || applies.includes(type) || applies.includes(String(returnType || "").toLowerCase()));
+  });
+  pushContextSection(parts, `DATABASE CONTEXT - LEARNED GLOBAL CORRECTIONS FOR ${type || "THIS RETURN"}`, globalCorrections.map((item) => `- ${item.correction}`), 1400);
+
+  const body = parts.filter(Boolean).join("\n\n");
+  if (!body) return "";
+  return [
+    "DATABASE CONTEXT INJECTION:",
+    `This context comes from the Database tab and applies to the current ${tab || "AI"} task. Use it before general Claude reasoning and use it to interpret client-specific facts, preferences, corrections, and firm library guidance.`,
+    truncateMiddle(body, 8000),
+  ].join("\n");
+}
+
+function publicTaxSoftwareList() {
+  return TAX_SOFTWARE_LIST.map((software) => ({
+    id: software.id,
+    name: software.name,
+    vendor: software.vendor,
+    type: software.type,
+    logo: software.logo,
+    description: software.description,
+    navigationStyle: software.navigationStyle,
+    screenTerminology: software.screenTerminology,
+  }));
+}
+
+function taxSoftwareById(softwareId) {
+  const key = String(softwareId || "").toLowerCase();
+  return TAX_SOFTWARE_LIST.find((software) => software.id === key) || TAX_SOFTWARE_LIST.find((software) => software.id === "other");
+}
+
+function resolveTaxSoftwareFromPayload(payload = {}) {
+  const explicit = payload.taxSoftware || payload.metadata?.taxSoftware || payload.context?.taxSoftware;
+  if (explicit) return String(explicit);
+  const clientId = resolveClientIdFromPayload(payload);
+  const clientSoftware = clientId ? readDb().clients?.[clientId]?.taxSoftware?.primary : "";
+  if (clientSoftware) return String(clientSoftware);
+  const firmDefault = readFirmLibrary().defaultTaxSoftware;
+  return firmDefault || "proconnect";
+}
+
+function buildSoftwareContext(softwareId, returnType, taxYear) {
+  const software = taxSoftwareById(softwareId);
+  if (!software || software.id === "other") {
+    return [
+      "TAX SOFTWARE: Not specified.",
+      "Use standard IRS form and line references. All navigation instructions should reference the IRS form name and line number directly.",
+    ].join("\n");
+  }
+  const paths = software.commonScreenPaths || {};
+  return [
+    `TAX SOFTWARE IN USE: ${software.name}${software.vendor ? ` (${software.vendor})` : ""}`,
+    `Navigation style: ${software.description}`,
+    `Terminology: what other software calls a screen, ${software.name} calls a "${software.screenTerminology.screen}".`,
+    "",
+    "NAVIGATION FORMAT TO USE:",
+    `When giving entry instructions, always say: "${software.screenTerminology.navigate}"`,
+    "",
+    `COMMON SCREEN PATHS IN ${software.name.toUpperCase()} FOR ${returnType || "THIS RETURN"} TY ${taxYear || "current"}:`,
+    `Client Information: ${paths.clientInfo}`,
+    `Electronic Filing: ${paths.efiling}`,
+    `Income / Gross Receipts: ${paths.grossReceipts}`,
+    `Cost of Goods Sold: ${paths.cogs}`,
+    `Officer Compensation: ${paths.officerComp}`,
+    `Depreciation: ${paths.depreciation}`,
+    `Other Deductions: ${paths.otherDeductions}`,
+    `Balance Sheet: ${paths.scheduleL}`,
+    `Schedule M-1: ${paths.scheduleM1}`,
+    `Schedule M-3: ${paths.scheduleM3}`,
+    `Schedule K: ${paths.scheduleK}`,
+    `State Return: ${paths.stateReturn}`,
+    `Investments: ${paths.investments}`,
+    `Dispositions: ${paths.dispositions}`,
+    "",
+    `IMPORTANT: Every software entry instruction you generate must include the exact navigation path in ${software.name} when applicable. Do not say "go to the income section"; say "${paths.grossReceipts}".`,
+    `If a specific screen path is not listed above, use your knowledge of ${software.name} ${taxYear || ""} to provide the correct path and terminology.`,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// System prompt â€” specialized US tax reviewer with all 4 checks + corrections DB
+// ---------------------------------------------------------------------------
+function buildSystemPrompt(context = { knowledgeBase: [], reviewExamples: [] }) {
+  const dbLines = CORRECTIONS_DB.map((c, i) =>
+    `${i + 1}. [${c.stage.toUpperCase()}][${c.type}] ${c.client}: ${c.desc}`
+  ).join("\n");
+  const contextSummary = [
+    `Knowledge base files loaded: ${context.knowledgeBase.length}`,
+    `Prior review example files loaded: ${context.reviewExamples.length}`,
+  ].join("\n");
+
+  return [
+    MASTER_REVIEW_PROMPT || "You are a Senior US Tax Reviewer at a CPA firm. Review the uploaded US tax return package and do not invent facts.",
+    "",
+    "APPLICATION RUNTIME RULES:",
+    "You are not preparing the return and you must not modify tax forms.",
+    "",
+    "SOURCE PRIORITY AND CONFLICT RULES:",
+    "1. Knowledge Base is the highest-priority technical authority. Use official IRS/state instructions and firm policy files from the Knowledge Base first whenever they address the issue. Cite the Knowledge Base file name in source when it supports a finding.",
+    "2. Use your senior tax-review reasoning second, only to interpret, connect, and apply the Knowledge Base, uploaded documents, and generally accepted US tax concepts where no direct Knowledge Base authority is available.",
+    "3. Use all remaining sources to define scope, facts, context, and review style: User Review Notes / Specific Instructions, Client Facts / Expected Information, uploaded returns, uploaded workpapers, uploaded related documents, review examples, the hidden master prompt, and web search where enabled.",
+    "If lower-priority context conflicts with the Knowledge Base, follow the Knowledge Base and flag the conflict.",
+    "If Client Facts / Expected Information conflict with uploaded documents, do not choose silently; flag the mismatch with evidence.",
+    "Review examples are never tax authority. They are for phrasing, tone, and comment style only.",
+    "The hidden master prompt defines the checklist and output discipline, but it must not override specific Knowledge Base authority.",
+    "Web search, if enabled, is supplemental and should be used only when the Knowledge Base and uploaded documents are insufficient.",
+    "",
+    "Required review process:",
+    "1. Identify entity name, tax year, return type, and states included.",
+    "2. Confirm which documents were provided and which are missing.",
+    "3. Review current-year return against prior-year return for unusual changes when both are available.",
+    "4. Compare return numbers to workpapers where possible.",
+    "5. Review key federal areas: income, deductions, depreciation, charitable contributions, taxes, credits, payments, Schedule L, Schedule M-1, Schedule M-2, Schedule K, and diagnostics if provided.",
+    "6. Review state returns by jurisdiction: state adjustments, apportionment, payments, credits, franchise tax, minimum tax, and state-specific issues.",
+    "7. Identify missing support or inconsistencies.",
+    "8. Create senior-review style comments for the preparer.",
+    "",
+    "Anti-error rules:",
+    "Do not invent facts, amounts, documents, form lines, or sources.",
+    "Do not say something was reviewed if the document was not uploaded.",
+    "Do not use historical corrections as technical authority; use them only as pattern examples.",
+    "Do not mix tax years or entities.",
+    "Treat Client Facts / Expected Information as expected client-specific data and review context. Compare it against uploaded returns, workpapers, and related documents; flag any mismatch, missing value, or contradiction as an issue.",
+    "Treat User Review Notes / Specific Instructions as mandatory scope and formatting instructions unless they contradict the Knowledge Base or uploaded evidence. If the user asks for a list, summary, special ending, or specific check, explicitly satisfy it in reviewerComments, questions, finalConclusion, or an issue as appropriate.",
+    "Avoid generic comments like review for accuracy.",
+    "If something cannot be verified, say exactly: Unable to verify based on documents provided.",
+    "Never conclude that a return is ready to file when support is incomplete.",
+    "If web search is enabled, use it only when the Knowledge Base or uploaded documents do not provide enough authority. Prefer official IRS, state tax agency, and government sources.",
+    "If web search is disabled, do not pretend to have searched the internet.",
+    "",
+    "OUTPUT CONTRACT FOR THE APP:",
+    "The browser will turn your response into a written Word-style review for the user. Return ONLY a JSON object inside ```json``` fences so the app can render and export it cleanly.",
+    "Write all JSON values in English. Keep the JSON property names exactly as specified below.",
+    '{"executiveSummary":"string","documentSummary":["string"],"issues":[{"priority":"High|Medium|Low|Info","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","whyItMatters":"string","recommendedAction":"string","reviewerComment":"string","source":"string","needsMoreInfo":"string"}],"missingInformation":["string"],"reviewerComments":["string"],"questions":["string"],"finalConclusion":"string"}',
+    "",
+    "High = blocks or could materially affect filing. Medium = should resolve before filing. Low = cleanup or limited risk. Info = observation.",
+    "Every issue must include evidence, recommended action, reviewer comment, and whether more information is needed.",
+    "Include documentSummary as an array of short strings describing what was and was not provided.",
+    "If User Review Notes ask for a specific list or final note, include that requested output in reviewerComments or finalConclusion even if it is not a tax issue.",
+    "",
+    contextSummary,
+    "",
+    context.databaseContext || "",
+    context.databaseContext ? "" : "",
+    `FIRM CORRECTIONS DATABASE (${CORRECTIONS_DB.length} historical entries):`,
+    dbLines,
+  ].join("\n");
+}
+
+function buildSystemBlocks(context = { knowledgeBase: [], reviewExamples: [] }) {
+  return [{
+    type: "text",
+    text: buildSystemPrompt(context),
+    cache_control: { type: "ephemeral" },
+  }];
+}
+
+// ---------------------------------------------------------------------------
+// Content builder â€” handles PDF, XLSX text, DOCX text, CSV/TXT, metadata
+// ---------------------------------------------------------------------------
+function buildClaudeContent(payload, context = { knowledgeBase: [], reviewExamples: [] }) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const content = [];
+
+  if (context.knowledgeBase.length) {
+    content.push({
+      type: "text",
+      text: [
+        "=== PRIORITY 1 KNOWLEDGE BASE: TECHNICAL AUTHORITY ===",
+        "These files are the highest-priority technical authority for the review. Apply them before general model reasoning and before user/client context when they address an issue. Cite the file name in the source field.",
+        formatContextFiles(context.knowledgeBase),
+      ].join("\n\n"),
+      cache_control: context.reviewExamples.length ? undefined : { type: "ephemeral" },
+    });
+  }
+
+  if (context.reviewExamples.length) {
+    content.push({
+      type: "text",
+      text: [
+        "=== PRIORITY 3 REVIEW EXAMPLES: STYLE AND FORMAT ONLY ===",
+        "Use these only to understand the firm's preferred tone, context, and reviewer-comment format. Do not treat them as tax authority and do not copy facts from them into the current review.",
+        formatContextFiles(context.reviewExamples),
+      ].join("\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+  }
+
+  for (const file of files) {
+    if (file.encoding === "base64" && file.mediaType === "application/pdf" && file.data) {
+      content.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: file.data },
+        title: file.name,
+        context: `${labelForType(file.type)}${file.role ? ` (${file.role})` : ""} - uploaded for tax review.`,
+      });
+      continue;
+    }
+
+    if ((file.encoding === "zip-text" || file.encoding === "pdf-text" || file.encoding === "xlsx-text" || file.encoding === "docx-text" || file.encoding === "text") && file.text) {
+      const label = file.encoding === "zip-text" ? "ZIP PACKAGE (prepared text)"
+        : file.encoding === "pdf-text" ? "DOCUMENT (PDF text)"
+        : file.encoding === "xlsx-text" ? "WORKPAPER (Excel)"
+        : file.encoding === "docx-text" ? "DOCUMENT (Word)"
+        : "TEXT FILE";
+      content.push({
+        type: "text",
+        text: [`=== ${label}: ${file.name} ===`, `Category: ${labelForType(file.type)}`, file.role ? `Role: ${file.role}` : "", "", file.text].join("\n"),
+      });
+      continue;
+    }
+
+    content.push({
+      type: "text",
+      text: [
+        `=== METADATA ONLY: ${file.name} ===`,
+        `Category: ${labelForType(file.type)} | Type: ${file.mediaType || "unknown"} | Size: ${file.size || 0} bytes`,
+        "Content not parsed â€” ask user to export as PDF or CSV for full review.",
+      ].join("\n"),
+    });
+  }
+
+  content.push({ type: "text", text: buildUserPrompt(payload, context) });
+  return content;
+}
+
+function buildUserPrompt(payload, context = { knowledgeBase: [], reviewExamples: [] }) {
+  const metadata = payload.metadata || {};
+  const clientName = metadata.clientName || payload.clientName || "Unnamed client";
+  const taxYear = metadata.taxYear || payload.taxYear || "Not specified";
+  const reviewTypes = Array.isArray(metadata.reviewTypes || payload.reviewTypes)
+    ? (metadata.reviewTypes || payload.reviewTypes).join(", ")
+    : "General review";
+  const reviewStage = metadata.reviewStage || payload.reviewStage || "Initial review";
+  const grouped = groupFiles(payload.files || []);
+  const userNotes = metadata.userNotes || "No specific instructions entered. Run the standard senior review checklist.";
+  const clientFacts = metadata.clientFacts || "No client facts entered. Verify only against facts found in the uploaded documents.";
+
+  return [
+    "SOURCE PRIORITY FOR THIS REVIEW:",
+    "1. Knowledge Base technical authority.",
+    "2. Senior tax-review reasoning used to interpret and apply the authority and evidence.",
+    "3. Context and style sources: User Review Notes / Specific Instructions, Client Facts / Expected Information, uploaded documents, review examples, hidden firm checklist, and web search if enabled.",
+    "",
+    `Knowledge Base files available: ${context.knowledgeBase.length ? context.knowledgeBase.map((file) => file.name).join(", ") : "None"}`,
+    `Review example files available: ${context.reviewExamples.length ? context.reviewExamples.map((file) => file.name).join(", ") : "None"}`,
+    "",
+    "PRIORITY 3 USER REVIEW NOTES / SPECIFIC INSTRUCTIONS:",
+    userNotes,
+    "",
+    "Explicitly address every applicable user instruction in the JSON output unless it conflicts with higher-priority Knowledge Base authority or uploaded evidence. If the user asks for a list or special note, place it in reviewerComments or finalConclusion.",
+    "",
+    "PRIORITY 3 CLIENT FACTS / EXPECTED INFORMATION TO VERIFY:",
+    clientFacts,
+    "",
+    "Compare the client facts above against all uploaded documents. If a document contains a different SSN, EIN, name, address, partner/shareholder detail, tax year, state, or other expected value, flag it as an issue with evidence and recommended action.",
+    "",
+    `Client name: ${clientName}`,
+    `Entity name: ${metadata.entityName || "Not specified"}`,
+    `Tax year: ${taxYear}`,
+    `Return type: ${metadata.returnType || "Not specified"}`,
+    `States included: ${metadata.statesIncluded || "Not specified"}`,
+    `Review stage: ${reviewStage}`,
+    `Requested checks: ${reviewTypes}`,
+    `Web research enabled: ${WEB_SEARCH_ENABLED ? "Yes" : "No"}`,
+    metadata.qboInstruction ? "" : null,
+    metadata.qboInstruction || null,
+    Array.isArray(metadata.qboReports) && metadata.qboReports.length ? `Accounting software reports included: ${metadata.qboReports.map((report) => `${report.software || "Accounting"} - ${report.name || report.reportId}`).join(", ")}` : null,
+    "",
+    "Uploaded Tax Returns:",
+    listFiles(grouped.taxReturns),
+    "",
+    "Uploaded Workpapers:",
+    listFiles(grouped.workpapers),
+    "",
+    "Uploaded Related Documents:",
+    listFiles(grouped.documents),
+    "",
+    "Perform the required senior review using the hidden firm master prompt and return ONLY the JSON object.",
+  ].join("\n");
+}
+
+function buildPreparerContent(payload) {
+  const metadata = payload.metadata || {};
+  const content = [{
+    type: "text",
+    text: [
+      "You are a senior tax preparer assistant. Your task is to produce an Excel-ready workpaper workbook based on the user's instructions and uploaded files.",
+      "Do not prepare a tax return and do not invent amounts.",
+      "Use the uploaded files according to the user's instructions. If prior-year workpapers and current-year reports are included, use prior-year workpapers for workbook structure, sheet names, section order, labels, and row layout; use current-year reports for updated values.",
+      "For a requested new-year workbook, keep a similar visual format to the prior-year Excel file: section boxes, underlined labels, title/header rows, column widths, merged cells, spacing, and sheet order should be mirrored as closely as the structured output allows while updating the numbers and year labels.",
+      "The output must be a new workpaper workbook, not a narrative memo and not JSON pasted into Excel.",
+      "If a requested value cannot be verified, leave the cell blank or write Unable to verify based on documents provided, and explain the missing support in AI Notes.",
+      "Return ONLY a JSON object inside ```json``` fences. No prose outside JSON.",
+      "The JSON must be complete and parseable. If the full workbook would be too long, prioritize the main workpaper tabs and summarize lower-priority detail in AI Notes rather than truncating the JSON.",
+      "",
+      "Required JSON schema:",
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"]}',
+      "",
+      "Rules for sheets:",
+      "Create one or more useful Excel sheets based on the request.",
+      "When a workbookTemplate is provided for an uploaded Excel file, mirror that template's sheets, headers, labels, row order, and column order as closely as possible.",
+      "Keep the same workpaper-style layout from the prior-year workbook, updating year labels and values for the current-year request. Preserve columns widths, merged cells, underlined words, boxed sections, and obvious title/header formatting by returning cols, merges, and styles entries where available.",
+      "Every sheet.rows value must be an array of rows, and every row must be an array of primitive cell values.",
+      "Keep rows concise. Do not include long paragraphs in cells unless the user specifically requested narrative notes.",
+      "Always include useful headers in row 1.",
+      "Do not include formulas unless the formula is obvious and safe.",
+      "Always include aiNotes with things you could not complete and information still needed.",
+      "",
+      `Tax software: ${softwareDisplayName(metadata.taxSoftware || payload.taxSoftware || "proconnect")}`,
+      "Any software-specific guidance or entry steps must use the selected tax software's screen terminology and navigation paths from the system prompt.",
+      "",
+      `User instructions: ${metadata.instructions || "None"}`,
+    ].join("\n"),
+  }];
+
+  for (const file of payload.files || []) {
+    if (!file.text) continue;
+    const workbookTemplates = [
+      file.workbookTemplate,
+      ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : []),
+    ].filter((template) => template?.sheets?.length);
+    const templateBlock = workbookTemplates.length
+      ? ["", "=== STRUCTURED PRIOR-YEAR WORKBOOK TEMPLATE TO MIRROR ===", safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
+      : "";
+    content.push({
+      type: "text",
+      text: [`=== PREPARATION SOURCE FILE: ${file.name} ===`, file.text, templateBlock].filter(Boolean).join("\n\n"),
+    });
+  }
+
+  return content;
+}
+
+function buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware) {
+  const softwareName = softwareDisplayName(taxSoftware);
+  return [
+    `You are a senior ${softwareName} tax software expert for Tax Year ${taxYear}.`,
+    `You have memorized the exact screen structure, navigation path, and field names of ${softwareName} for Form ${returnType}.`,
+    "Your job is to generate a complete, ordered data entry guide that tells the preparer exactly where to enter every piece of data in the selected tax software. This must be operational software-entry instructions, not another copy of the Excel workpaper and not a summary of the workbook.",
+    "",
+    "CRITICAL RULES:",
+    "- Organize entries in the exact order the screens appear in the software so the preparer can work top-to-bottom without jumping between screens.",
+    "- Use exact screen names and field names where the selected software is known.",
+    "- For every material workbook line item or source-file value, identify the software screen/path, field name, value to enter, source, and any verification note.",
+    "- If the workbook contains formatting/layout rows, ignore those for entry unless they represent an actual tax input value.",
+    "- Pre-calculate every value; never say calculate a value when the final value can be derived.",
+    "- If a value requires a preparer decision before entry, mark it decision_needed.",
+    "- If a value came from a HIGH priority review issue, mark it review_issue.",
+    "- If a value is uncertain or needs verification, mark it verify.",
+    "- Never leave a field blank if the value can be derived from the input data.",
+    "",
+    "PROCONNECT TAX SCREEN ORDER:",
+    proConnectScreenOrder(returnType),
+    "",
+    "For non-ProConnect software, keep the same JSON structure and use the closest exact navigation paths you know. If exact paths are not known, use standard tax return section names and set softwareNavigation to a generic instruction.",
+    "",
+    "OUTPUT FORMAT: respond ONLY with valid JSON inside ```json fences using this schema:",
+    '{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","value":"string","valueSource":"string","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[{"screen":"string","field":"string","question":"string","options":["string"],"impactIfWrong":"string"}],"reviewIssueFields":[{"screen":"string","field":"string","issue":"string","blocksEntry":boolean}],"entryOrder":"string","estimatedEntryTime":"string"}',
+  ].join("\n");
+}
+
+function buildDataEntryGuidePrompt(payload) {
+  const reviewIssues = Array.isArray(payload.highReviewIssues) ? payload.highReviewIssues : [];
+  return [
+    "Create the data entry guide from the following session data.",
+    "",
+    `Return type: ${payload.returnType || "Not provided"}`,
+    `Tax year: ${payload.taxYear || "Not provided"}`,
+    `Tax software: ${softwareDisplayName(payload.taxSoftware || "proconnect")}`,
+    `Client name: ${payload.clientName || "Not provided"}`,
+    `EIN: ${payload.ein || "Not provided"}`,
+    "",
+    "Workpaper data / generated workbook JSON:",
+    safeJsonForPrompt(payload.workpaperData || {}, 60000),
+    "",
+    "Accounting software data, if any, should be used as a source for field values and cited as [Software] [Report Name] [Line]:",
+    safeJsonForPrompt(payload.qboReports || [], 30000),
+    "",
+    "The following HIGH priority issues were found in the tax review. For any field in the data entry guide that corresponds to one of these issues, set its status to review_issue and include the issue description in the statusNote:",
+    reviewIssues.length ? safeJsonForPrompt(reviewIssues, 30000) : "No HIGH priority review issues were provided.",
+    "",
+    "User / preparer instructions:",
+    String(payload.instructions || payload.metadata?.instructions || "None"),
+  ].join("\n");
+}
+
+function proConnectScreenOrder(returnType) {
+  const key = String(returnType || "").toUpperCase();
+  const orders = {
+    "1120": [
+      "1. General > Client Information",
+      "2. General > Electronic Filing",
+      "3. General > Miscellaneous Information",
+      "4. Income > Gross Receipts / Sales",
+      "5. Income > Cost of Goods Sold (Form 1125-A)",
+      "6. Income > Dividends and Inclusions",
+      "7. Income > Interest Income",
+      "8. Income > Gross Rents",
+      "9. Income > Gross Royalties",
+      "10. Income > Capital Gain Net Income",
+      "11. Income > Other Income",
+      "12. Deductions > Compensation of Officers (Form 1125-E)",
+      "13. Deductions > Salaries and Wages",
+      "14. Deductions > Repairs and Maintenance",
+      "15. Deductions > Bad Debts",
+      "16. Deductions > Rents",
+      "17. Deductions > Taxes and Licenses",
+      "18. Deductions > Interest",
+      "19. Deductions > Charitable Contributions",
+      "20. Deductions > Depreciation (Form 4562)",
+      "21. Deductions > Depletion",
+      "22. Deductions > Advertising",
+      "23. Deductions > Pension / Profit Sharing",
+      "24. Deductions > Employee Benefit Programs",
+      "25. Deductions > Other Deductions",
+      "26. Tax and Payments > Schedule J",
+      "27. Tax and Payments > Estimated Tax Payments",
+      "28. Balance Sheet > Assets (Schedule L)",
+      "29. Balance Sheet > Liabilities and Equity (Schedule L)",
+      "30. Reconciliation > Schedule M-1",
+      "31. Reconciliation > Schedule M-2",
+      "32. Reconciliation > Schedule M-3 (if required)",
+      "33. State > [State name] > [State-specific screens]",
+    ],
+    "1120-S": [
+      "1. General > Client Information",
+      "2. General > Electronic Filing",
+      "3. General > S Corporation Information",
+      "4. Income > Gross Receipts / Sales",
+      "5. Income > Cost of Goods Sold",
+      "6. Income > Other Income",
+      "7. Deductions > Officer Compensation (Form 1125-E)",
+      "8. Deductions > Salaries and Wages",
+      "9. Deductions > Other deduction lines in return order",
+      "10. Deductions > Other Deductions",
+      "11. Schedule K > Income (Loss)",
+      "12. Schedule K > Deductions",
+      "13. Schedule K > Credits",
+      "14. Schedule K > Foreign Transactions",
+      "15. Schedule K > AMT Items",
+      "16. Schedule K > Other Information",
+      "17. Shareholders > K-1 for each shareholder",
+      "18. Balance Sheet > Schedule L",
+      "19. Reconciliation > Schedule M-1",
+      "20. Reconciliation > Schedule M-2 (AAA, OAA)",
+      "21. State > [State screens]",
+    ],
+    "1065": [
+      "1. General > Client Information",
+      "2. General > Electronic Filing",
+      "3. General > Partnership Information",
+      "4. Income > Ordinary Business Income",
+      "5. Income > Other Income",
+      "6. Deductions > Deduction lines in return order",
+      "7. Deductions > Other Deductions",
+      "8. Schedule K > Income (Loss)",
+      "9. Schedule K > Deductions",
+      "10. Schedule K > Self-Employment",
+      "11. Schedule K > Credits",
+      "12. Schedule K > Foreign Transactions",
+      "13. Schedule K > AMT Items",
+      "14. Schedule K > Other Information",
+      "15. Partners > K-1 for each partner",
+      "16. Balance Sheet > Schedule L",
+      "17. Reconciliation > Schedule M-1 or M-3",
+      "18. Reconciliation > Schedule M-2 (capital accounts)",
+      "19. State > [State screens]",
+    ],
+    "1040": [
+      "1. General > Personal Information",
+      "2. General > Electronic Filing",
+      "3. Income > Wages (W-2)",
+      "4. Income > Interest Income (1099-INT)",
+      "5. Income > Dividend Income (1099-DIV)",
+      "6. Income > State Tax Refunds (1099-G)",
+      "7. Income > Business Income (Schedule C)",
+      "8. Income > Capital Gains (Schedule D / 8949)",
+      "9. Income > Supplemental Income (Schedule E)",
+      "10. Income > Other Income",
+      "11. Deductions > Standard vs Itemized",
+      "12. Deductions > Student Loan Interest",
+      "13. Deductions > IRA Contributions",
+      "14. Credits > Child Tax Credit",
+      "15. Credits > Education Credits (Form 8863)",
+      "16. Credits > Foreign Tax Credit (Form 1116)",
+      "17. Credits > Other Credits",
+      "18. Taxes > Self-Employment Tax (Schedule SE)",
+      "19. Taxes > Other Taxes",
+      "20. Payments > Federal Withholding",
+      "21. Payments > Estimated Tax Payments",
+      "22. State > [State screens]",
+    ],
+    "990": [
+      "1. General > Organization Information",
+      "2. General > Electronic Filing",
+      "3. Revenue > Contributions and Grants",
+      "4. Revenue > Program Service Revenue",
+      "5. Revenue > Investment Income",
+      "6. Revenue > Dispositions (Schedule D)",
+      "7. Revenue > Other Revenue",
+      "8. Expenses > Grants Paid",
+      "9. Expenses > Compensation",
+      "10. Expenses > Other Expenses",
+      "11. Balance Sheet > Assets (Part X)",
+      "12. Balance Sheet > Liabilities and Net Assets (Part X)",
+      "13. Schedules > Schedule A",
+      "14. Schedules > Schedule B",
+      "15. Schedules > Schedule D",
+      "16. Schedules > Schedule F",
+      "17. Schedules > Schedule O",
+    ],
+    "1041": [
+      "1. General > Entity Information",
+      "2. Income > Interest Income",
+      "3. Income > Dividends",
+      "4. Income > Business Income",
+      "5. Income > Capital Gains (Schedule D)",
+      "6. Income > Rents, Royalties (Schedule E)",
+      "7. Income > Farm Income",
+      "8. Income > Other Income",
+      "9. Deductions > Interest",
+      "10. Deductions > Taxes",
+      "11. Deductions > Fiduciary Fees",
+      "12. Deductions > Attorney / Accountant Fees",
+      "13. Deductions > Other Deductions",
+      "14. Distributions > Income Distribution Deduction",
+      "15. Beneficiaries > K-1 for each beneficiary",
+      "16. State > [State screens]",
+    ],
+  };
+  return (orders[key] || orders["1120"]).join("\n");
+}
+
+function softwareDisplayName(value) {
+  const key = String(value || "").toLowerCase();
+  const software = taxSoftwareById(key);
+  if (software) return software.name;
+  const names = {
+    proconnect: "ProConnect Tax",
+    lacerte: "Lacerte",
+    proseries: "ProSeries",
+    drake: "Drake Tax",
+    ultratax: "UltraTax CS",
+    cch_axcess: "CCH Axcess",
+    cch_prosystem: "CCH ProSystem fx",
+    other: "Other / Generic",
+  };
+  return names[key] || value || "ProConnect Tax";
+}
+
+function highReviewIssuesForEntryGuide(reviewResult) {
+  const issues = reviewResult?.structured?.issues || reviewResult?.issues || [];
+  if (!Array.isArray(issues)) return [];
+  return issues.filter((issue) => {
+    const priority = String(issue.priority || issue.severity || "").toLowerCase();
+    return priority.includes("high") && (issue.formOrSchedule || issue.lineOrField);
+  }).map((issue, index) => ({
+    id: issue.id || `HIGH-${index + 1}`,
+    formOrSchedule: issue.formOrSchedule || issue.areaReviewed || "",
+    lineOrField: issue.lineOrField || "",
+    description: issue.description || issue.issue || issue.summary || "",
+    recommendation: issue.recommendation || issue.fix || "",
+  }));
+}
+
+function safeJsonForPrompt(value, maxChars) {
+  const text = JSON.stringify(value || {}, null, 2);
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...[truncated for prompt length]`;
+}
+
+function normalizeEntryGuide(parsed, fallback) {
+  const guide = parsed && typeof parsed === "object" ? parsed : {};
+  const screens = Array.isArray(guide.screens) ? guide.screens : [];
+  let nextScreenNumber = 1;
+  const normalizedScreens = screens.map((screen) => {
+    let screenNumber = Number(screen.screenNumber || 0);
+    if (!screenNumber) screenNumber = nextScreenNumber;
+    nextScreenNumber = Math.max(nextScreenNumber, screenNumber + 1);
+    const fields = Array.isArray(screen.fields) ? screen.fields.map((field, index) => ({
+      fieldNumber: Number(field.fieldNumber || index + 1),
+      fieldName: String(field.fieldName || "Field"),
+      fieldDescription: String(field.fieldDescription || ""),
+      value: formatEntryGuideValue(field.value, field.dataType),
+      valueSource: String(field.valueSource || "Workpaper data"),
+      status: normalizeEntryStatus(field.status),
+      statusNote: field.statusNote ? String(field.statusNote) : null,
+      dataType: String(field.dataType || "text"),
+      reviewIssueRef: field.reviewIssueRef ? String(field.reviewIssueRef) : null,
+    })) : [];
+    return {
+      screenNumber,
+      screenPath: String(screen.screenPath || `Section ${screenNumber}`),
+      screenDescription: String(screen.screenDescription || ""),
+      softwareNavigation: String(screen.softwareNavigation || screen.screenPath || `Refer to ${softwareDisplayName(fallback.taxSoftware)} input screens`),
+      fields,
+      screenNotes: screen.screenNotes ? String(screen.screenNotes) : null,
+    };
+  }).sort((a, b) => a.screenNumber - b.screenNumber);
+
+  const allFields = normalizedScreens.flatMap((screen) => screen.fields);
+  return {
+    returnType: String(guide.returnType || fallback.returnType || ""),
+    taxYear: String(guide.taxYear || fallback.taxYear || ""),
+    software: String(guide.software || softwareDisplayName(fallback.taxSoftware)),
+    clientName: String(guide.clientName || fallback.clientName || ""),
+    ein: String(guide.ein || fallback.ein || ""),
+    generatedAt: guide.generatedAt || new Date().toISOString(),
+    totalFields: Number(guide.totalFields || allFields.length),
+    fieldsNeedingDecision: Number(guide.fieldsNeedingDecision || allFields.filter((field) => field.status === "decision_needed").length),
+    fieldsFromReviewIssues: Number(guide.fieldsFromReviewIssues || allFields.filter((field) => field.status === "review_issue").length),
+    screens: normalizedScreens,
+    decisionItems: Array.isArray(guide.decisionItems) ? guide.decisionItems : [],
+    reviewIssueFields: Array.isArray(guide.reviewIssueFields) ? guide.reviewIssueFields : [],
+    entryOrder: String(guide.entryOrder || "Enter fields in screen number order from top to bottom."),
+    estimatedEntryTime: String(guide.estimatedEntryTime || "30-60 minutes"),
+  };
+}
+
+function normalizeEntryStatus(status) {
+  const normalized = String(status || "ready").toLowerCase().replace(/[\s-]+/g, "_");
+  return ["ready", "decision_needed", "verify", "review_issue", "not_applicable"].includes(normalized) ? normalized : "ready";
+}
+
+function formatEntryGuideValue(value, dataType) {
+  if (value === null || value === undefined) return "";
+  const type = String(dataType || "").toLowerCase();
+  if (type === "checkbox" && typeof value === "boolean") return value ? "Yes" : "No";
+  if (type === "currency" && typeof value === "number") return value.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  if (type === "percentage" && typeof value === "number") return `${value.toFixed(2)}%`;
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+function buildNoticeSystemPrompt() {
+  return [
+    "You are a senior US tax attorney and CPA specializing in IRS and state tax notice analysis and response drafting. You have deep knowledge of all IRS notice types, CP series notices, audit letters, state tax authority notices, collection notices, and the correct procedural response for each.",
+    "",
+    "Your job is to:",
+    "1. Identify the notice type, issuing authority, tax year, and amount at issue",
+    "2. Determine the deadline for response â€” state the exact date if visible, or calculate from notice date",
+    "3. Analyze whether the notice appears correct, incorrect, or partially incorrect based on the documents provided",
+    "4. Draft a complete, professional response letter ready to send on CPA firm letterhead",
+    "5. List the enclosures the response letter should include",
+    "6. Flag any immediate action required (e.g., stop collection, request CAF authorization, etc.)",
+    "",
+    "NOTICE CATEGORIES YOU MUST HANDLE:",
+    "- CP2000 (Underreporter inquiry) â€” do NOT recommend amending; recommend a response letter with explanation",
+    "- CP501/CP503/CP504 (Balance due notices) â€” verify balance, check payments, recommend payment plan if applicable",
+    "- CP11/CP12 (Math error) â€” verify the IRS calculation; if incorrect, draft protest",
+    "- Audit letters (Letter 2205, Letter 531, Notice of Examination) â€” draft initial response, request for extension if needed",
+    "- Lien/Levy notices (LT11, CP90) â€” flag as URGENT; immediate action required",
+    "- State notices â€” identify state, apply state-specific procedures",
+    "- FBAR/international notices â€” flag for specialist review",
+    "",
+    "OUTPUT FORMAT â€” respond ONLY with valid JSON inside ```json fences:",
+    '{"noticeType":"string â€” e.g. CP2000, Letter 531, State audit","issuingAuthority":"IRS / [State] Department of Revenue / etc.","taxYearAtIssue":"YYYY","amountAtIssue":"string â€” dollar amount or Not stated","responseDeadline":"string â€” exact date or XX days from notice date","urgencyLevel":"CRITICAL / HIGH / MEDIUM / LOW","summary":"string â€” 2-3 sentence plain-English summary of what the notice is about","analysis":"string â€” is the notice correct, incorrect, or partially incorrect? explain","immediateActions":["string","string"],"responseLetter":"string â€” complete draft letter, ready for CPA letterhead","enclosures":["string","string"],"internalNotes":"string â€” notes for the preparer, not for the client","deadlineWarning":"string â€” if deadline is within 30 days, say so explicitly"}',
+  ].join("\n");
+}
+
+function buildNoticeContent(payload) {
+  const content = [{
+    type: "text",
+    text: [
+      "Analyze the uploaded tax notice using the system instructions.",
+      `State selection: ${payload.state || "Federal / IRS"}`,
+      `Client facts / context: ${payload.clientFacts || "None provided"}`,
+    ].join("\n"),
+  }];
+  addNoticeFileContent(content, payload.noticeFile, "NOTICE DOCUMENT");
+  if (payload.priorReturn?.content) addNoticeFileContent(content, payload.priorReturn, "PRIOR YEAR RETURN / SUPPORTING DOCUMENT");
+  return content;
+}
+
+function addNoticeFileContent(content, file, label) {
+  const mediaType = String(file.type || "").toLowerCase();
+  if (mediaType === "application/pdf") {
+    content.push({
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: file.content },
+      title: file.name || label,
+      context: label,
+    });
+    return;
+  }
+  if (mediaType.startsWith("image/")) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: file.content },
+    });
+    return;
+  }
+  content.push({
+    type: "text",
+    text: [`=== ${label}: ${file.name || "uploaded file"} ===`, file.content || ""].join("\n\n"),
+  });
+}
+
+function buildOrganizerSystemPrompt() {
+  return [
+    "You are a senior CPA preparing a personalized tax organizer for a client. You have analyzed the client's prior year tax return and you know exactly what information they needed last year. Your job is to generate a personalized, specific organizer for the upcoming tax year - NOT a generic checklist, but one tailored to this specific client's situation.",
+    "",
+    "RULES:",
+    "- Every question must be specific to THIS client's situation based on the prior year return",
+    "- Group questions by category (Income, Deductions, Balance Sheet changes, etc.)",
+    "- For each item the client reported last year, ask if the same item applies this year and request updated amounts/documentation",
+    "- Add new questions for items that commonly arise year over year (e.g., if they had a rental property, ask about rental income AND any improvements, repairs, new leases)",
+    "- Flag any items from the prior year that require special attention (e.g., installment sales, carryforwards, depreciation recapture potential)",
+    "- Use plain English - no tax jargon without explanation in parentheses",
+    "- For each question, specify exactly what document to provide (W-2, 1099, bank statement, etc.)",
+    "",
+    "OUTPUT FORMAT - respond ONLY with valid JSON inside ```json fences:",
+    '{"clientName":"string","taxYear":"string","returnType":"string","organizerTitle":"string","sections":[{"sectionName":"string","sectionDescription":"string","questions":[{"id":"string","question":"string","context":"string - why we are asking (e.g., You reported rental income of $XX,XXX last year)","documentRequired":"string - e.g., Form 1099-MISC from [payer name]","priority":"required | recommended | optional","priorYearAmount":"string or null","answerType":"yes_no | amount | document | text | yes_no_with_amount"}]}],"carryforwardItems":[{"item":"string","priorYearAmount":"string","note":"string"}],"specialAttentionItems":["string"],"deadlineReminders":["string"]}',
+  ].join("\n");
+}
+
+function buildOrganizerContent(payload) {
+  const content = [{
+    type: "text",
+    text: [
+      "Generate a personalized client tax organizer using the prior year return.",
+      `Client name: ${payload.clientName || "Not provided"}`,
+      `Return type: ${payload.returnType || "Not provided"}`,
+      `New tax year being organized: ${payload.taxYear || "Not provided"}`,
+      `Entity type: ${payload.entityType || "Not provided"}`,
+      `Additional context: ${payload.additionalContext || "None"}`,
+    ].join("\n"),
+  }];
+  addOrganizerFileContent(content, payload.priorYearReturn, "PRIOR YEAR RETURN");
+  return content;
+}
+
+function addOrganizerFileContent(content, file, label) {
+  const mediaType = String(file.type || file.mediaType || "").toLowerCase();
+  if (mediaType === "application/pdf" && file.encoding === "base64") {
+    content.push({
+      type: "document",
+      source: { type: "base64", media_type: "application/pdf", data: file.content },
+      title: file.name || label,
+      context: label,
+    });
+    return;
+  }
+  if (mediaType.startsWith("image/") && file.encoding === "base64") {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: mediaType, data: file.content },
+    });
+    return;
+  }
+  content.push({
+    type: "text",
+    text: [`=== ${label}: ${file.name || "uploaded file"} ===`, file.content || ""].join("\n\n"),
+  });
+}
+
+function normalizeOrganizer(parsed, raw, payload = {}) {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  const sections = Array.isArray(source.sections) ? source.sections.map((section, sectionIndex) => ({
+    sectionName: String(section.sectionName || `Section ${sectionIndex + 1}`),
+    sectionDescription: String(section.sectionDescription || ""),
+    questions: Array.isArray(section.questions) ? section.questions.map((question, questionIndex) => ({
+      id: String(question.id || `q-${sectionIndex + 1}-${questionIndex + 1}`),
+      question: String(question.question || ""),
+      context: String(question.context || ""),
+      documentRequired: String(question.documentRequired || ""),
+      priority: normalizeOrganizerPriority(question.priority),
+      priorYearAmount: question.priorYearAmount === null || question.priorYearAmount === undefined ? null : String(question.priorYearAmount),
+      answerType: normalizeOrganizerAnswerType(question.answerType),
+    })).filter((question) => question.question) : [],
+  })).filter((section) => section.questions.length) : [];
+
+  if (!sections.length) {
+    sections.push({
+      sectionName: "Organizer",
+      sectionDescription: "Claude did not return structured organizer sections.",
+      questions: [{
+        id: "q-1",
+        question: String(raw || "No organizer content returned."),
+        context: "",
+        documentRequired: "",
+        priority: "recommended",
+        priorYearAmount: null,
+        answerType: "text",
+      }],
+    });
+  }
+
+  return {
+    clientName: String(source.clientName || payload.clientName || ""),
+    taxYear: String(source.taxYear || payload.taxYear || ""),
+    returnType: String(source.returnType || payload.returnType || ""),
+    organizerTitle: String(source.organizerTitle || `Tax Organizer - ${payload.clientName || "Client"} - Tax Year ${payload.taxYear || ""}`),
+    sections,
+    carryforwardItems: Array.isArray(source.carryforwardItems) ? source.carryforwardItems.map((item) => ({
+      item: String(item.item || ""),
+      priorYearAmount: String(item.priorYearAmount || ""),
+      note: String(item.note || ""),
+    })).filter((item) => item.item) : [],
+    specialAttentionItems: Array.isArray(source.specialAttentionItems) ? source.specialAttentionItems.map((item) => String(item || "")).filter(Boolean) : [],
+    deadlineReminders: Array.isArray(source.deadlineReminders) ? source.deadlineReminders.map((item) => String(item || "")).filter(Boolean) : [],
+  };
+}
+
+function normalizeOrganizerPriority(value) {
+  const priority = String(value || "").toLowerCase();
+  if (["required", "recommended", "optional"].includes(priority)) return priority;
+  return "recommended";
+}
+
+function normalizeOrganizerAnswerType(value) {
+  const answerType = String(value || "").toLowerCase();
+  if (["yes_no", "amount", "document", "text", "yes_no_with_amount"].includes(answerType)) return answerType;
+  return "text";
+}
+
+function buildDeliverableSystemPrompt() {
+  return [
+    "You are a senior US tax CPA preparing client-facing deliverables after an internal senior tax review.",
+    "Your job is to convert the review findings into plain-English, professional client communications.",
+    "Use the review result as the authoritative source for tax review status and open items. Use notice analysis only when provided.",
+    "Do not invent filing status, balances, deadlines, attachments, or client facts. If something is missing, state Not provided or include it as a checklist item.",
+    "Use firm information exactly as provided.",
+    "Transmittal letters must be suitable for firm letterhead, addressed to the client, and ready to send after minor editing.",
+    "Client action checklist items must be concrete, understandable, and limited to what the client or preparer needs to provide or approve.",
+    "Email drafts must be concise, client-friendly, and must not include internal-only notes.",
+    "Return ONLY valid JSON inside ```json``` fences. No prose outside JSON.",
+    "",
+    "Required JSON schema:",
+    '{"transmittalLetter":"string","clientActionChecklist":[{"item":"string","reason":"string","howToProvide":"string","urgency":"HIGH|MEDIUM|LOW"}],"emailDraft":{"subject":"string","body":"string"},"filingReadiness":"READY | NOT_READY | READY_WITH_CONDITIONS","filingReadinessReason":"string","balanceDueOrRefund":"string","filingDeadline":"string","enclosureList":["string"]}',
+  ].join("\n");
+}
+
+function buildDeliverableContent(payload) {
+  const content = [{
+    type: "text",
+    text: [
+      "Create the requested client deliverable from the review data.",
+      `Requested deliverable type: ${payload.deliverableType || "all"}`,
+      `Client name: ${payload.clientName || "Not provided"}`,
+      `Preparer name: ${payload.preparerName || "Not provided"}`,
+      `Firm name: ${payload.firmName || "Not provided"}`,
+      `Firm address: ${payload.firmAddress || "Not provided"}`,
+      `Firm phone: ${payload.firmPhone || "Not provided"}`,
+      `Firm email: ${payload.firmEmail || "Not provided"}`,
+      `Recipient name: ${payload.recipientName || payload.clientName || "Not provided"}`,
+      `Recipient email: ${payload.recipientEmail || "Not provided"}`,
+      `Email tone: ${payload.emailTone || "formal"}`,
+      `Custom instructions: ${payload.customInstructions || "None"}`,
+      "",
+      "CLIENT-SIDE FILING READINESS DERIVATION:",
+      `Filing readiness: ${payload.derivedFilingReadiness || "Not provided"}`,
+      `Filing readiness reason: ${payload.derivedFilingReadinessReason || "Not provided"}`,
+      "",
+      "SENIOR REVIEW RESULT JSON:",
+      JSON.stringify(payload.reviewResult || {}, null, 2),
+      "",
+      "NOTICE ANALYSIS JSON, IF ANY:",
+      JSON.stringify(payload.noticeResult || null, null, 2),
+      "",
+      "CLIENT ORGANIZER JSON, IF ANY:",
+      JSON.stringify(payload.organizerResult || null, null, 2),
+      "",
+      "E-FILE DIAGNOSTICS JSON, IF ANY:",
+      JSON.stringify(payload.diagnosticsResult || null, null, 2),
+    ].join("\n"),
+  }];
+  return content;
+}
+
+function buildDeliverableDraftSystemPrompt() {
+  return [
+    "You are a senior CPA at a professional accounting firm writing a client email.",
+    "You are attaching tax documents and communicating the status of the client's tax return preparation.",
+    "Write a professional, clear email that addresses the client by name, explains what is attached, communicates filing status, states the filing deadline, and ends with a clear call to action.",
+    "If READY, confirm it is ready for review/signature and state balance due or refund when provided.",
+    "If NOT_READY, explain what is still needed in plain English as a numbered list.",
+    "If READY_WITH_CONDITIONS, explain it is almost ready and list the conditions.",
+    "Tone rules: formal uses conservative language; friendly is warm and professional; brief is 3-5 sentences maximum.",
+    "Return ONLY valid JSON inside ```json``` fences.",
+    '{"subject":"string","body":"string","bodyHtml":"string","keyPoints":["string"],"callToAction":"string","suggestedFollowUpDays":number}',
+  ].join("\n");
+}
+
+function buildDeliverableDraftPrompt(payload) {
+  return [
+    "Generate a client email draft using this deliverable context.",
+    "",
+    "Client:",
+    JSON.stringify(payload.client || {}, null, 2),
+    "",
+    "Preparer:",
+    JSON.stringify(payload.preparer || {}, null, 2),
+    "",
+    "Attachments:",
+    JSON.stringify(payload.attachments || [], null, 2),
+    "",
+    "Return / filing context:",
+    JSON.stringify(payload.context || {}, null, 2),
+    "",
+    `Tone: ${payload.tone || "formal"}`,
+  ].join("\n");
+}
+
+function normalizeEmailDraft(parsed, raw) {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  const body = String(source.body || raw || "");
+  return {
+    subject: String(source.subject || "Tax documents for your review"),
+    body,
+    bodyHtml: String(source.bodyHtml || plainTextToHtml(body)),
+    keyPoints: Array.isArray(source.keyPoints) ? source.keyPoints.map((item) => String(item || "")).filter(Boolean) : [],
+    callToAction: String(source.callToAction || ""),
+    suggestedFollowUpDays: Number(source.suggestedFollowUpDays || 3),
+  };
+}
+
+async function googleProfileEmail() {
+  const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo").then((r) => r.ok ? r.json() : {});
+  return profile.email || null;
+}
+
+async function gmailAuthorizationStatus() {
+  const tokens = readGoogleTokens();
+  if (!tokens || !isGoogleDriveEnabled()) return { authorized: false, email: null };
+  const scopes = String(tokens.scope || "");
+  const email = await googleProfileEmail().catch(() => null);
+  if (!scopes.includes(GOOGLE_GMAIL_COMPOSE_SCOPE)) return { authorized: false, email };
+  const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile").catch(() => ({ ok: false }));
+  if (!profileRes.ok) return { authorized: true, email };
+  const profile = await profileRes.json().catch(() => ({}));
+  return { authorized: true, email: profile.emailAddress || email };
+}
+
+function buildMimeEmail(params) {
+  const boundary = `boundary_${Date.now()}`;
+  const alt = `alt_${boundary}`;
+  const lines = [];
+  lines.push(
+    `To: ${params.to}`,
+    `Subject: ${encodeMimeHeader(params.subject)}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/mixed; boundary="${boundary}"`
+  );
+  if (params.cc) lines.splice(1, 0, `Cc: ${params.cc}`);
+  lines.push(
+    "",
+    `--${boundary}`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`,
+    "",
+    `--${alt}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(params.bodyText || "", "utf8").toString("base64")),
+    `--${alt}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(params.bodyHtml || plainTextToHtml(params.bodyText || ""), "utf8").toString("base64")),
+    `--${alt}--`
+  );
+  for (const attachment of params.attachments || []) {
+    lines.push(
+      `--${boundary}`,
+      `Content-Type: ${attachment.mimeType || "application/octet-stream"}`,
+      `Content-Disposition: attachment; filename="${String(attachment.name || "attachment").replace(/"/g, "")}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(String(attachment.contentBase64 || "").replace(/\s+/g, ""))
+    );
+  }
+  lines.push(`--${boundary}--`);
+  return lines.join("\r\n");
+}
+
+function wrapBase64(value) {
+  return String(value || "").replace(/(.{76})/g, "$1\r\n");
+}
+
+function encodeMimeHeader(value) {
+  const text = String(value || "");
+  if (!/[^\x20-\x7E]/.test(text)) return text;
+  return `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+}
+
+function plainTextToHtml(text) {
+  return String(text || "").split(/\n{2,}/).map((para) => `<p>${escapeHtml(para).replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+function htmlToPlainText(html) {
+  return String(html || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, "").trim();
+}
+
+function normalizeDeliverable(parsed, raw) {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  const checklist = Array.isArray(source.clientActionChecklist)
+    ? source.clientActionChecklist.map((item) => ({
+      item: String(item.item || item.action || ""),
+      reason: String(item.reason || ""),
+      howToProvide: String(item.howToProvide || item.how || ""),
+      urgency: normalizeUrgency(item.urgency),
+    })).filter((item) => item.item)
+    : [];
+  return {
+    transmittalLetter: String(source.transmittalLetter || ""),
+    clientActionChecklist: checklist,
+    emailDraft: {
+      subject: String(source.emailDraft?.subject || ""),
+      body: String(source.emailDraft?.body || ""),
+    },
+    filingReadiness: normalizeFilingReadiness(source.filingReadiness),
+    filingReadinessReason: String(source.filingReadinessReason || ""),
+    balanceDueOrRefund: String(source.balanceDueOrRefund || "Not provided"),
+    filingDeadline: String(source.filingDeadline || "Not provided"),
+    enclosureList: Array.isArray(source.enclosureList) ? source.enclosureList.map((item) => String(item || "")).filter(Boolean) : [],
+    raw: parsed ? "" : String(raw || ""),
+  };
+}
+
+function normalizeUrgency(value) {
+  const urgency = String(value || "").toUpperCase();
+  if (["HIGH", "MEDIUM", "LOW"].includes(urgency)) return urgency;
+  return "MEDIUM";
+}
+
+function normalizeFilingReadiness(value) {
+  const readiness = String(value || "").toUpperCase().replace(/\s+/g, "_");
+  if (["READY", "NOT_READY", "READY_WITH_CONDITIONS"].includes(readiness)) return readiness;
+  return "READY_WITH_CONDITIONS";
+}
+
+function normalizeWorkbook(parsed, raw, payload = {}) {
+  const workbook = parsed && typeof parsed === "object" ? parsed : {};
+  const sheets = Array.isArray(workbook.sheets) ? workbook.sheets : [];
+  const normalizedSheets = sheets.map((sheet, index) => ({
+    name: String(sheet.name || `Sheet ${index + 1}`).slice(0, 31),
+    rows: normalizeRows(sheet.rows),
+    merges: Array.isArray(sheet.merges) ? sheet.merges : [],
+    cols: Array.isArray(sheet.cols) ? sheet.cols : [],
+    styles: normalizeSheetStyles(sheet.styles),
+  })).filter((sheet) => sheet.rows.length);
+  const aiNotes = Array.isArray(workbook.aiNotes) ? workbook.aiNotes.map((note) => String(note || "")) : [];
+  if (!normalizedSheets.length) {
+    const templateWorkbook = workbookTemplateFromPayload(payload);
+    if (templateWorkbook) {
+      normalizedSheets.push(...templateWorkbook.sheets.map((sheet, index) => ({
+        name: String(sheet.name || `Sheet ${index + 1}`).slice(0, 31),
+        rows: normalizeRows(sheet.rows),
+        merges: Array.isArray(sheet.merges) ? sheet.merges : [],
+        cols: Array.isArray(sheet.cols) ? sheet.cols : [],
+        styles: normalizeSheetStyles(sheet.styles),
+      })).filter((sheet) => sheet.rows.length));
+    }
+  }
+  if (!normalizedSheets.length) {
+    throw new Error("Workbook JSON did not contain usable sheets.");
+  }
+  if (!normalizedSheets.some((sheet) => String(sheet.name || "").trim().toLowerCase() === "ai notes")) {
+    normalizedSheets.push({
+      name: "AI Notes",
+      rows: [["AI Notes"], ...(aiNotes.length ? aiNotes : ["Workbook generated from source files. Review any blank cells marked unable to verify."]).map((note) => [note])],
+    });
+  }
+  return { sheets: normalizedSheets, aiNotes };
+}
+
+function workbookTemplateFromPayload(payload = {}) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const templateFile = files.find((file) => file?.workbookTemplate?.sheets?.length || file?.workbookTemplates?.some((template) => template?.sheets?.length));
+  if (!templateFile) return null;
+  const template = templateFile.workbookTemplate?.sheets?.length
+    ? templateFile.workbookTemplate
+    : templateFile.workbookTemplates.find((candidate) => candidate?.sheets?.length);
+  const targetYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
+  return {
+    ...template,
+    sheets: (template.sheets || []).map((sheet) => ({
+      ...sheet,
+      name: shiftYearText(sheet.name, targetYear),
+      rows: normalizeRows(sheet.rows).map((row) => row.map((cell) => shiftYearText(cell, targetYear))),
+      styles: normalizeSheetStyles(sheet.styles),
+    })),
+  };
+}
+
+function normalizeSheetStyles(styles) {
+  if (!Array.isArray(styles)) return [];
+  return styles.slice(0, 1000).map((style) => ({
+    r: Number.isFinite(Number(style.r)) ? Number(style.r) : 0,
+    c: Number.isFinite(Number(style.c)) ? Number(style.c) : 0,
+    bold: Boolean(style.bold),
+    underline: Boolean(style.underline),
+    border: Boolean(style.border),
+    fill: String(style.fill || ""),
+    fontColor: String(style.fontColor || ""),
+    numFmt: String(style.numFmt || ""),
+  })).filter((style) => style.r >= 0 && style.c >= 0);
+}
+
+function shiftYearText(value, targetYear) {
+  const text = String(value ?? "");
+  if (!targetYear || !/20\d{2}/.test(text)) return text;
+  return text.replace(/\b20\d{2}\b/g, targetYear);
+}
+
+function normalizeRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => {
+    const cells = Array.isArray(row) ? row : [row];
+    return cells.map((cell) => {
+      if (cell === null || cell === undefined) return "";
+      if (typeof cell === "object") return String(cell.label || cell.name || cell.title || cell.value || cell.description || "");
+      return cell;
+    });
+  });
+}
+
+function groupFiles(files) {
+  return {
+    taxReturns: files.filter((file) => file.type === "taxReturns"),
+    workpapers: files.filter((file) => file.type === "workpapers"),
+    documents: files.filter((file) => file.type === "documents"),
+  };
+}
+
+function listFiles(files) {
+  if (!files.length) return "None uploaded.";
+  return files.map((file, index) =>
+    `${index + 1}. ${file.name} (${labelForType(file.type)}${file.role ? `, ${file.role}` : ""}, ${file.mediaType || "unknown"}, ${file.size || 0} bytes)`
+  ).join("\n");
+}
+
+function buildReviewResponseContent(issue, payload = {}) {
+  const files = Array.isArray(payload.additionalFiles) ? payload.additionalFiles : [];
+  return [
+    "Evaluate this preparer response to one issue from an existing tax review.",
+    "",
+    "ORIGINAL ISSUE",
+    JSON.stringify(issue, null, 2),
+    "",
+    "PREPARER RESPONSE",
+    String(payload.preparerResponse || "").trim(),
+    "",
+    "ADDITIONAL SUPPORTING FILES",
+    files.length ? files.map((file, index) => [
+      `--- ${index + 1}. ${file.name || "supporting file"} ---`,
+      file.text || file.content || file.data || "(file content unavailable)",
+    ].join("\n")).join("\n\n") : "None uploaded.",
+    "",
+    "Return only valid JSON with resolved, resolution, followUpRequired, and followUpQuestion.",
+  ].join("\n");
+}
+
+async function loadReviewContext() {
+  const [knowledgeBase, reviewExamples] = await Promise.all([
+    loadContextFiles(KNOWLEDGE_BASE_DIR, "knowledge_base"),
+    loadContextFiles(REVIEW_EXAMPLES_DIR, "review_examples"),
+  ]);
+  return { knowledgeBase, reviewExamples };
+}
+
+async function loadContextFiles(directory, kind, options = {}) {
+  const includeBackendOnly = options.includeBackendOnly !== false;
+  try {
+    await fs.mkdir(directory, { recursive: true });
+    const entries = await listFilesRecursive(directory);
+    const files = [];
+
+    for (const entry of entries) {
+      const relativeName = path.relative(directory, entry).replace(/\\/g, "/");
+      if (path.basename(relativeName).toLowerCase() === "readme.md") continue;
+      if (!includeBackendOnly && isBackendOnlyContextFile(kind, relativeName)) continue;
+      const ext = path.extname(relativeName).toLowerCase();
+      if (!READABLE_CONTEXT_EXTENSIONS.has(ext)) continue;
+      const text = await fs.readFile(entry, "utf8");
+      files.push({
+        kind,
+        name: relativeName,
+        text,
+      });
+      if (files.length >= MAX_CONTEXT_FILES) break;
+    }
+
+    return files;
+  } catch (error) {
+    console.warn(`Could not load ${kind}:`, error.message);
+    return [];
+  }
+}
+
+function isBackendOnlyContextFile(kind, relativeName) {
+  const hidden = BACKEND_ONLY_CONTEXT_FILES.get(kind);
+  if (!hidden) return false;
+  return hidden.has(path.basename(relativeName).toLowerCase()) || hidden.has(String(relativeName || "").toLowerCase());
+}
+
+async function listFilesRecursive(directory) {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listFilesRecursive(fullPath));
+    else if (entry.isFile()) files.push(fullPath);
+  }
+  return files;
+}
+
+function loadMasterReviewPrompt() {
+  try {
+    return fsSync.readFileSync(MASTER_REVIEW_PROMPT_PATH, "utf8").trim();
+  } catch (error) {
+    console.warn("Master review prompt not found:", error.message);
+    return "";
+  }
+}
+
+function normalizeContextKind(kind) {
+  const value = String(kind || "").trim().toLowerCase();
+  if (["knowledge_base", "knowledge-base", "knowledge"].includes(value)) return "knowledge_base";
+  if (["review_examples", "review-examples", "examples"].includes(value)) return "review_examples";
+  return "";
+}
+
+function contextDirectoryForKind(kind) {
+  return kind === "review_examples" ? REVIEW_EXAMPLES_DIR : KNOWLEDGE_BASE_DIR;
+}
+
+function safeContextRelativePath(name) {
+  const rawParts = String(name || "context.txt").replace(/\\/g, "/").split("/");
+  const safeParts = rawParts
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => part !== "." && part !== "..")
+    .map((part) => part.replace(/[^a-zA-Z0-9._ -]/g, "_").replace(/\s+/g, " ").slice(0, 120));
+  return safeParts.length ? safeParts.join("/") : "context.txt";
+}
+
+function formatContextFiles(files) {
+  return files.map((file, index) => [
+    `--- ${index + 1}. ${file.name} ---`,
+    file.text,
+  ].join("\n")).join("\n\n");
+}
+
+function buildDiagnosticsContent(payload = {}) {
+  const content = [];
+  if (payload.errorImage?.contentBase64 && payload.errorImage?.mimeType) {
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: payload.errorImage.mimeType,
+        data: payload.errorImage.contentBase64,
+      },
+    });
+  }
+  content.push({
+    type: "text",
+    text: buildDiagnosticsPrompt(payload),
+  });
+  return content;
+}
+
+function buildDiagnosticsPrompt(payload = {}) {
+  return [
+    "Analyze these e-file errors and return only valid JSON inside ```json fences.",
+    "",
+    `Selected tax software: ${payload.taxSoftware || "Not specified"}`,
+    `Return type: ${payload.returnType || "Not specified"}`,
+    `Tax year: ${payload.taxYear || "Not specified"}`,
+    "",
+    "Additional context from preparer:",
+    payload.additionalContext || "None.",
+    "",
+    "Pasted diagnostic text:",
+    payload.errorInput || "(No pasted text provided; use the screenshot if present.)",
+  ].join("\n");
+}
+
+function buildDiagnosticsSystemPrompt() {
+  return `You are a senior US tax software expert and CPA with deep knowledge of all major tax preparation platforms: ProConnect Tax, Lacerte, ProSeries, UltraTax CS, Drake Tax, CCH Axcess, GoSystem RS, TaxSlayer Pro, ATX, and TaxAct Professional.
+
+You also have deep knowledge of IRS e-file specifications, IRS Modernized e-File (MeF) schema requirements, all IRS Business Rules (reject codes), and state e-file requirements for all 50 states.
+
+Your job:
+1. IDENTIFY every error, warning, reject code, or diagnostic message shown.
+2. EXPLAIN what each means in plain English, including form/line and why IRS/state/software flags it.
+3. FIX each item with specific step-by-step instructions for the selected software and tax year, using exact menu/screen/field paths when possible.
+4. PRIORITY: distinguish critical e-file blockers from warnings/informational diagnostics.
+5. ROOT CAUSE: identify cascaded errors that share one underlying issue.
+
+Tax software screen knowledge:
+PROCONNECT TAX: Input screens via left sidebar; Balance Sheet > Assets / Liabilities & Equity; Deductions > Depreciation (4562); General > Officer Compensation (1125-E); Income > Schedule M-3; Other > Foreign Transactions; State & Local [state abbreviation] > [relevant screen].
+LACERTE: Use screen number and name, e.g. Screen 29 = Balance Sheet, Screen 26 = Depreciation.
+PROSERIES: Form-based navigation; specify Interview mode vs Forms mode.
+DRAKE TAX: Data entry screens by screen code, e.g. 4562.
+ULTRATAX CS: Folder name + screen name.
+CCH AXCESS / CCH PROSYSTEM FX: Interview tabs or Worksheet view; reference tab name and line number.
+
+Common IRS reject codes include R0000-902-01, R0000-507-01, F1120-007-01, F1120-003-01, F1065-070-01, F990-040-01, F1040-007-02, F1120S-007-01, IND-031-04, IND-032-04, plus equivalents.
+
+Respond ONLY with valid JSON inside \`\`\`json fences:
+{
+  "softwareDetected": "string",
+  "returnTypeDetected": "string",
+  "taxYearDetected": "string or null",
+  "totalErrors": number,
+  "totalWarnings": number,
+  "canEfileNow": boolean,
+  "summary": "string",
+  "rootCauses": [{"rootCause":"string","affectsErrors":["string"],"fixThisFirst":boolean}],
+  "diagnostics": [{"id":"string","type":"critical_efile_block | warning | informational","errorCode":"string or null","softwareRef":"string or null","rawErrorText":"string","formOrSchedule":"string","lineOrField":"string","plainExplanation":"string","rootCauseId":"string or null","fixSteps":[{"step":number,"instruction":"string","screenPath":"string","expectedValue":"string or null","warning":"string or null"}],"verificationStep":"string","irsReference":"string or null"}],
+  "postFixChecklist": ["string"],
+  "estimatedFixTime": "string",
+  "additionalNotes": "string or null"
+}`;
+}
+
+function normalizeDiagnostics(parsed, raw, payload = {}) {
+  if (parsed && typeof parsed === "object") {
+    return {
+      softwareDetected: parsed.softwareDetected || payload.taxSoftware || "",
+      returnTypeDetected: parsed.returnTypeDetected || payload.returnType || "",
+      taxYearDetected: parsed.taxYearDetected || payload.taxYear || null,
+      totalErrors: Number(parsed.totalErrors || 0),
+      totalWarnings: Number(parsed.totalWarnings || 0),
+      canEfileNow: Boolean(parsed.canEfileNow),
+      summary: String(parsed.summary || ""),
+      rootCauses: Array.isArray(parsed.rootCauses) ? parsed.rootCauses : [],
+      diagnostics: Array.isArray(parsed.diagnostics) ? parsed.diagnostics : [],
+      postFixChecklist: Array.isArray(parsed.postFixChecklist) ? parsed.postFixChecklist : [],
+      estimatedFixTime: String(parsed.estimatedFixTime || "Not estimated"),
+      additionalNotes: parsed.additionalNotes || null,
+    };
+  }
+  return {
+    softwareDetected: payload.taxSoftware || "",
+    returnTypeDetected: payload.returnType || "",
+    taxYearDetected: payload.taxYear || null,
+    totalErrors: 0,
+    totalWarnings: 0,
+    canEfileNow: true,
+    summary: "No structured diagnostics were returned. Review the raw response.",
+    rootCauses: [],
+    diagnostics: [],
+    postFixChecklist: [],
+    estimatedFixTime: "Not estimated",
+    additionalNotes: raw || null,
+  };
+}
+
+async function findIrsInstructionUrl(form, year) {
+  const normalizedForm = normalizeIrsForm(form);
+  const normalizedYear = String(year || new Date().getFullYear()).match(/\d{4}/)?.[0] || "2025";
+  if (!normalizedForm) return null;
+
+  const reference = await loadIrsReferenceText();
+  if (reference && !reference.toLowerCase().includes(normalizedForm.display.toLowerCase())) return null;
+
+  const explicitUrl = findExplicitIrsUrl(reference, normalizedForm, normalizedYear);
+  return {
+    form: normalizedForm.display,
+    year: normalizedYear,
+    url: explicitUrl || buildIrsInstructionUrl(normalizedForm, normalizedYear),
+  };
+}
+
+async function loadIrsReferenceText() {
+  try {
+    const entries = await listFilesRecursive(KNOWLEDGE_BASE_DIR);
+    const match = entries.find((entry) => /IRS_Instructions_URL_Reference/i.test(path.basename(entry)));
+    return match ? await fs.readFile(match, "utf8") : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function findExplicitIrsUrl(reference, normalizedForm, year) {
+  const urls = String(reference || "").match(/https?:\/\/[^\s"'<>]+/gi) || [];
+  if (!urls.length) return "";
+  const slug = normalizedForm.slug;
+  const prior = year === "2024";
+  return urls.find((url) => {
+    const lower = url.toLowerCase();
+    return lower.includes(`/${slug}`) || lower.includes(`${slug}--${year}`) || (prior && lower.includes(`/${slug.replace(/^i/, "")}--${year}`));
+  }) || "";
+}
+
+function normalizeIrsForm(form) {
+  const raw = String(form || "").toUpperCase().replace(/\s+/g, " ").trim();
+  const scheduleMatch = raw.match(/SCHEDULE\s+([A-Z0-9-]+)/);
+  const formMatch = raw.match(/(?:FORM\s*)?(1120S|1120-S|\d{3,4}(?:-[A-Z]+)?|1040-NR|1040-PR|1040-SS|1040-SR)/);
+  const key = scheduleMatch ? `SCHEDULE ${scheduleMatch[1]}` : formMatch ? `FORM ${formMatch[1]}` : raw;
+  const map = {
+    "FORM 1040": { display: "Form 1040", slug: "i1040" },
+    "FORM 1040-NR": { display: "Form 1040-NR", slug: "i1040nr" },
+    "FORM 1040-PR": { display: "Form 1040-PR", slug: "i1040pr" },
+    "FORM 1040-SS": { display: "Form 1040-SS", slug: "i1040ss" },
+    "FORM 1040-SR": { display: "Form 1040-SR", slug: "i1040" },
+    "FORM 1041": { display: "Form 1041", slug: "i1041" },
+    "FORM 1065": { display: "Form 1065", slug: "i1065" },
+    "FORM 1120": { display: "Form 1120", slug: "i1120" },
+    "FORM 1120-S": { display: "Form 1120-S", slug: "i1120s" },
+    "FORM 1120S": { display: "Form 1120-S", slug: "i1120s" },
+    "FORM 990": { display: "Form 990", slug: "i990" },
+    "FORM 990-EZ": { display: "Form 990-EZ", slug: "i990ez" },
+    "FORM 990-T": { display: "Form 990-T", slug: "i990t" },
+    "FORM 990-PF": { display: "Form 990-PF", slug: "i990pf" },
+    "FORM 706": { display: "Form 706", slug: "i706" },
+    "FORM 709": { display: "Form 709", slug: "i709" },
+    "FORM 720": { display: "Form 720", slug: "i720" },
+    "FORM 2290": { display: "Form 2290", slug: "i2290" },
+    "SCHEDULE A": { display: "Schedule A", slug: "i1040sca" },
+    "SCHEDULE B": { display: "Schedule B", slug: "i1040sb" },
+    "SCHEDULE C": { display: "Schedule C", slug: "i1040sc" },
+    "SCHEDULE D": { display: "Schedule D", slug: "i1040sd" },
+    "SCHEDULE E": { display: "Schedule E", slug: "i1040se" },
+    "SCHEDULE SE": { display: "Schedule SE", slug: "i1040sse" },
+    "SCHEDULE K-1": { display: "Schedule K-1", slug: "i1065sk1" },
+  };
+  return map[key] || null;
+}
+
+function buildIrsInstructionUrl(normalizedForm, year) {
+  if (String(year) === "2024") return `https://www.irs.gov/pub/irs-prior/${normalizedForm.slug}--2024.pdf`;
+  return `https://www.irs.gov/pub/irs-pdf/${normalizedForm.slug}.pdf`;
+}
+
+// ---------------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------------
+function extractText(data) {
+  if (!Array.isArray(data.content)) return "Claude returned no review text.";
+  return data.content.filter((b) => b.type === "text" && b.text).map((b) => b.text).join("\n\n").trim() || "Claude returned no review text.";
+}
+
+function estimateClaudeCost(usage) {
+  if (!usage) return null;
+  const inputTokens = Number(usage.input_tokens || 0);
+  const outputTokens = Number(usage.output_tokens || 0);
+  const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens || 0);
+  const cacheReadInputTokens = Number(usage.cache_read_input_tokens || 0);
+  const inputUsd = (inputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK;
+  const cacheWriteUsd = (cacheCreationInputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK * 1.25;
+  const cacheReadUsd = (cacheReadInputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK * 0.1;
+  const outputUsd = (outputTokens / 1_000_000) * CLAUDE_OUTPUT_COST_PER_MTOK;
+  const totalUsd = inputUsd + cacheWriteUsd + cacheReadUsd + outputUsd;
+  return {
+    currency: "USD",
+    inputTokens,
+    outputTokens,
+    cacheCreationInputTokens,
+    cacheReadInputTokens,
+    inputUsd,
+    cacheWriteUsd,
+    cacheReadUsd,
+    outputUsd,
+    totalUsd,
+    inputCostPerMillionTokens: CLAUDE_INPUT_COST_PER_MTOK,
+    outputCostPerMillionTokens: CLAUDE_OUTPUT_COST_PER_MTOK,
+  };
+}
+
+function estimatePayloadInputTokens(payload = {}) {
+  const files = Array.isArray(payload.files) ? payload.files : [];
+  const chars = JSON.stringify(payload.metadata || {}).length + files.reduce((sum, file) => {
+    if (file.text) return sum + String(file.text).length;
+    if (file.encoding === "base64") return sum + Math.round(String(file.data || "").length * 0.75);
+    return sum + 500;
+  }, 0) + MASTER_REVIEW_PROMPT.length;
+  return Math.ceil(chars / 4);
+}
+
+function labelForType(type) {
+  return {
+    taxReturns: "Review Package",
+    workpapers: "Workpaper",
+    documents: "Related Document",
+    priorWorkpaper: "Prior-Year Workpaper",
+    financialReports: "Current-Year Financial Report",
+    preparationPackage: "Preparation Package",
+  }[type] || "Document";
+}
+
+function truncate(value, maxLength) {
+  return String(value || "");
+}
+
+function truncateMiddle(value, maxLength) {
+  return String(value || "");
+}
+
+function escapeHtml(value) {
+  return String(value || "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
+  })[char]);
+}
+
+async function serveStatic(req, res) {
+  const requestedUrl = new URL(req.url, `http://${req.headers.host}`);
+  const pathname = requestedUrl.pathname === "/" ? "/index.html" : requestedUrl.pathname;
+  const normalizedPath = path.normalize(decodeURIComponent(pathname)).replace(/^(\.\.[\\/])+/, "");
+  const filePath = path.join(ROOT, normalizedPath);
+  const relativePath = path.relative(ROOT, filePath);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) { sendText(res, 403, "Forbidden"); return; }
+  try {
+    const file = await fs.readFile(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    res.writeHead(200, {
+      "content-type": mimeTypes[ext] || "application/octet-stream",
+      "cache-control": [".html", ".css", ".js"].includes(ext) ? "no-store" : "public, max-age=3600",
+    });
+    res.end(file);
+  } catch (_) { sendText(res, 404, "Not found"); }
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "", size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        const error = new Error("Request body too large.");
+        error.statusCode = 413;
+        error.expose = true;
+        reject(error);
+        req.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    req.on("end", () => { try { resolve(JSON.parse(body || "{}")); } catch (e) { reject(new Error("Invalid JSON body.")); } });
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res, statusCode, payload) {
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    ...corsHeaders(res),
+  };
+  res.writeHead(statusCode, headers);
+  res.end(JSON.stringify(payload));
+}
+
+function sendCorsPreflight(res) {
+  res.writeHead(204, {
+    ...corsHeaders(res),
+    "access-control-allow-headers": "content-type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-max-age": "86400",
+  });
+  res.end();
+}
+
+function sendText(res, statusCode, text) {
+  res.writeHead(statusCode, { "content-type": "text/plain; charset=utf-8" });
+  res.end(text);
+}
+
+function sendHtml(res, statusCode, html) {
+  res.writeHead(statusCode, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(html);
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { location, "cache-control": "no-store" });
+  res.end();
+}
+
+function setSecurityHeaders(res) {
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+}
+
+function getAllowedOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin || !ALLOWED_ORIGINS.length) return "";
+  return ALLOWED_ORIGINS.includes(origin) ? origin : "";
+}
+
+function corsHeaders(res) {
+  if (!res.corsOrigin) return {};
+  return {
+    "access-control-allow-origin": res.corsOrigin,
+    "vary": "Origin",
+  };
+}
+

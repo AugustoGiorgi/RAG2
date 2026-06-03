@@ -1,0 +1,1957 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Tax AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css?v=20260527-blue-palette" />
+    <style>
+      .step-list {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr) !important;
+        justify-items: stretch !important;
+        align-items: stretch !important;
+        width: 100% !important;
+      }
+
+      .step-list > .step {
+        display: flex !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        min-height: 64px !important;
+        justify-self: stretch !important;
+        align-self: stretch !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+      }
+
+      .step-list > .step > div {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+      }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-mark" src="assets/rag-r-logo.png" alt="RAG Tax AI logo" />
+          <div>
+            <h1>RAG Tax AI</h1>
+            <p class="brand-slogan">Designed for CPA firms. Powered by AI</p>
+          </div>
+        </div>
+        <div class="system-strip">
+          <span id="userStatus" class="system-pill">Signed in</span>
+          <span id="apiStatus" class="system-pill warning">Checking API</span>
+          <span id="webSearchStatus" class="system-pill">Web research: off</span>
+          <button id="driveHeaderStatus" class="topbar-button drive-header-status" type="button" hidden>Connect Google Drive</button>
+          <button id="adminNavButton" class="topbar-button admin-only" type="button" hidden>Admin</button>
+          <button id="logoutButton" class="topbar-button" type="button">Logout</button>
+        </div>
+      </header>
+
+      <div id="saveIndicator" class="save-indicator" hidden>Saved</div>
+
+      <div id="admin-dashboard" class="admin-dashboard" hidden>
+        <div class="admin-dashboard-header">
+          <div>
+            <h2>Admin Dashboard</h2>
+            <p>API usage and cost tracking</p>
+          </div>
+          <button id="closeAdminDashboardButton" type="button">Close</button>
+        </div>
+        <div class="cost-summary-cards">
+          <div class="cost-card"><div class="cost-card-label">Today</div><div class="cost-card-amount" id="cost-today">$0.00</div><div class="cost-card-sub" id="cost-today-calls">0 calls</div></div>
+          <div class="cost-card"><div class="cost-card-label">This Week</div><div class="cost-card-amount" id="cost-week">$0.00</div><div class="cost-card-sub" id="cost-week-calls">0 calls</div></div>
+          <div class="cost-card"><div class="cost-card-label">This Month</div><div class="cost-card-amount" id="cost-month">$0.00</div><div class="cost-card-sub" id="cost-month-calls">0 calls</div></div>
+          <div class="cost-card cost-card-total"><div class="cost-card-label">All Time</div><div class="cost-card-amount" id="cost-alltime">$0.00</div><div class="cost-card-sub" id="cost-alltime-calls">0 calls</div></div>
+        </div>
+        <div class="cost-period-bar">
+          <div class="cost-period-tabs">
+            <button class="cost-period-tab active" data-cost-period="today" type="button">Today</button>
+            <button class="cost-period-tab" data-cost-period="week" type="button">This Week</button>
+            <button class="cost-period-tab" data-cost-period="month" type="button">This Month</button>
+            <button class="cost-period-tab" data-cost-period="all" type="button">All Time</button>
+          </div>
+          <button id="costExportButton" class="cost-export-button" type="button">Export CSV</button>
+        </div>
+        <div class="cost-breakdown-grid">
+          <section class="cost-breakdown-card">
+            <h3>Cost by Action</h3>
+            <table class="cost-table"><thead><tr><th>Action</th><th>Calls</th><th>Total Cost</th><th>Avg Cost</th></tr></thead><tbody id="cost-by-action-body"></tbody></table>
+          </section>
+          <section class="cost-breakdown-card">
+            <h3>Daily Trend</h3>
+            <div id="cost-daily-chart" class="cost-daily-chart"></div>
+          </section>
+        </div>
+        <section class="cost-log-section">
+          <h3>Recent API Calls</h3>
+          <table class="cost-table cost-log-table"><thead><tr><th>Time</th><th>Action</th><th>Client</th><th>Model</th><th>Input</th><th>Output</th><th>Cost</th><th>Duration</th></tr></thead><tbody id="cost-log-body"></tbody></table>
+        </section>
+      </div>
+
+      <div id="drive-picker-modal" class="modal-overlay" style="display:none">
+        <div class="drive-picker-container">
+          <div class="drive-picker-header">
+            <div class="drive-picker-title-area">
+              <span class="drive-icon">
+                <svg width="20" height="18" viewBox="0 0 87.3 78" aria-hidden="true">
+                  <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                  <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/>
+                  <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/>
+                  <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                  <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                  <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                </svg>
+              </span>
+              <div>
+                <h3 id="drive-picker-title">Select Files from Google Drive</h3>
+                <p id="drive-picker-subtitle" class="drive-picker-subtitle"></p>
+              </div>
+            </div>
+            <button class="drive-picker-close" type="button" data-drive-close>&times;</button>
+          </div>
+          <div class="drive-picker-toolbar">
+            <div class="drive-breadcrumb" id="drive-breadcrumb"></div>
+            <button class="drive-location-btn active" id="drive-my-drive-btn" type="button">My Drive</button>
+            <button class="drive-location-btn" id="drive-shared-btn" type="button">Shared with me</button>
+            <div class="drive-search-area">
+              <input type="text" id="drive-search-input" placeholder="Search Drive..." autocomplete="off" />
+              <button class="drive-search-clear" id="drive-search-clear" type="button" style="display:none">&times;</button>
+            </div>
+            <div class="drive-type-filters" id="drive-type-filters"></div>
+          </div>
+          <div class="drive-picker-body">
+            <div class="drive-folder-panel" id="drive-folder-panel">
+              <div class="drive-folder-panel-title">Folders</div>
+              <div id="drive-folder-list"></div>
+            </div>
+            <div class="drive-file-panel">
+              <div class="drive-file-list-header">
+                <label class="drive-select-all"><input type="checkbox" id="drive-select-all" /> <span>Select all visible</span></label>
+                <span class="drive-file-count" id="drive-file-count"></span>
+              </div>
+              <div id="drive-file-list" class="drive-file-list"></div>
+              <div id="drive-load-more" style="display:none"><button class="drive-load-more-btn" type="button">Load more files</button></div>
+              <div id="drive-file-empty" style="display:none" class="drive-empty-state"><span>No files found in this folder</span></div>
+              <div id="drive-loading-indicator" style="display:none" class="drive-loading"><div class="spinner"></div><span id="drive-loading-text">Loading...</span></div>
+            </div>
+          </div>
+          <div class="drive-picker-footer">
+            <div class="drive-selection-summary" id="drive-selection-summary">No files selected</div>
+            <div class="drive-picker-actions">
+              <button class="ghost-button small-button" type="button" data-drive-close>Cancel</button>
+              <button class="primary-button small-button" id="drive-add-btn" type="button" disabled>Add Files</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="entry-guide-modal" class="modal-overlay" style="display:none">
+        <div class="entry-guide-container">
+          <div class="entry-guide-header">
+            <div>
+              <h3>ProConnect Data Entry Guide</h3>
+              <p id="entry-guide-subtitle"></p>
+            </div>
+            <div class="export-actions">
+              <button id="entry-guide-download" class="primary-button small-button" type="button">Download Excel</button>
+              <button id="entry-guide-close" class="ghost-button small-button" type="button">Close</button>
+            </div>
+          </div>
+          <div class="entry-guide-stats" id="entry-guide-stats"></div>
+          <div class="entry-guide-body" id="entry-guide-body"></div>
+        </div>
+      </div>
+
+      <section id="workspaceNavPanel" class="workspace-nav-panel" aria-label="Workspace mode">
+        <article class="workspace-nav-card">
+          <strong>Tax Workflow</strong>
+          <div class="mode-nav-buttons">
+            <button id="preparationModeButton" class="mode-button active" type="button">Preparation</button>
+            <button id="reviewModeButton" class="mode-button" type="button">Review</button>
+            <button id="deliverableModeButton" class="mode-button" type="button">Deliverable</button>
+            <button id="estimatedTaxesModeButton" class="mode-button" type="button">Estimated Taxes</button>
+            <button id="trackerModeButton" class="mode-button" type="button">Tracker</button>
+          </div>
+        </article>
+        <article class="workspace-nav-card">
+          <strong>Tax Tools</strong>
+          <div class="mode-nav-buttons">
+            <button id="researchModeButton" class="mode-button" type="button">Tax Research</button>
+            <button id="noticesModeButton" class="mode-button" type="button">Notices</button>
+            <button id="diagnosticsModeButton" class="mode-button" type="button">Diagnostics</button>
+            <button id="organizerModeButton" class="mode-button" type="button">Database</button>
+            <button id="presentationsModeButton" class="mode-button" type="button">Client Presentations</button>
+            <button id="calculationsModeButton" class="mode-button" type="button">Misc Calculations</button>
+          </div>
+        </article>
+        <aside id="preparationSidebarCard" class="workspace-sidebar-card" aria-label="Preparation workspace summary">
+          <div class="sidebar-title">
+            <strong>Preparation</strong>
+            <small>Generate Excel workpapers from uploaded source files.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Inputs</h2>
+            <dl class="session-metrics">
+              <div><dt>Files</dt><dd id="prepPriorCount">0</dd></div>
+              <div><dt>ZIP Packages</dt><dd id="prepReportCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="organizerSidebarCard" class="workspace-sidebar-card" aria-label="Database workspace summary" hidden>
+          <div class="sidebar-title">
+            <strong>Database</strong>
+            <small>Manage clients, firm library, deadlines, AI learning, and feedback.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Knowledge center</h2>
+            <dl class="session-metrics">
+              <div><dt>Clients</dt><dd id="organizerPriorCount">0</dd></div>
+              <div><dt>Learning</dt><dd id="organizerQuestionCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="diagnosticsSidebarCard" class="workspace-sidebar-card" aria-label="Diagnostics workspace summary" hidden>
+          <div class="sidebar-title">
+            <strong>E-File Diagnostics</strong>
+            <small>Explain e-file errors and build software-specific fix steps.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Diagnostics</h2>
+            <dl class="session-metrics">
+              <div><dt>Critical</dt><dd id="diagnosticsCriticalCount">0</dd></div>
+              <div><dt>Warnings</dt><dd id="diagnosticsWarningCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="researchSidebarCard" class="workspace-sidebar-card" aria-label="Tax Research workspace summary" hidden>
+          <div class="sidebar-title">
+            <strong>Tax Research</strong>
+            <small>Ask technical tax questions with citations to IRS, IRC, regulations, and state authority.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Research</h2>
+            <dl class="session-metrics">
+              <div><dt>Messages</dt><dd id="researchMessageCount">0</dd></div>
+              <div><dt>Sources</dt><dd id="researchSourceCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="estimatedTaxesSidebarCard" class="workspace-sidebar-card" aria-label="Estimated taxes workspace summary" hidden>
+          <div class="sidebar-title">
+            <strong>Estimated Taxes</strong>
+            <small>Calculate quarterly estimates and extension payments.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Tax planning</h2>
+            <dl class="session-metrics">
+              <div><dt>Mode</dt><dd id="estSidebarMode">Estimate</dd></div>
+              <div><dt>Total Due</dt><dd id="estSidebarTotal">$0.00</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="trackerSidebarCard" class="workspace-sidebar-card" aria-label="Tracker workspace summary" hidden>
+          <div class="sidebar-title">
+            <strong>Tracker</strong>
+            <small>Manage workflow tasks, statuses, sections, and PTO.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Tracker</h2>
+            <dl class="session-metrics">
+              <div><dt>Tasks</dt><dd id="trackerSidebarTasks">0</dd></div>
+              <div><dt>PTO</dt><dd id="trackerSidebarPto">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="presentationsSidebarCard" class="workspace-sidebar-card" aria-label="Client presentations summary" hidden>
+          <div class="sidebar-title">
+            <strong>Client Presentations</strong>
+            <small>Create client-ready PowerPoint decks from uploaded source files.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Deck</h2>
+            <dl class="session-metrics">
+              <div><dt>Files</dt><dd id="presentationsFileCount">0</dd></div>
+              <div><dt>Slides</dt><dd id="presentationsSlideCount">Auto</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <aside id="calculationsSidebarCard" class="workspace-sidebar-card" aria-label="Misc calculations summary" hidden>
+          <div class="sidebar-title">
+            <strong>Misc Calculations</strong>
+            <small>Run ad-hoc CPA calculations and export structured Excel workbooks.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Workbook</h2>
+            <dl class="session-metrics">
+              <div><dt>Files</dt><dd id="calculationsFileCount">0</dd></div>
+              <div><dt>Sheets</dt><dd id="calculationsSheetCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+      </section>
+
+      <section id="trackerPanel" class="layout mode-panel tracker-layout" hidden>
+        <section class="tracker-workbench">
+          <header class="tracker-topbar">
+            <div>
+              <p class="eyebrow">Workflow tracker</p>
+              <h2>Tracker & PTO Calendar</h2>
+              <p>Track firm work, customize statuses and sections, and view team time off.</p>
+            </div>
+            <div class="tracker-actions">
+              <button id="trackerSettingsButton" class="ghost-button small-button admin-only" type="button" hidden>Settings</button>
+              <button id="trackerAddTaskButton" class="primary-button small-button" type="button">Add Task</button>
+            </div>
+          </header>
+
+          <nav class="tracker-tabbar">
+            <button class="tracker-tab active" type="button" data-tracker-view="board">Board</button>
+            <button class="tracker-tab" type="button" data-tracker-view="list">List</button>
+            <button class="tracker-tab" type="button" data-tracker-view="calendar">Calendar</button>
+          </nav>
+
+          <section id="trackerBoardView" class="tracker-view">
+            <div id="trackerBoard" class="tracker-board"></div>
+          </section>
+
+          <section id="trackerListView" class="tracker-view" hidden>
+            <div id="trackerList" class="tracker-list"></div>
+          </section>
+
+          <section id="trackerCalendarView" class="tracker-view" hidden>
+            <div class="calendar-subnav">
+              <button class="calendar-subnav-btn active" type="button" data-calendar-view="my">My Calendar</button>
+              <button class="calendar-subnav-btn" type="button" data-calendar-view="pto">PTO</button>
+              <button class="calendar-subnav-btn" type="button" data-calendar-view="team">Team Calendar</button>
+            </div>
+            <div id="calendarMyView" class="tracker-calendar-shell"></div>
+            <div id="calendarPtoView" class="pto-layout" hidden>
+              <section class="pto-calendar-panel">
+                <div class="pto-month-header">
+                  <button id="ptoPrevMonth" class="ghost-button small-button" type="button">Prev</button>
+                  <strong id="ptoMonthLabel"></strong>
+                  <button id="ptoNextMonth" class="ghost-button small-button" type="button">Next</button>
+                </div>
+                <div id="ptoCalendarGrid" class="pto-calendar-grid"></div>
+              </section>
+              <section class="pto-management-panel">
+                <div class="pto-panel-heading">
+                  <h3>My PTO</h3>
+                  <button id="ptoRequestButton" class="primary-button small-button" type="button">Request PTO</button>
+                </div>
+                <div id="ptoStatsRow" class="pto-stats-row"></div>
+                <div id="ptoMyList"></div>
+                <details class="team-pto-details" open>
+                  <summary>Team PTO</summary>
+                  <div id="ptoTeamList"></div>
+                </details>
+                <section id="ptoAdminPanel" class="pto-admin-panel admin-only" hidden>
+                  <h3>PTO Administration</h3>
+                  <div id="ptoPendingApprovals"></div>
+                  <label class="field compact"><span>Require approval</span><input id="ptoRequireApproval" type="checkbox" /></label>
+                  <label class="field compact"><span>Max days per year</span><input id="ptoMaxDays" type="number" min="0" placeholder="Unlimited" /></label>
+                  <button id="ptoSaveSettings" class="ghost-button small-button" type="button">Save Settings</button>
+                </section>
+              </section>
+            </div>
+            <div id="calendarTeamView" class="tracker-calendar-shell" hidden></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="presentationsPanel" class="layout mode-panel generator-layout" hidden>
+        <section class="tool-workbench">
+          <header class="tool-hero">
+            <div>
+              <p class="eyebrow">Tax Tools</p>
+              <h2>Client Presentations</h2>
+              <p>Upload source materials, describe the story, and generate a client-ready PowerPoint deck.</p>
+            </div>
+            <span id="presentationsStatus" class="status-chip">Ready</span>
+          </header>
+
+          <section class="generator-section">
+            <div class="generator-section-title">1. Presentation Setup</div>
+            <div class="est-grid two">
+              <label>Client Name <input id="presentationClientName" type="text" placeholder="Smith LLC" /></label>
+              <label>Firm Name <input id="presentationFirmName" type="text" placeholder="Certifai CPA" /></label>
+              <label>Prepared By <input id="presentationPreparedBy" type="text" placeholder="Preparer name" /></label>
+              <label>Tax Year <input id="presentationTaxYear" type="text" placeholder="2025" /></label>
+              <label>Style
+                <select id="presentationStyle">
+                  <option value="professional">Professional</option>
+                  <option value="modern">Modern</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="bold">Bold</option>
+                </select>
+              </label>
+              <label>Slide Count
+                <select id="presentationSlideCount">
+                  <option value="auto">Auto</option>
+                  <option value="5">5 slides</option>
+                  <option value="8">8 slides</option>
+                  <option value="10">10 slides</option>
+                  <option value="12">12 slides</option>
+                  <option value="15">15 slides</option>
+                </select>
+              </label>
+              <label>Language
+                <select id="presentationLanguage">
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                </select>
+              </label>
+              <div class="generator-check-row">
+                <label><input id="presentationIncludeAgenda" type="checkbox" checked /> Include agenda</label>
+                <label><input id="presentationIncludeSummary" type="checkbox" checked /> Include summary</label>
+              </div>
+            </div>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">2. Upload Source Materials</div>
+            <label class="generator-dropzone" for="presentationFiles">
+              <strong>Drop files or click to browse</strong>
+              <span>PDF, XLSX, CSV, DOCX, TXT, PNG, JPG</span>
+              <input id="presentationFiles" type="file" multiple accept=".zip,.pdf,.xlsx,.xls,.csv,.docx,.txt,.png,.jpg,.jpeg" hidden />
+            </label>
+            <div id="presentationFileList" class="generator-file-list"></div>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">3. Instructions</div>
+            <div class="template-chip-row">
+              <button type="button" data-presentation-template="tax-planning">Tax Planning Deck</button>
+              <button type="button" data-presentation-template="year-end">Year-End Summary</button>
+              <button type="button" data-presentation-template="qbo-results">Financial Results</button>
+              <button type="button" data-presentation-template="action-plan">Action Plan</button>
+            </div>
+            <textarea id="presentationInstructions" class="generator-textarea" rows="8" placeholder="Describe the presentation you want. Example: Create an 8-slide client meeting deck summarizing 2025 tax position, key risks, estimated payments, and next steps."></textarea>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">4. Generate + Results</div>
+            <button id="generatePresentationButton" class="primary-button" type="button">Generate PowerPoint</button>
+            <div id="presentationResults" class="generator-results"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="calculationsPanel" class="layout mode-panel generator-layout" hidden>
+        <section class="tool-workbench">
+          <header class="tool-hero">
+            <div>
+              <p class="eyebrow">Tax Tools</p>
+              <h2>Misc Calculations</h2>
+              <p>Upload any source files, ask for the calculation, and get a structured Excel workbook.</p>
+            </div>
+            <span id="calculationsStatus" class="status-chip">Ready</span>
+          </header>
+
+          <section class="generator-section">
+            <div class="generator-section-title">1. Setup</div>
+            <div class="est-grid two">
+              <label>Client Name <input id="calculationClientName" type="text" placeholder="Smith LLC" /></label>
+              <label>Calculation Title <input id="calculationTitle" type="text" placeholder="1099 Summary 2025" /></label>
+              <div class="generator-check-row">
+                <label><input id="calculationIncludeSummary" type="checkbox" checked /> Include summary sheet</label>
+                <label><input id="calculationIncludeDetails" type="checkbox" checked /> Include detail sheets</label>
+                <label><input id="calculationIncludeCharts" type="checkbox" /> Include charts</label>
+              </div>
+              <label>Group Results By
+                <select id="calculationGroupBy">
+                  <option value="">None</option>
+                  <option value="by_payer">By Payer</option>
+                  <option value="by_year">By Year</option>
+                  <option value="by_type">By Type</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">2. Upload Files</div>
+            <label class="generator-dropzone" for="calculationFiles">
+              <strong>Drop files or click to browse</strong>
+              <span>1099s, W-2s, bank statements, financial reports, invoices, PDFs, Excel, Word</span>
+              <input id="calculationFiles" type="file" multiple accept=".zip,.pdf,.xlsx,.xls,.csv,.docx,.txt,.png,.jpg,.jpeg" hidden />
+            </label>
+            <div id="calculationFileList" class="generator-file-list"></div>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">3. What do you want calculated?</div>
+            <div class="template-chip-row">
+              <button type="button" data-calculation-template="1099 Summary">1099 Summary</button>
+              <button type="button" data-calculation-template="P&L Comparison">P&amp;L Comparison</button>
+              <button type="button" data-calculation-template="1099-B Dispositions">1099-B Dispositions</button>
+              <button type="button" data-calculation-template="W-2 Summary">W-2 Summary</button>
+              <button type="button" data-calculation-template="Bank Reconciliation">Bank Reconciliation</button>
+              <button type="button" data-calculation-template="K-1 Summary">K-1 Summary</button>
+            </div>
+            <textarea id="calculationInstructions" class="generator-textarea" rows="8" placeholder="Be specific about the calculation, grouping, totals, and flags you need."></textarea>
+          </section>
+
+          <section class="generator-section">
+            <div class="generator-section-title">4. Run + Results</div>
+            <button id="runCalculationButton" class="primary-button" type="button">Run Calculation</button>
+            <div id="calculationResults" class="generator-results"></div>
+          </section>
+        </section>
+      </section>
+
+      <div id="trackerSettingsModal" class="settings-modal-overlay" hidden>
+        <div class="settings-modal">
+          <header class="settings-modal-header">
+            <div class="settings-modal-title">Tracker Settings</div>
+            <button id="trackerSettingsClose" class="ghost-button small-button" type="button">Close</button>
+          </header>
+          <nav class="settings-modal-tabs">
+            <button class="settings-tab-btn active" type="button" data-settings-tab="sections">Sections</button>
+            <button class="settings-tab-btn" type="button" data-settings-tab="statuses">Statuses</button>
+          </nav>
+          <section class="settings-modal-body">
+            <div id="trackerSettingsSections"></div>
+            <div id="trackerSettingsStatuses" hidden></div>
+          </section>
+        </div>
+      </div>
+
+      <div id="trackerTaskModal" class="settings-modal-overlay" hidden>
+        <div class="settings-modal tracker-small-modal">
+          <header class="settings-modal-header">
+            <div class="settings-modal-title">Task</div>
+            <button id="trackerTaskCancel" class="ghost-button small-button" type="button">Cancel</button>
+          </header>
+          <section class="settings-modal-body">
+            <input id="trackerTaskId" type="hidden" />
+            <div class="est-grid two">
+              <label>Title <input id="trackerTaskTitle" type="text" /></label>
+              <label>Client <input id="trackerTaskClient" type="text" /></label>
+              <label>Section <select id="trackerTaskSection"></select></label>
+              <label>Status <select id="trackerTaskStatus"></select></label>
+              <label>Assignee <input id="trackerTaskAssignee" type="text" /></label>
+              <label>Due date <input id="trackerTaskDue" type="date" /></label>
+            </div>
+            <label class="field compact"><span>Notes</span><textarea id="trackerTaskNotes" rows="3"></textarea></label>
+            <button id="trackerTaskSave" class="primary-button" type="button">Save Task</button>
+          </section>
+        </div>
+      </div>
+
+      <div id="ptoRequestModal" class="settings-modal-overlay" hidden>
+        <div class="settings-modal tracker-small-modal">
+          <header class="settings-modal-header">
+            <div class="settings-modal-title">Request Time Off</div>
+            <button id="ptoCancelRequest" class="ghost-button small-button" type="button">Cancel</button>
+          </header>
+          <section class="settings-modal-body">
+            <div class="est-grid two">
+              <label>Type
+                <select id="ptoType">
+                  <option value="vacation">Vacation</option>
+                  <option value="sick">Sick</option>
+                  <option value="personal">Personal</option>
+                  <option value="holiday">Holiday</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>Half day <input id="ptoHalfDay" type="checkbox" /></label>
+              <label>From <input id="ptoStartDate" type="date" /></label>
+              <label>To <input id="ptoEndDate" type="date" /></label>
+              <label>Period
+                <select id="ptoHalfDayPeriod">
+                  <option value="morning">Morning</option>
+                  <option value="afternoon">Afternoon</option>
+                </select>
+              </label>
+            </div>
+            <div id="ptoDaysCounter" class="pto-days-counter">0 working days</div>
+            <label class="field compact"><span>Note</span><textarea id="ptoNote" rows="2" placeholder="Optional context"></textarea></label>
+            <button id="ptoSubmitRequest" class="primary-button" type="button">Submit Request</button>
+          </section>
+        </div>
+      </div>
+
+      <form id="reviewForm" class="layout mode-panel" hidden>
+        <aside class="stepper" aria-label="Review steps">
+          <div class="sidebar-title">
+            <strong>Workflow</strong>
+            <small>Complete each section from top to bottom.</small>
+          </div>
+
+          <nav class="step-list">
+            <button class="step active" id="stepClient" type="button" data-target="clientSection">
+              <span>1</span>
+              <div>
+                <strong>Client setup</strong>
+                <small>Entity, year, return type</small>
+              </div>
+            </button>
+            <button class="step" id="stepFiles" type="button" data-target="uploadSection">
+              <span>2</span>
+              <div>
+                <strong>Documents</strong>
+                <small>Returns, workpapers, support</small>
+              </div>
+            </button>
+            <button class="step" id="stepNotes" type="button" data-target="instructionsSection">
+              <span>3</span>
+              <div>
+                <strong>Instructions</strong>
+                <small>Prompt, notes, checklist</small>
+              </div>
+            </button>
+            <button class="step" id="stepReview" type="button" data-target="runSection">
+              <span>4</span>
+              <div>
+                <strong>Senior review</strong>
+                <small>Run, read, export</small>
+              </div>
+            </button>
+          </nav>
+
+          <section class="sidebar-panel">
+            <h2>Session</h2>
+            <dl class="session-metrics">
+              <div><dt>Review Files</dt><dd id="returnCount">0</dd></div>
+              <div><dt>ZIP Packages</dt><dd id="workpaperCount">0</dd></div>
+              <div><dt>Other Files</dt><dd id="documentCount">0</dd></div>
+              <div><dt>Total Size</dt><dd id="totalSize">0 KB</dd></div>
+            </dl>
+          </section>
+        </aside>
+
+        <section class="workbench">
+          <section id="clientSection" class="panel client-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Step 1</p>
+                <h2>Client and return details</h2>
+                <p>Give Claude the basic filing context before documents are reviewed.</p>
+              </div>
+              <span id="reviewStatus" class="status-chip">Ready</span>
+            </div>
+
+            <div class="form-grid">
+              <label class="field">
+                <span>Client name</span>
+                <input id="clientName" type="text" placeholder="Ex. Acme Group" />
+              </label>
+              <label class="field">
+                <span>Entity name</span>
+                <input id="entityName" type="text" placeholder="Ex. Acme Holdings LLC" />
+              </label>
+              <label class="field compact">
+                <span>Tax year</span>
+                <input id="taxYear" type="number" min="2000" max="2100" value="2024" />
+              </label>
+              <label class="field compact">
+                <span>Return type</span>
+                <select id="returnType">
+                  <option value="">Select</option>
+                  <option>1040</option>
+                  <option>1065</option>
+                  <option>1120</option>
+                  <option>1120-S</option>
+                  <option>990</option>
+                  <option>Other</option>
+                </select>
+              </label>
+              <label class="field wide">
+                <span>States included</span>
+                <input id="statesIncluded" type="text" placeholder="Ex. Federal, CA, NY" />
+              </label>
+              <label class="field compact">
+                <span>Review stage</span>
+                <select id="reviewStage">
+                  <option value="Initial review">Initial review</option>
+                  <option value="Final review">Final review</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section id="uploadSection" class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Step 2</p>
+                <h2>Upload review package</h2>
+                <p>Upload one or more files, including ZIP packages. ZIP contents are prepared when the review is sent.</p>
+              </div>
+              <button id="clearFiles" class="ghost-button" type="button">Clear files</button>
+            </div>
+
+            <div class="upload-grid single-upload-grid">
+              <article class="upload-card required tax-card package-card">
+                <label class="upload-target" for="reviewPackage">
+                  <input id="reviewPackage" type="file" multiple accept=".zip,.pdf,.xlsx,.xls,.csv,.doc,.docx,.txt,.json,.md" />
+                  <span class="upload-code">PACKAGE</span>
+                  <strong>Review Files</strong>
+                  <small>Drop the full client package here. ZIPs stay as a single uploaded package in the UI.</small>
+                  <em>Tax returns, workpapers, support documents, prior-year package, or organized ZIP archives.</em>
+                </label>
+                <div class="category-files">
+                  <div class="category-title">Review package <span id="taxReturnsInlineCount">0</span></div>
+                  <ul id="taxReturnsList" class="file-list"><li class="empty-state">Drop or choose review package files.</li></ul>
+                </div>
+              </article>
+            </div>
+            <div id="workpapersInlineCount" hidden>0</div>
+            <div id="documentsInlineCount" hidden>0</div>
+            <ul id="workpapersList" hidden></ul>
+            <ul id="documentsList" hidden></ul>
+            <input id="taxReturns" type="file" hidden />
+            <input id="workpapers" type="file" hidden />
+            <input id="documents" type="file" hidden />
+
+            <div id="validationMessages" class="validation-list" aria-live="polite"></div>
+          </section>
+
+          <section id="instructionsSection" class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Step 3</p>
+                <h2>Review instructions and sources</h2>
+                <p>The firm master prompt is controlled by the backend. Add only case-specific notes here.</p>
+              </div>
+            </div>
+
+            <div class="source-policy">
+              <div>
+                <strong>Review source order</strong>
+                <ol>
+                  <li>Backend authority files and client Knowledge Base technical authority</li>
+                  <li>Claude senior tax reasoning</li>
+                  <li>User notes, client facts, uploaded documents, and review examples for scope/context/format</li>
+                </ol>
+              </div>
+              <div>
+                <strong>Internet research</strong>
+                <p id="webSearchPolicy">Disabled by server. Enable with ENABLE_CLAUDE_WEB_SEARCH=true.</p>
+              </div>
+            </div>
+
+            <section class="library-panel">
+              <div>
+                <p class="eyebrow">Reference library</p>
+                <h3>Client Knowledge Base and client review examples</h3>
+                <p>Upload client-specific technical references, firm notes, and sample reviews. Backend-only authority files remain loaded but are not listed here.</p>
+              </div>
+              <div class="library-grid">
+                <article>
+                  <strong>Client Knowledge Base</strong>
+                  <small>Client-added technical source material: IRS/state instructions, firm policy, tax notes.</small>
+                  <label class="mini-upload">
+                    <input id="knowledgeUpload" type="file" multiple accept=".txt,.md,.csv,.json,.doc,.docx,.xlsx,.xls,.pdf,.zip" />
+                    Upload files
+                  </label>
+                  <label class="mini-upload">
+                    <input id="knowledgeFolderUpload" type="file" multiple webkitdirectory />
+                    Upload folder
+                  </label>
+                  <ul id="knowledgeList" class="context-list"><li>Loading...</li></ul>
+                </article>
+                <article>
+                  <strong>Client Review Examples</strong>
+                  <small>Client-added prior review memos/comments used for tone and format, not authority.</small>
+                  <label class="mini-upload">
+                    <input id="exampleUpload" type="file" multiple accept=".txt,.md,.csv,.json,.doc,.docx,.pdf,.zip" />
+                    Upload files
+                  </label>
+                  <label class="mini-upload">
+                    <input id="exampleFolderUpload" type="file" multiple webkitdirectory />
+                    Upload folder
+                  </label>
+                  <ul id="exampleList" class="context-list"><li>Loading...</li></ul>
+                </article>
+              </div>
+              <p id="libraryStatus" class="library-status">Ready.</p>
+            </section>
+
+            <label class="field full">
+              <span>User Review Notes / Specific Instructions</span>
+              <textarea id="userNotes" rows="6" placeholder="Ex. At the end of the review, include a list of every person name found. Focus on California and charitable contributions."></textarea>
+              <small>These are task instructions for this review. Claude must explicitly address them in the final output.</small>
+            </label>
+
+            <label class="field full">
+              <span>Client Facts / Expected Information</span>
+              <textarea id="clientFacts" rows="5" placeholder="Ex. Juan's SSN is 223-44-5566. The client's legal address is 123 Main St. The partnership representative is Maria Lopez."></textarea>
+              <small>Use this for client-specific facts Claude should verify against the uploaded documents and flag if inconsistent.</small>
+            </label>
+
+            <details class="advanced-settings">
+              <summary>Standard checklist</summary>
+              <fieldset class="checks">
+                <legend>Review areas</legend>
+                <label><input type="checkbox" checked /> Workpaper tie-outs</label>
+                <label><input type="checkbox" checked /> Year-over-year review</label>
+                <label><input type="checkbox" checked /> Addresses, TINs and dates</label>
+                <label><input type="checkbox" checked /> Federal return review</label>
+                <label><input type="checkbox" checked /> State return review</label>
+                <label><input type="checkbox" checked /> Historical correction patterns</label>
+              </fieldset>
+              <div class="settings-actions">
+                <strong>Data management</strong>
+                <div>
+                  <button id="settingsExportDataButton" class="ghost-button small-button" type="button">Export all data</button>
+                  <button id="settingsClearDataButton" class="ghost-button small-button" type="button">Clear all data</button>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <section id="runSection" class="panel run-panel">
+            <div>
+              <p class="eyebrow">Step 4</p>
+              <h2>Run the senior review</h2>
+              <p id="runHint">The app will validate files, send grouped documents to the backend, and display a structured review.</p>
+              <p id="reviewCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            </div>
+            <button id="runReview" class="primary-button" type="submit">Run Senior Review</button>
+          </section>
+        </section>
+
+        <section class="results-panel">
+          <div class="panel-heading feed-heading">
+            <div>
+              <p class="eyebrow">AI Review Feed</p>
+              <h2>Findings and open items</h2>
+              <p>Prioritized review output appears here as Claude completes the analysis.</p>
+            </div>
+            <div id="exportActions" class="export-actions" hidden>
+              <button id="downloadWord" class="primary-button small-button" type="button">Download Word</button>
+            </div>
+          </div>
+
+          <div id="progressList" class="progress-list" hidden></div>
+          <div id="results" class="results ai-feed">
+            <article class="feed-empty">
+              <span class="tag neutral">Pending</span>
+              <h3>Waiting for documents</h3>
+              <p>Run a review to see critical issues, evidence, sources, recommendations, and preparer questions.</p>
+            </article>
+          </div>
+        </section>
+      </form>
+
+      <section id="preparerPanel" class="layout mode-panel active">
+        <section class="workbench">
+          <section class="panel client-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Preparation workspace</p>
+                <h2>Preparer instructions</h2>
+                <p>Tell the AI what Excel workpaper to create from the files you upload.</p>
+              </div>
+              <div class="prep-header-actions">
+                <span id="prepSoftwareBadge" class="software-active-badge" hidden>Instructions for: <strong>ProConnect Tax</strong> <button id="prepSoftwareBadgeChange" class="change-link" type="button">Change</button></span>
+                <span id="prepStatus" class="status-chip">Ready</span>
+              </div>
+            </div>
+            <div id="prepSoftwareSelector" class="software-selector-wrapper">
+              <label class="software-selector-label">Tax Software</label>
+              <button id="prepSoftwareButton" class="software-selector-btn" type="button">
+                <span id="software-selected-logo" class="software-logo">PT</span>
+                <span id="software-selected-name" class="software-selected-name">ProConnect Tax</span>
+                <span id="software-selected-vendor" class="software-vendor">Intuit</span>
+                <span class="dropdown-arrow">v</span>
+              </button>
+              <div id="prepSoftwareDropdown" class="software-dropdown-panel"></div>
+              <div id="prepSoftwareInfo" class="software-info-card"></div>
+              <p id="prepSoftwareSource" class="software-source-note"></p>
+            </div>
+            <label class="field full">
+              <span>Instructions</span>
+              <textarea id="prepNotes" rows="8" placeholder="Ex. Use the prior-year workpaper as the structure, update every line with current-year financial report values, add formulas where possible, and flag anything missing in AI Notes."></textarea>
+              <small>The Excel output will include the requested workpaper tabs plus an AI Notes tab with missing information and anything the AI could not complete.</small>
+            </label>
+            <input id="prepEntityName" type="hidden" />
+            <input id="prepCurrentYear" type="hidden" value="2024" />
+            <input id="prepPriorYear" type="hidden" value="2023" />
+          </section>
+
+          <section class="panel">
+            <div class="upload-grid single-upload-grid">
+              <article class="upload-card document-card package-card">
+                <label class="upload-target" for="prepPackageFiles">
+                  <input id="prepPackageFiles" type="file" multiple accept=".zip,.xlsx,.xls,.csv,.pdf,.doc,.docx,.txt,.json,.md" />
+                  <span class="upload-code">FILES</span>
+                  <strong>Preparation files</strong>
+                  <small>Upload all prior-year workpapers, current-year financial reports, and ZIP packages here.</small>
+                  <em>ZIPs stay as a single visible package and are prepared when the request is sent.</em>
+                </label>
+                <div class="category-files">
+                  <div class="category-title">Preparation package <span id="prepPriorInlineCount">0</span></div>
+                  <ul id="prepPriorList" class="file-list"><li class="empty-state">No files uploaded.</li></ul>
+                </div>
+              </article>
+            </div>
+            <div class="qbo-section" id="qbo-section">
+              <div id="qbo-connect-prompt" class="qbo-connect-prompt">
+                <div class="qbo-logo">
+                  <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="12" fill="#2563eb"/>
+                    <path d="M7.3 8.3a4.7 4.7 0 0 1 4.7-4.7h.2a4.7 4.7 0 0 1 4.5 5.9h-2.2A2.6 2.6 0 0 0 12 5.7h-.1a2.6 2.6 0 0 0 0 5.2h.8v2h-.8a4.7 4.7 0 0 1-4.6-4.6Zm4 6.2h2.2a2.6 2.6 0 0 0 2.5 3.8h.1a2.6 2.6 0 0 0 0-5.2h-.8v-2h.8a4.7 4.7 0 0 1 0 9.4H16a4.7 4.7 0 0 1-4.7-6Z" fill="white"/>
+                  </svg>
+                  <span>Connected Accounting Software</span>
+                </div>
+                <p>Connect cloud accounting platforms to pull financial reports directly, or keep using manual upload.</p>
+                <div id="accountingSoftwareGrid" class="accounting-software-grid"></div>
+                <button class="btn-qbo-connect" id="qbo-connect-btn" type="button" hidden>Connect Selected Software</button>
+                <span id="qbo-disabled-msg" class="muted-note" hidden>Select a configured platform above, or use manual upload as the fallback.</span>
+              </div>
+
+              <div id="qbo-connected-panel" hidden>
+                <div class="qbo-header-bar">
+                  <div class="qbo-status-indicator"><span class="qbo-status-dot"></span><span id="qbo-connected-label">Accounting software connected</span></div>
+                  <button class="qbo-disconnect-btn" id="qbo-disconnect-btn" type="button">Disconnect</button>
+                </div>
+                <div class="qbo-step">
+                  <span class="qbo-step-label">Fetching from</span>
+                  <div id="accountingConnectedPicker" class="accounting-connected-picker"></div>
+                </div>
+                <div class="qbo-step">
+                  <label class="qbo-step-label" for="qbo-company-select">1. Select Company</label>
+                  <select id="qbo-company-select" class="qbo-select">
+                    <option value="">Select a company</option>
+                  </select>
+                </div>
+                <div class="qbo-step" id="qbo-step-dates" hidden>
+                  <span class="qbo-step-label">2. Select Period</span>
+                  <div class="qbo-date-presets">
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="cy">Current Year</button>
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="py">Prior Year</button>
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="q4">Q4</button>
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="q3">Q3</button>
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="ytd">YTD</button>
+                    <button class="qbo-preset-btn" type="button" data-qbo-preset="custom">Custom</button>
+                  </div>
+                  <div id="qbo-custom-dates" class="qbo-custom-dates">
+                    <label class="qbo-date-field">From <input type="date" id="qbo-start-date" /></label>
+                    <label class="qbo-date-field">To <input type="date" id="qbo-end-date" /></label>
+                  </div>
+                  <div class="qbo-radio-group">
+                    <label><input type="radio" name="qbo-method" value="Accrual" checked /> Accrual</label>
+                    <label><input type="radio" name="qbo-method" value="Cash" /> Cash</label>
+                    <label><input type="checkbox" id="qbo-comparative" /> Prior-period comparison</label>
+                  </div>
+                </div>
+                <div class="qbo-step" id="qbo-step-reports" hidden>
+                  <span class="qbo-step-label">3. Select Reports</span>
+                  <div class="qbo-category-tabs" id="qbo-category-tabs"></div>
+                  <div class="qbo-quick-select">
+                    <button class="qbo-quick-btn" type="button" data-qbo-group="tax-package">Tax Package</button>
+                    <button class="qbo-quick-btn" type="button" data-qbo-group="full-package">Full Package</button>
+                    <button class="qbo-quick-btn" type="button" data-qbo-group="none">Clear All</button>
+                  </div>
+                  <div class="qbo-report-list" id="qbo-report-list"></div>
+                </div>
+                <div class="qbo-step" id="qbo-step-fetch" hidden>
+                  <button class="btn-qbo-fetch" id="qbo-fetch-btn" type="button" disabled>Pull Selected Reports</button>
+                  <div id="qbo-fetch-status" class="qbo-fetch-status" hidden></div>
+                </div>
+              </div>
+            </div>
+            <input id="prepPriorWorkpaper" type="file" hidden />
+            <input id="prepFinancialReports" type="file" hidden />
+            <span id="prepReportsInlineCount" hidden>0</span>
+            <ul id="prepReportsList" hidden></ul>
+            <div id="prepValidationMessages" class="validation-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel run-panel">
+            <div>
+              <p class="eyebrow">Generate</p>
+              <h2>Prepare Excel output</h2>
+              <p id="prepRunHint">The app will send your instructions and files to Claude, then build an Excel workbook with an AI Notes tab.</p>
+              <p id="prepCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            </div>
+            <button id="runPreparer" class="primary-button" type="button">Generate Excel Workpaper</button>
+          </section>
+        </section>
+
+        <section class="results-panel">
+          <div class="panel-heading feed-heading">
+            <div>
+              <p class="eyebrow">Preparation Output</p>
+              <h2>Excel workpaper</h2>
+              <p>Download the generated workbook after the run completes.</p>
+            </div>
+            <div id="prepExportActions" class="export-actions" hidden>
+              <button id="downloadPrepWord" class="primary-button small-button" type="button">Download Excel</button>
+            </div>
+          </div>
+          <div id="prepResults" class="results ai-feed">
+            <article class="feed-empty">
+              <span class="tag neutral">Pending</span>
+              <h3>Waiting for instructions and files</h3>
+              <p>Upload source files, write instructions, and generate an Excel workpaper.</p>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section id="deliverablePanel" class="layout mode-panel" hidden>
+        <aside class="stepper" aria-label="Deliverable workspace">
+          <div class="sidebar-title">
+            <strong>Deliverable</strong>
+            <small>Build and send client-ready email packages.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Package</h2>
+            <dl class="session-metrics">
+              <div><dt>Review</dt><dd id="deliverableReviewState">Missing</dd></div>
+              <div><dt>Notice</dt><dd id="deliverableNoticeState">Optional</dd></div>
+            </dl>
+          </section>
+        </aside>
+        <section class="deliverable-redesign">
+          <section id="deliverableClientSection" class="deliverable-section">
+            <h2 class="deliverable-section-title"><span id="deliverableClientCheck" class="check" hidden>&#10003;</span>1. Client Information</h2>
+            <div class="mode-toggle">
+              <label><input type="radio" name="deliverableClientMode" value="drive" checked /> Load from Google Drive folder</label>
+              <label><input type="radio" name="deliverableClientMode" value="manual" /> Enter manually</label>
+            </div>
+            <div id="deliverableDriveClientMode">
+              <div id="deliverableDriveConnectPrompt" class="gmail-not-connected" hidden>
+                Google Drive is not connected. Connect Google Drive to load client info from a folder.
+                <button id="deliverableConnectDrive" class="ghost-button small-button" type="button">Connect Google Drive</button>
+              </div>
+              <button id="deliverableSelectFolder" class="ghost-button" type="button">Select Client Info from Drive</button>
+              <div id="deliverableDriveLoaded" class="drive-loaded-banner" hidden></div>
+            </div>
+            <div id="deliverableManualClientMode" hidden></div>
+            <div class="form-grid">
+              <label class="field">
+                <span>Client Name</span>
+                <input id="deliverableClientName" type="text" placeholder="Client name" />
+              </label>
+              <label class="field">
+                <span>Email</span>
+                <input id="deliverableClientEmail" type="email" placeholder="client@example.com" />
+              </label>
+              <label class="field">
+                <span>Company</span>
+                <input id="deliverableClientCompany" type="text" placeholder="Company" />
+              </label>
+              <label class="field full checkbox-field">
+                <input id="deliverableSaveClientInfo" type="checkbox" checked />
+                <span>Save to client database</span>
+              </label>
+            </div>
+            <div id="deliverableClientStatus" class="validation-list"></div>
+          </section>
+
+          <section id="deliverablePreparerSection" class="deliverable-section complete">
+            <h2 class="deliverable-section-title"><span class="check">&#10003;</span>2. Preparer Information</h2>
+            <div class="form-grid">
+              <label class="field">
+                <span>Preparer Name</span>
+                <input id="deliverablePreparerName" type="text" placeholder="Preparer name" />
+              </label>
+              <label class="field">
+                <span>Firm Name</span>
+                <input id="deliverableFirmName" type="text" placeholder="Firm name" />
+              </label>
+              <label class="field">
+                <span>Preparer Email</span>
+                <input id="deliverableFirmEmail" type="email" placeholder="preparer@firm.com" />
+              </label>
+              <label class="field">
+                <span>Phone</span>
+                <input id="deliverableFirmPhone" type="tel" placeholder="(555) 555-5555" />
+              </label>
+              <label class="field full checkbox-field">
+                <input id="deliverableSaveDefaults" type="checkbox" />
+                <span>Save as default</span>
+              </label>
+              <input id="deliverableFirmAddress" type="hidden" />
+            </div>
+          </section>
+
+          <section id="deliverableFilesSection" class="deliverable-section locked">
+            <h2 class="deliverable-section-title"><span id="deliverableFilesCheck" class="check" hidden>&#10003;</span>3. Select Files to Attach</h2>
+            <div id="deliverableFileList" class="deliverable-file-list">
+              <div class="deliverable-file-empty">No files selected - add files below.</div>
+            </div>
+            <p class="muted-note">Drag to reorder files. They will appear in this order as attachments.</p>
+            <div class="deliverable-add-actions">
+              <button id="deliverableAddDriveFiles" class="ghost-button" type="button">Add from Google Drive</button>
+              <button id="deliverableAddComputerFiles" class="ghost-button" type="button">Add from Computer</button>
+              <input id="deliverableComputerFiles" type="file" accept=".pdf,.docx,.xlsx" multiple hidden />
+            </div>
+            <div id="deliverableFileStatus" class="validation-list"></div>
+          </section>
+
+          <section id="deliverableEmailSection" class="deliverable-section locked">
+            <h2 class="deliverable-section-title">4. Email Draft</h2>
+            <div class="form-grid">
+              <label class="field">
+                <span>Return Type</span>
+                <select id="deliverableReturnType">
+                  <option value="">Select</option>
+                  <option>1040</option>
+                  <option>1065</option>
+                  <option>1120</option>
+                  <option>1120-S</option>
+                  <option>990</option>
+                  <option>1041</option>
+                  <option>Other</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Tax Year</span>
+                <input id="deliverableTaxYear" type="text" placeholder="2025" />
+              </label>
+              <label class="field">
+                <span>Review Stage</span>
+                <select id="deliverableReviewStage">
+                  <option value="Initial review">Initial review</option>
+                  <option value="Final review">Final review</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Balance due / refund</span>
+                <input id="deliverableBalance" type="text" placeholder="$26,569 balance due" />
+              </label>
+              <label class="field">
+                <span>Filing deadline</span>
+                <input id="deliverableDeadline" type="date" />
+              </label>
+              <label class="field">
+                <span>Tone</span>
+                <select id="deliverableEmailTone">
+                  <option value="formal">Formal</option>
+                  <option value="friendly">Friendly</option>
+                  <option value="brief">Brief</option>
+                </select>
+              </label>
+              <fieldset class="field full">
+                <span>Filing Status</span>
+                <div class="mode-toggle">
+                  <label><input type="radio" name="deliverableFilingStatus" value="READY" checked /> Ready to file</label>
+                  <label><input type="radio" name="deliverableFilingStatus" value="NOT_READY" /> Not ready - items pending</label>
+                  <label><input type="radio" name="deliverableFilingStatus" value="READY_WITH_CONDITIONS" /> Ready with conditions</label>
+                </div>
+              </fieldset>
+              <label class="field full">
+                <span>Additional instructions</span>
+                <textarea id="deliverableCustomInstructions" rows="2" placeholder="Any specific message or context to include..."></textarea>
+              </label>
+            </div>
+            <p id="deliverableCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            <button id="generateEmailDraft" class="primary-button" type="button">Generate Email Draft</button>
+            <div id="deliverableDraftPanel" class="gmail-send-section" hidden>
+              <label class="field full">
+                <span>Subject</span>
+                <input id="emailSubjectDraft" class="email-subject-input" type="text" />
+              </label>
+              <label class="field full">
+                <span>Email body</span>
+                <textarea id="emailBodyDraft" class="email-body-textarea" rows="12"></textarea>
+              </label>
+              <div id="deliverableKeyPoints" class="email-key-points"></div>
+              <div class="deliverable-actions">
+                <button id="regenerateDeliverableEmail" class="ghost-button small-button" type="button">Regenerate</button>
+                <button id="copyDeliverableEmail" class="ghost-button small-button" type="button">Copy Email</button>
+                <button id="openDeliverableGmail" class="ghost-button small-button" type="button">Create Gmail Draft</button>
+              </div>
+                <div class="gmail-send-section">
+                <div class="gmail-send-section-title">Create Gmail draft</div>
+                <div id="gmailNotConnected" class="gmail-not-connected" hidden>
+                  Gmail is not connected. You can still copy the email and send manually.
+                  <button id="connectGmailButton" class="ghost-button small-button" type="button">Grant Gmail Permission</button>
+                </div>
+                <div id="gmailSendForm" hidden>
+                  <div class="gmail-field-row"><span class="gmail-field-label">From</span><span id="gmailFrom" class="gmail-field-value"></span></div>
+                  <div class="gmail-field-row"><span class="gmail-field-label">To</span><input id="gmailTo" class="gmail-field-value" type="email" /></div>
+                  <div class="gmail-field-row"><span class="gmail-field-label">CC</span><label><input id="gmailCcSelf" type="checkbox" checked /> CC myself</label><input id="gmailAdditionalCc" class="gmail-field-value" type="text" placeholder="additional@example.com" /></div>
+                  <div id="gmailAttachmentsSummary" class="email-key-points"></div>
+                  <button id="sendGmailButton" class="btn-send-gmail" type="button">Create Draft in Gmail</button>
+                </div>
+                <div id="gmailSendResult"></div>
+              </div>
+            </div>
+          </section>
+
+          <section id="deliverableSendHistorySection" class="deliverable-section" hidden>
+            <details>
+              <summary class="deliverable-section-title">Send History</summary>
+              <table class="dashboard-table">
+                <thead><tr><th>Time</th><th>To</th><th>Subject</th><th>Attachments</th><th>Status</th></tr></thead>
+                <tbody id="deliverableSendHistory"></tbody>
+              </table>
+            </details>
+          </section>
+        </section>
+        <div id="deliverableResults" hidden></div>
+      </section>
+
+      <section id="estimatedTaxesPanel" class="layout mode-panel estimated-layout" hidden>
+        <section class="estimated-workbench">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Tax Workflow</p>
+                <h2>Estimated Taxes</h2>
+                <p>Upload a template and current-year files to generate a calculated Excel workpaper.</p>
+              </div>
+              <span id="estStatus" class="status-chip">Ready</span>
+            </div>
+
+            <article id="estStepClient" class="request-step-card active">
+              <h3 class="request-step-title">1. Select Entity Type & Period</h3>
+              <span class="field-label">Entity Type</span>
+              <div class="est-entity-selector" id="estEntitySelector">
+                <button class="est-entity-card active" type="button" data-est-entity="1040"><strong>1040</strong><span>Individual</span></button>
+                <button class="est-entity-card" type="button" data-est-entity="1120S"><strong>1120-S</strong><span>S-Corp</span></button>
+                <button class="est-entity-card" type="button" data-est-entity="1065"><strong>1065</strong><span>Partnership</span></button>
+                <button class="est-entity-card" type="button" data-est-entity="1120"><strong>1120</strong><span>C-Corp</span></button>
+                <button class="est-entity-card" type="button" data-est-entity="1041"><strong>1041</strong><span>Estate / Trust</span></button>
+              </div>
+              <div class="est-template-download-row">
+                <span id="estStandardTemplateBadge" class="est-standard-template-badge">Using standard 1040 template</span>
+                <button id="estDownloadBlankTemplate" class="ghost-button small-button" type="button">Download blank template for 1040</button>
+              </div>
+              <div class="form-grid">
+                <label class="field"><span>Client Name</span><input id="estClientName" type="text" placeholder="Client name" /></label>
+                <label class="field"><span>Client Email</span><input id="estClientEmail" type="email" placeholder="client@example.com" /></label>
+                <label class="field"><span>Tax Year</span><input id="estTaxYear" type="number" min="2000" max="2100" value="2026" /></label>
+                <label class="field"><span>State</span><select id="estState"><option value="">Select</option><option>AL</option><option>AK</option><option>AZ</option><option>AR</option><option>CA</option><option>CO</option><option>CT</option><option>DE</option><option>FL</option><option>GA</option><option>HI</option><option>ID</option><option>IL</option><option>IN</option><option>IA</option><option>KS</option><option>KY</option><option>LA</option><option>ME</option><option>MD</option><option>MA</option><option>MI</option><option>MN</option><option>MS</option><option>MO</option><option>MT</option><option>NE</option><option>NV</option><option>NH</option><option>NJ</option><option>NM</option><option>NY</option><option>NC</option><option>ND</option><option>OH</option><option>OK</option><option>OR</option><option>PA</option><option>RI</option><option>SC</option><option>SD</option><option>TN</option><option>TX</option><option>UT</option><option>VT</option><option>VA</option><option>WA</option><option>WV</option><option>WI</option><option>WY</option></select></label>
+              </div>
+              <div class="est-period-wrap">
+                <span class="field-label">Quarter / Period</span>
+                <div class="est-period-selector" id="estQuarterSelector">
+                  <button class="est-period-card active" type="button" data-quarter="Q1"><strong>Q1</strong><span>Jan-Mar</span></button>
+                  <button class="est-period-card" type="button" data-quarter="Q2"><strong>Q2</strong><span>Apr-Jun</span></button>
+                  <button class="est-period-card" type="button" data-quarter="Q3"><strong>Q3</strong><span>Jul-Sep</span></button>
+                  <button class="est-period-card" type="button" data-quarter="Q4"><strong>Q4</strong><span>Oct-Dec</span></button>
+                  <button class="est-period-card estimate" type="button" data-quarter="ANNUAL"><strong>Annual</strong><span>Full-year projection</span></button>
+                </div>
+                <p id="estQuarterEndNote" class="muted-note">Q1 uses current-year financials through March 31.</p>
+              </div>
+            </article>
+
+            <div id="estimatedTaxFlow">
+              <article class="request-step-card">
+                <h3 class="request-step-title">2. Prior Payments & Overpayments</h3>
+                <p class="muted-note">Leave blank if nothing was paid or applied. Do not enter $0.</p>
+                <div class="est-payment-columns">
+                  <div class="est-payment-column">
+                    <h4>Federal</h4>
+                    <label class="field"><span>Q1 Federal paid</span><input id="estQ1Federal" type="number" step="0.01" /></label>
+                    <label class="field"><span>Q2 Federal paid</span><input id="estQ2Federal" type="number" step="0.01" /></label>
+                    <label class="field"><span>Q3 Federal paid</span><input id="estQ3Federal" type="number" step="0.01" /></label>
+                    <label class="field"><span>Extension payment made</span><input id="estFederalExtensionPayment" type="number" step="0.01" /></label>
+                    <label class="field"><span>Overpayment from prior year applied</span><input id="estPriorOverFederal" type="number" step="0.01" /></label>
+                  </div>
+                  <div class="est-payment-column">
+                    <h4>State</h4>
+                    <label class="field"><span>Q1 State paid</span><input id="estQ1State" type="number" step="0.01" /></label>
+                    <label class="field"><span>Q2 State paid</span><input id="estQ2State" type="number" step="0.01" /></label>
+                    <label class="field"><span>Q3 State paid</span><input id="estQ3State" type="number" step="0.01" /></label>
+                    <label class="field"><span>Extension payment (state)</span><input id="estStateExtensionPayment" type="number" step="0.01" /></label>
+                    <label class="field"><span>Overpayment from prior year (state)</span><input id="estPriorOverState" type="number" step="0.01" /></label>
+                    <label class="field"><span>PTE payment already made</span><input id="estStatePtePayment" type="number" step="0.01" /></label>
+                  </div>
+                </div>
+                <button id="estAddStatePayment" class="link-button" type="button">+ Add another state</button>
+                <p class="muted-note">These amounts will be subtracted when calculating the balance due for the current period.</p>
+              </article>
+
+              <article id="estStepFilesCalculate" class="request-step-card">
+                <h3 class="request-step-title">3. Upload Source Files</h3>
+                <p class="muted-note">Upload the files the AI needs to complete the selected template.</p>
+                <div class="est-upload-grid">
+                  <div id="estTemplateDropzone" class="est-upload-zone" role="button" tabindex="0" data-est-zone="template">
+                    <strong>1. Template to use as base (optional)</strong>
+                    <span>Upload a prior-year workpaper/custom template. If empty, the app uses the standard template for the selected entity type.</span>
+                    <em>Drop template here - XLSX, 1 file max</em>
+                    <input id="estTemplateFile" type="file" accept=".xlsx,.xls" hidden />
+                    <div id="estTemplateStatus" class="est-zone-status">Using standard template.</div>
+                  </div>
+                  <div id="estPlDropzone" class="est-upload-zone required" role="button" tabindex="0" data-est-zone="pl">
+                    <strong>2. P&L - current year (required)</strong>
+                    <span>Profit & Loss statement for the current period. Used for all income and expense calculations.</span>
+                    <em>Drop P&L here - XLSX, CSV, or PDF</em>
+                    <input id="estPlFile" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden />
+                    <div id="estPlStatus" class="est-zone-status">No P&L uploaded.</div>
+                    <div id="estPlPeriodStatus" class="est-period-detection" hidden></div>
+                    <label class="field compact"><span>Override period months</span><input id="estPlMonthsOverride" type="number" min="1" max="12" step="1" placeholder="Auto" /></label>
+                  </div>
+                  <div id="estBalanceSheetDropzone" class="est-upload-zone" role="button" tabindex="0" data-est-zone="balanceSheet">
+                    <strong>3. Balance Sheet - current year (optional)</strong>
+                    <span>Used to check fixed assets, loans, equity changes, and balance sheet items.</span>
+                    <em>Drop Balance Sheet here - XLSX, CSV, or PDF</em>
+                    <input id="estBalanceSheetFile" type="file" accept=".xlsx,.xls,.csv,.pdf" hidden />
+                    <div id="estBalanceSheetStatus" class="est-zone-status">No balance sheet uploaded.</div>
+                  </div>
+                  <div id="estTaxReturnsDropzone" class="est-upload-zone" role="button" tabindex="0" data-est-zone="taxReturns">
+                    <strong>4. Tax Returns (optional but recommended)</strong>
+                    <span>Prior-year returns: 1040, 1120-S, 1065, or other. Used for safe harbor, Schedule A, Schedule 2, credits, and carryforwards.</span>
+                    <em>Drop returns here - PDF, multiple allowed</em>
+                    <input id="estTaxReturnFiles" type="file" multiple accept=".pdf" hidden />
+                    <div id="estTaxReturnsStatus" class="est-zone-status">No returns uploaded.</div>
+                  </div>
+                </div>
+
+                <div class="est-input-methods">
+                  <button id="estAddDriveFiles" class="ghost-button small-button" type="button">Add any file from Google Drive</button>
+                </div>
+                <label class="field full"><span>Additional notes for the AI (optional)</span><textarea id="estAdditionalNotes" rows="3" placeholder="Any specific instructions. Example: Officer salary is $X/month, or Client sold equipment in Q1."></textarea></label>
+                <button id="estCalculateButton" class="primary-button est-calculate-wide" type="button" disabled>Fill Workpaper</button>
+              </article>
+            </div>
+
+            <div id="extensionFlow" hidden></div>
+            <article id="extensionCalculateCard" class="request-step-card" hidden></article>
+          </section>
+          <section class="panel results-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Output</p>
+                <h2>Payment summary and workpaper</h2>
+              </div>
+              <div class="export-actions">
+                <button id="estDownloadWorkbook" class="primary-button small-button" type="button" disabled>Download Workpaper (.xlsx)</button>
+                <button id="estCopySummary" class="ghost-button small-button" type="button" disabled>Copy Payment Summary</button>
+              </div>
+            </div>
+            <div id="estResults" class="results ai-feed">
+              <article class="feed-empty"><span class="tag neutral">Pending</span><h3>Waiting for calculation</h3><p>Complete the fields and calculate an estimated tax or extension payment.</p></article>
+            </div>
+            <div id="estEmailCard" class="gmail-send-section" hidden>
+              <div class="gmail-send-section-title">Email to client</div>
+              <div class="est-reviewed-workpaper-box">
+                <strong>Reviewed workpaper</strong>
+                <p class="muted-note">After you review the downloaded Excel, upload the final version here. The Gmail draft will attach this reviewed file.</p>
+                <button id="estUploadReviewedWorkbook" class="ghost-button small-button" type="button">Upload Reviewed Excel</button>
+                <input id="estReviewedWorkbookFile" type="file" accept=".xlsx,.xls" hidden />
+                <span id="estReviewedWorkbookStatus" class="muted-note">No reviewed workbook uploaded yet.</span>
+              </div>
+              <label class="field full"><span>Subject</span><input id="estEmailSubject" class="email-subject-input" type="text" /></label>
+              <label class="field full"><span>Body</span><textarea id="estEmailBody" class="email-body-textarea" rows="9"></textarea></label>
+              <button id="estSendEmail" class="btn-send-gmail" type="button">Create Gmail Draft with Reviewed Workpaper</button>
+            </div>
+          </section>
+        </section>
+      </section>
+
+      <section id="researchPanel" class="layout mode-panel research-layout" hidden>
+        <aside class="research-context-panel">
+          <div class="research-context-title">Research Context</div>
+          <p class="research-context-subtitle">Optional. Helps Claude give more specific answers.</p>
+          <label class="field compact">
+            <span>Return Type</span>
+            <select id="researchReturnType">
+              <option value="">Any</option>
+              <option>1040</option>
+              <option>1041</option>
+              <option>1065</option>
+              <option>1120</option>
+              <option>1120-S</option>
+              <option>990</option>
+              <option>706</option>
+              <option>709</option>
+              <option>720</option>
+              <option>2290</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>Tax Year</span>
+            <input id="researchTaxYear" type="number" min="2000" max="2100" value="2026" />
+          </label>
+          <label class="field compact">
+            <span>State</span>
+            <select id="researchState">
+              <option value="">Federal only</option>
+              <option>Alabama</option><option>Alaska</option><option>Arizona</option><option>Arkansas</option><option>California</option>
+              <option>Colorado</option><option>Connecticut</option><option>Delaware</option><option>Florida</option><option>Georgia</option>
+              <option>Hawaii</option><option>Idaho</option><option>Illinois</option><option>Indiana</option><option>Iowa</option>
+              <option>Kansas</option><option>Kentucky</option><option>Louisiana</option><option>Maine</option><option>Maryland</option>
+              <option>Massachusetts</option><option>Michigan</option><option>Minnesota</option><option>Mississippi</option><option>Missouri</option>
+              <option>Montana</option><option>Nebraska</option><option>Nevada</option><option>New Hampshire</option><option>New Jersey</option>
+              <option>New Mexico</option><option>New York</option><option>North Carolina</option><option>North Dakota</option><option>Ohio</option>
+              <option>Oklahoma</option><option>Oregon</option><option>Pennsylvania</option><option>Rhode Island</option><option>South Carolina</option>
+              <option>South Dakota</option><option>Tennessee</option><option>Texas</option><option>Utah</option><option>Vermont</option>
+              <option>Virginia</option><option>Washington</option><option>West Virginia</option><option>Wisconsin</option><option>Wyoming</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>Client Type</span>
+            <select id="researchClientType">
+              <option value="">Any</option>
+              <option>Individual</option>
+              <option>Corporation</option>
+              <option>S-Corp</option>
+              <option>Partnership</option>
+              <option>Nonprofit</option>
+              <option>Estate/Trust</option>
+            </select>
+          </label>
+
+          <div class="research-history-section">
+            <div class="research-context-title">Quick Research Topics</div>
+            <div class="research-quick-topics">
+              <button class="research-topic-chip" type="button" data-research-topic="Deduction Limits">Deduction Limits</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Depreciation">Depreciation</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Entity Structure">Entity Structure</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Schedule K-1">Schedule K-1</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Foreign Income">Foreign Income</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Self-Employment">Self-Employment</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Real Estate">Real Estate</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Capital Gains">Capital Gains</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Estate & Gift">Estate & Gift</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Credits">Credits</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Filing Deadlines">Filing Deadlines</button>
+              <button class="research-topic-chip" type="button" data-research-topic="Recent Changes">Recent Changes</button>
+            </div>
+          </div>
+
+          <div class="research-history-section">
+            <div class="research-context-title">Conversation History</div>
+            <div id="researchHistoryList"></div>
+            <button id="researchClearConversation" class="research-clear-btn" type="button">Clear conversation</button>
+          </div>
+        </aside>
+
+        <section class="research-chat-panel">
+          <header class="research-chat-header">
+            <div>
+              <div class="research-chat-title">Tax Research</div>
+              <div class="research-chat-subtitle">AI-powered tax research with IRS citations</div>
+            </div>
+            <div class="research-header-actions">
+              <label class="thinking-toggle-global"><input id="researchThinkingToggle" type="checkbox" checked /> Extended Thinking</label>
+              <label class="thinking-toggle-global"><input id="researchWebSearchToggle" type="checkbox" checked /> Web search</label>
+              <button id="researchClearButton" class="ghost-button small-button" type="button">Clear</button>
+            </div>
+          </header>
+
+          <div id="researchMessages" class="research-messages"></div>
+
+          <div class="research-input-area">
+            <textarea id="researchInput" class="research-textarea" rows="1" placeholder="Ask a tax question, e.g. What is the penalty for late filing a Form 1065?"></textarea>
+            <div class="research-input-footer">
+              <div class="research-input-options">
+                <button id="researchAddContext" class="ghost-button small-button" type="button">Add current return context</button>
+              </div>
+              <div class="research-input-actions">
+                <span id="researchCharCount" class="research-char-count">0 characters</span>
+                <button id="researchSendButton" class="research-send-btn" type="button" disabled>Send</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="noticesPanel" class="layout mode-panel" hidden>
+        <aside class="stepper" aria-label="Notices workspace">
+          <div class="sidebar-title">
+            <strong>Notices</strong>
+            <small>Analyze IRS and state notices and draft response letters.</small>
+          </div>
+          <section class="sidebar-panel">
+            <h2>Notice</h2>
+            <dl class="session-metrics">
+              <div><dt>Notice</dt><dd id="noticeFileCount">0</dd></div>
+              <div><dt>Prior Return</dt><dd id="noticePriorCount">0</dd></div>
+            </dl>
+          </section>
+        </aside>
+
+        <section class="workbench">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Section 1</p>
+                <h2>Upload Notice</h2>
+                <p>Upload the IRS or state notice document for analysis.</p>
+              </div>
+              <button id="noticeStartOver" class="ghost-button" type="button">Start over</button>
+            </div>
+            <article class="upload-card required document-card">
+              <label class="upload-target" for="noticeFile">
+                <input id="noticeFile" type="file" accept=".pdf,.png,.jpg,.jpeg" />
+                <span class="upload-code">NOTICE</span>
+                <strong>Notice Document *</strong>
+                <small>Drop IRS or State Notice here (PDF or image)</small>
+                <em>Accepted: PDF, PNG, JPG.</em>
+              </label>
+              <div class="category-files">
+                <div class="category-title">Notice Document <span id="noticeInlineCount">0</span></div>
+                <ul id="noticeFileList" class="file-list"><li class="empty-state">No notice uploaded.</li></ul>
+              </div>
+            </article>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Section 2</p>
+                <h2>Supporting Documents</h2>
+                <p>Add optional context to help verify the notice.</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <label class="field full">
+                <span>Prior year return (optional — helps verify the notice)</span>
+                <div class="native-file-control">
+                  <input id="noticePriorReturn" class="native-file-hidden" type="file" accept=".pdf,.txt,.csv,.json,.md,.doc,.docx,.xlsx,.xls" />
+                  <label class="native-file-button" for="noticePriorReturn">Choose file</label>
+                  <span id="noticePriorReturnName" class="native-file-name">No file selected</span>
+                </div>
+              </label>
+              <div id="noticePriorDriveHost" class="drive-upload-row"></div>
+              <label class="field full">
+                <span>Client facts / context</span>
+                <textarea id="noticeClientFacts" rows="5" placeholder="Add client facts, payments made, notices previously received, POA status, or any other context."></textarea>
+              </label>
+              <label class="field full">
+                <span>State (if state notice)</span>
+                <select id="noticeState"></select>
+              </label>
+            </div>
+            <ul id="noticePriorList" class="file-list"><li class="empty-state">No prior-year return uploaded.</li></ul>
+          </section>
+
+          <section class="panel run-panel">
+            <div>
+              <p class="eyebrow">Section 3</p>
+              <h2>Analyze notice</h2>
+              <p id="noticeRunHint">The app will send the notice and supporting context to Claude.</p>
+              <p id="noticeCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            </div>
+            <button id="analyzeNotice" class="primary-button" type="button">Analyze Notice</button>
+          </section>
+        </section>
+
+        <section class="results-panel">
+          <div class="panel-heading feed-heading">
+            <div>
+              <p class="eyebrow">Section 4</p>
+              <h2>Notice analysis</h2>
+              <p>Structured analysis and response letter appear here after Claude completes the review.</p>
+            </div>
+          </div>
+          <div id="noticeResults" class="results ai-feed">
+            <article class="feed-empty">
+              <span class="tag neutral">Pending</span>
+              <h3>Waiting for notice</h3>
+              <p>Upload a notice document and click Analyze Notice.</p>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section id="diagnosticsPanel" class="layout mode-panel" hidden>
+        <section class="workbench">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Section 1</p>
+                <h2>Software and return setup</h2>
+                <p>Select the tax software and return context for software-specific fix instructions.</p>
+              </div>
+              <span id="diagnosticsStatus" class="status-chip">Ready</span>
+            </div>
+            <div class="form-grid">
+              <label class="field">
+                <span>Tax Software *</span>
+                <select id="diagnosticsSoftware">
+                  <option value="">Select software</option>
+                  <option>ProConnect Tax (Intuit)</option>
+                  <option>Lacerte (Intuit)</option>
+                  <option>ProSeries (Intuit)</option>
+                  <option>Drake Tax</option>
+                  <option>UltraTax CS (Thomson Reuters)</option>
+                  <option>CCH Axcess Tax (Wolters Kluwer)</option>
+                  <option>CCH ProSystem fx Tax</option>
+                  <option>GoSystem RS (Thomson Reuters)</option>
+                  <option>TaxSlayer Pro</option>
+                  <option>ATX (Wolters Kluwer)</option>
+                  <option>TaxAct Professional</option>
+                  <option>Other / Unknown</option>
+                </select>
+              </label>
+              <label class="field compact">
+                <span>Return Type</span>
+                <select id="diagnosticsReturnType">
+                  <option value="">Select</option>
+                  <option>1040</option>
+                  <option>1065</option>
+                  <option>1120</option>
+                  <option>1120-S</option>
+                  <option>990</option>
+                  <option>Other</option>
+                </select>
+              </label>
+              <label class="field compact">
+                <span>Tax Year</span>
+                <input id="diagnosticsTaxYear" type="number" min="2000" max="2100" value="2026" />
+              </label>
+              <label class="field full">
+                <span>Additional context</span>
+                <textarea id="diagnosticsContext" rows="2" placeholder="Optional: describe what you've already tried, or any relevant context about this return."></textarea>
+              </label>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Section 2</p>
+                <h2>Error input</h2>
+                <p>Paste diagnostic text, upload a screenshot, or provide both.</p>
+              </div>
+            </div>
+            <div class="diagnostics-methods" role="tablist">
+              <label><input type="radio" name="diagnosticsInputMode" value="text" checked /> Paste Text</label>
+              <label><input type="radio" name="diagnosticsInputMode" value="image" /> Upload Screenshot</label>
+            </div>
+            <div id="diagnosticsTextPane" class="diagnostics-input-pane">
+              <label class="field full">
+                <span>E-file errors or diagnostic messages</span>
+                <textarea id="diagnosticsErrorText" rows="10" placeholder="Paste your e-file errors or diagnostic messages here. You can paste the full diagnostics list, individual messages, IRS reject codes, or any error text you see on screen."></textarea>
+                <small><span id="diagnosticsCharCount">0</span> characters</small>
+              </label>
+              <button id="diagnosticsClearText" class="ghost-button small-button" type="button">Clear</button>
+            </div>
+            <div id="diagnosticsImagePane" class="diagnostics-input-pane" hidden>
+              <article class="upload-card document-card">
+                <label class="upload-target" for="diagnosticsImage">
+                  <input id="diagnosticsImage" type="file" accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif" />
+                  <span class="upload-code">IMAGE</span>
+                  <strong>Drop your screenshot here, or click to select</strong>
+                  <small>Accepted: PNG, JPG, JPEG, WEBP, GIF. Max size: 10MB.</small>
+                  <em>Screenshot will be analyzed directly by AI vision.</em>
+                </label>
+              </article>
+              <div id="diagnosticsImagePreview" class="diagnostics-image-preview" hidden></div>
+              <p class="helper-text">You can also paste text and upload a screenshot together for best results.</p>
+            </div>
+          </section>
+
+          <section class="panel run-panel">
+            <div>
+              <p class="eyebrow">Section 3</p>
+              <h2>Analyze errors</h2>
+              <p id="diagnosticsRunHint">Select software and provide error text or a screenshot.</p>
+              <p id="diagnosticsCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            </div>
+            <button id="analyzeDiagnostics" class="primary-button" type="button" disabled>Analyze Errors</button>
+          </section>
+        </section>
+
+        <section class="results-panel">
+          <div class="panel-heading feed-heading">
+            <div>
+              <p class="eyebrow">Section 4</p>
+              <h2>E-file diagnostic guide</h2>
+              <p>Software-specific explanations and fix steps appear here.</p>
+            </div>
+          </div>
+          <div id="diagnosticsResults" class="results ai-feed">
+            <article class="feed-empty">
+              <span class="tag neutral">Pending</span>
+              <h3>No diagnostics analyzed yet</h3>
+              <p>Paste e-file errors or upload a screenshot, then click Analyze Errors.</p>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section id="organizerPanel" class="layout mode-panel database-layout" hidden>
+        <section class="database-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Knowledge Center</p>
+              <h2>Database</h2>
+              <p>Client records, firm guidance, deadlines, learning corrections, and feedback used by the AI across every tab.</p>
+            </div>
+            <span id="organizerStatus" class="status-chip">Ready</span>
+          </div>
+
+          <nav class="database-tabs" aria-label="Database sections">
+            <button class="database-tab active" type="button" data-database-tab="clients">Clients</button>
+            <button class="database-tab" type="button" data-database-tab="requests">Client Requests</button>
+            <button class="database-tab" type="button" data-database-tab="library">Firm Library</button>
+            <button class="database-tab" type="button" data-database-tab="deadlines">Deadlines</button>
+            <button class="database-tab" type="button" data-database-tab="learning">AI Learning</button>
+            <button class="database-tab" type="button" data-database-tab="feedback">Feedback</button>
+          </nav>
+
+          <section id="databaseClientsPane" class="database-pane active">
+            <div class="database-two-column">
+              <article class="database-card">
+                <div class="database-card-heading">
+                  <div>
+                    <h3>Clients</h3>
+                    <p>Existing client database migrated from Organizer.</p>
+                  </div>
+                  <button id="databaseRefreshClients" class="ghost-button small-button" type="button">Refresh</button>
+                </div>
+                <input id="databaseClientSearch" class="database-search" type="search" placeholder="Search clients..." />
+                <div id="databaseClientList" class="database-list"></div>
+              </article>
+
+              <article class="database-card">
+                <div class="database-card-heading">
+                  <div>
+                    <h3 id="databaseClientTitle">Client Detail</h3>
+                    <p id="databaseClientSubtitle">Select a client to manage AI context.</p>
+                  </div>
+                </div>
+                <div class="database-client-tabs">
+                  <button class="database-client-tab active" type="button" data-client-tab="profile">Profile</button>
+                  <button class="database-client-tab" type="button" data-client-tab="documents">Documents</button>
+                  <button class="database-client-tab" type="button" data-client-tab="activity">Activity</button>
+                  <button class="database-client-tab" type="button" data-client-tab="notes">Notes</button>
+                </div>
+                <div id="databaseClientDetail" class="database-detail-empty">Select a client from the list.</div>
+              </article>
+            </div>
+          </section>
+
+          <section id="databaseRequestsPane" class="database-pane">
+            <article id="requestStepClient" class="request-step-card active">
+              <h3 class="request-step-title">1. Select Client <span id="requestClientCheck" class="request-step-check" hidden>Ready</span></h3>
+              <input id="requestClientSearch" class="database-search" type="search" placeholder="Search clients by name, entity type, return type, or EIN..." />
+              <div id="requestClientOptions" class="database-list"></div>
+              <div id="requestClientSummary"></div>
+            </article>
+
+            <article id="requestStepFiles" class="request-step-card locked">
+              <h3 class="request-step-title">2. Select Files to Send <span id="requestFilesCheck" class="request-step-check" hidden>Ready</span></h3>
+              <div class="request-search-bar">
+                <input id="requestSearchInput" class="request-search-input" type="search" placeholder="Search files..." />
+                <button id="requestSearchButton" class="request-search-btn" type="button">Search</button>
+              </div>
+              <div class="request-filter-row">
+                <select id="requestYearFilter" class="request-filter-select"><option value="all">All years</option></select>
+                <select id="requestTypeFilter" class="request-filter-select">
+                  <option value="all">All types</option>
+                  <option value="pdf">PDF</option>
+                  <option value="xlsx">Excel</option>
+                  <option value="docx">Word</option>
+                  <option value="txt">Text</option>
+                </select>
+                <label class="database-check"><input id="requestSourceDb" type="checkbox" checked /> Database</label>
+                <label class="database-check"><input id="requestSourceDrive" type="checkbox" checked /> Google Drive</label>
+              </div>
+              <div class="quick-filter-row">
+                <button class="quick-filter-btn" type="button" data-request-filter="latest-return">Latest Return</button>
+                <button class="quick-filter-btn" type="button" data-request-filter="w2">W-2 / W-2s</button>
+                <button class="quick-filter-btn" type="button" data-request-filter="prior-return">Prior Year Return</button>
+                <button class="quick-filter-btn" type="button" data-request-filter="tax-docs">Tax Documents</button>
+                <button class="quick-filter-btn" type="button" data-request-filter="all">All Files</button>
+              </div>
+              <label class="database-check"><input id="requestSelectAllVisible" type="checkbox" /> Select all visible</label>
+              <div class="request-files-layout">
+                <div id="requestResultsList" class="request-results-list"></div>
+                <aside id="requestSelectedPanel" class="selected-files-panel"></aside>
+              </div>
+            </article>
+
+            <article id="requestStepSend" class="request-step-card locked">
+              <h3 class="request-step-title">3. Compose & Send</h3>
+              <label class="field full">
+                <span>What did the client ask for? (optional)</span>
+                <textarea id="requestContextInput" rows="2" placeholder="Example: Client requested their 2025 filed return and W-2 for mortgage application."></textarea>
+              </label>
+              <div class="mode-toggle">
+                <label><input type="radio" name="requestTone" value="formal" /> Formal</label>
+                <label><input type="radio" name="requestTone" value="friendly" checked /> Friendly</label>
+                <label><input type="radio" name="requestTone" value="brief" /> Brief</label>
+              </div>
+              <button id="generateRequestEmail" class="primary-button" type="button">Generate Email</button>
+              <div id="requestEmailPreview" class="request-email-preview"></div>
+              <div id="requestSendSuccess"></div>
+            </article>
+
+            <details id="requestHistorySection" class="request-history-section">
+              <summary class="request-history-header">Recent Requests</summary>
+              <div id="requestHistoryList"></div>
+            </details>
+          </section>
+
+          <section id="databaseLibraryPane" class="database-pane">
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>Default Tax Software</h3>
+                  <p>Which tax software does your firm primarily use?</p>
+                </div>
+                <span id="databaseDefaultSoftwareStatus" class="database-muted">Not saved yet</span>
+              </div>
+              <div id="firmSoftwareSelector" class="software-selector-wrapper">
+                <button id="firmSoftwareButton" class="software-selector-btn" type="button">
+                  <span id="firm-software-selected-logo" class="software-logo">PT</span>
+                  <span id="firm-software-selected-name" class="software-selected-name">ProConnect Tax</span>
+                  <span id="firm-software-selected-vendor" class="software-vendor">Intuit</span>
+                  <span class="dropdown-arrow">v</span>
+                </button>
+                <div id="firmSoftwareDropdown" class="software-dropdown-panel"></div>
+                <div id="firmSoftwareInfo" class="software-info-card"></div>
+              </div>
+              <div class="database-actions">
+                <button id="databaseSaveDefaultSoftware" class="primary-button small-button" type="button">Save Default</button>
+              </div>
+            </article>
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>Global Instructions</h3>
+                  <p>This text is prepended to every AI call across all tabs.</p>
+                </div>
+                <span id="databaseGlobalSaveStatus" class="database-muted">Not saved yet</span>
+              </div>
+              <textarea id="databaseGlobalInstructions" rows="8" placeholder="Enter firm-wide instructions that always apply."></textarea>
+              <div class="database-actions">
+                <span id="databaseGlobalTokenEstimate" class="database-muted">~0 tokens included in every AI call</span>
+                <button id="databaseSaveGlobalInstructions" class="primary-button small-button" type="button">Save</button>
+              </div>
+            </article>
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>Document Library</h3>
+                  <p>Policies, memos, checklists, procedures, templates, and references for AI context.</p>
+                </div>
+              </div>
+              <div class="database-inline-form">
+                <input id="databaseLibraryTitle" type="text" placeholder="Document title" />
+                <select id="databaseLibraryCategory">
+                  <option value="reference">Reference</option>
+                  <option value="policy">Policy</option>
+                  <option value="memo">Memo</option>
+                  <option value="checklist">Checklist</option>
+                  <option value="procedure">Procedure</option>
+                  <option value="template">Template</option>
+                  <option value="other">Other</option>
+                </select>
+                <input id="databaseLibraryAppliesTo" type="text" placeholder="Applies to: all, 1040, 1120-S..." />
+                <label class="database-check"><input id="databaseLibraryAlwaysInject" type="checkbox" /> Always inject</label>
+              </div>
+              <textarea id="databaseLibraryContent" rows="4" placeholder="Write a note, memo, or instruction to add to the firm library."></textarea>
+              <div class="database-actions">
+                <button id="databaseAddLibraryItem" class="primary-button small-button" type="button">Add Document</button>
+              </div>
+              <div id="databaseLibraryList" class="database-list"></div>
+            </article>
+          </section>
+
+          <section id="databaseDeadlinesPane" class="database-pane">
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>Filing Deadlines</h3>
+                  <p>Upcoming filing and payment deadlines across all clients.</p>
+                </div>
+                <button id="databaseRebuildDeadlines" class="primary-button small-button" type="button">Rebuild Index</button>
+              </div>
+              <div id="databaseDeadlineList" class="database-deadline-list"></div>
+            </article>
+          </section>
+
+          <section id="databaseLearningPane" class="database-pane">
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>AI Learning</h3>
+                  <p>Corrections injected as context before future AI calls. They do not modify the model.</p>
+                </div>
+              </div>
+              <div class="database-inline-form">
+                <textarea id="databaseLearningCorrection" rows="3" placeholder="Add a clear, specific correction for future reviews."></textarea>
+                <input id="databaseLearningAppliesTo" type="text" placeholder="Applies to: all, 990, 1120..." />
+                <select id="databaseLearningConfidence">
+                  <option value="high">High confidence</option>
+                  <option value="medium">Medium confidence</option>
+                  <option value="low">Low confidence</option>
+                </select>
+                <button id="databaseAddLearning" class="primary-button small-button" type="button">Add Correction</button>
+              </div>
+              <div id="databaseLearningStats" class="database-muted"></div>
+              <div id="databaseLearningList" class="database-list"></div>
+            </article>
+          </section>
+
+          <section id="databaseFeedbackPane" class="database-pane">
+            <article class="database-card">
+              <div class="database-card-heading">
+                <div>
+                  <h3>Feedback & Quality</h3>
+                  <p>Reviewer feedback can be promoted into AI learning corrections.</p>
+                </div>
+              </div>
+              <div class="database-inline-form">
+                <select id="databaseFeedbackTab">
+                  <option value="review">Review</option>
+                  <option value="preparation">Preparation</option>
+                  <option value="notices">Notices</option>
+                  <option value="diagnostics">Diagnostics</option>
+                  <option value="general">General</option>
+                </select>
+                <select id="databaseFeedbackType">
+                  <option value="issue_incorrect">Issue was incorrect</option>
+                  <option value="issue_correct">Issue was correct</option>
+                  <option value="missing_issue">Missing issue</option>
+                  <option value="quality_rating">Quality rating</option>
+                  <option value="general">General feedback</option>
+                </select>
+                <input id="databaseFeedbackRating" type="number" min="1" max="5" placeholder="Rating 1-5" />
+              </div>
+              <textarea id="databaseFeedbackCorrection" rows="4" placeholder="What should the AI learn from this?"></textarea>
+              <label class="database-check"><input id="databaseFeedbackLearn" type="checkbox" checked /> Add to AI learning</label>
+              <div class="database-actions">
+                <button id="databaseSubmitFeedback" class="primary-button small-button" type="button">Submit Feedback</button>
+              </div>
+              <div id="databaseFeedbackStats" class="database-muted"></div>
+              <div id="databaseFeedbackList" class="database-list"></div>
+            </article>
+          </section>
+
+          <div class="legacy-organizer-controls" hidden>
+            <input id="organizerPriorReturn" type="file" />
+            <ul id="organizerPriorList"></ul>
+            <span id="organizerPriorInlineCount">0</span>
+            <input id="organizerClientName" type="text" />
+            <input id="organizerTaxYear" type="number" value="2026" />
+            <select id="organizerReturnType"><option value=""></option><option>1120</option></select>
+            <select id="organizerEntityType"><option>Individual</option></select>
+            <textarea id="organizerAdditionalContext"></textarea>
+            <div id="organizerValidationMessages"></div>
+            <p id="organizerRunHint"></p>
+            <p id="organizerCostEstimate"></p>
+            <button id="generateOrganizer" type="button"></button>
+            <div id="organizerExportActions" hidden></div>
+            <button id="organizerPreparerView" type="button"></button>
+            <button id="organizerClientView" type="button"></button>
+            <button id="downloadOrganizerPreparer" type="button"></button>
+            <button id="downloadOrganizerClient" type="button"></button>
+            <div id="organizerResults"></div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="app.js?v=20260527-blue-palette"></script>
+  </body>
+</html>
