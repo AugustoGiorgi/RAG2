@@ -25,6 +25,7 @@ const AI_LEARNING_PATH = path.join(DATA_DIR, "ai_learning.json");
 const FEEDBACK_PATH = path.join(DATA_DIR, "feedback.json");
 const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
 const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
+const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const CLIENT_FILES_DIR = path.join(DATA_DIR, "client_files");
 const LOCAL_SECRETS_PATH = path.join(DATA_DIR, "local-secrets.json");
@@ -58,6 +59,9 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
+const TOKEN_ENCRYPTION_KEY = String(process.env.TOKEN_ENCRYPTION_KEY || LOCAL_SECRETS.tokenEncryptionKey || "").trim();
+const TOKEN_ENCRYPTION_KEY_BYTES = tokenEncryptionKeyBytes(TOKEN_ENCRYPTION_KEY);
+const CLIENT_FILE_PERSISTENCE_ENABLED = String(process.env.ENABLE_CLIENT_FILE_PERSISTENCE || "false").toLowerCase() === "true";
 const WEB_SEARCH_ENABLED = String(process.env.ENABLE_CLAUDE_WEB_SEARCH || "true").toLowerCase() === "true";
 const WEB_SEARCH_MAX_USES = Number(process.env.CLAUDE_WEB_SEARCH_MAX_USES || 3);
 const WEB_SEARCH_ALLOWED_DOMAINS = String(process.env.CLAUDE_WEB_ALLOWED_DOMAINS || "")
@@ -642,6 +646,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
     if (req.method === "POST" && req.url === "/api/logout") { await handleLogout(req, res); return; }
     if (req.method === "GET" && req.url === "/api/auth/status") { await handleAuthStatus(req, res); return; }
+    if (requestUrl.pathname === "/api/auth/change-password" && req.method === "POST") { await handleChangePassword(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google") { await handleGoogleAuth(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google/callback") { await handleGoogleCallback(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo") { await handleQboAuth(req, res); return; }
@@ -705,6 +710,11 @@ const server = http.createServer(async (req, res) => {
       if (!requireAdmin(req, res)) return;
       const limit = Math.min(Number(requestUrl.searchParams.get("limit") || 200), 1000);
       sendJson(res, 200, { entries: readAuditEntries(limit) });
+      return;
+    }
+    if (requestUrl.pathname.startsWith("/api/admin/users")) {
+      if (!requireAdmin(req, res)) return;
+      await handleAdminUsersApi(req, res, requestUrl);
       return;
     }
     if (requestUrl.pathname.startsWith("/api/tracker")) { await handleTrackerApi(req, res, requestUrl); return; }
@@ -3202,6 +3212,91 @@ async function handleAuthStatus(req, res) {
   });
 }
 
+async function handleChangePassword(req, res) {
+  const session = getSession(req);
+  if (!session?.username) { sendJson(res, 401, { error: "Authentication required." }); return; }
+  const payload = await readJsonBody(req);
+  const currentPassword = String(payload.currentPassword || "");
+  const newPassword = String(payload.newPassword || "");
+  if (newPassword.length < 12) { sendJson(res, 400, { error: "New password must be at least 12 characters." }); return; }
+  const store = readUserStore();
+  const user = store.users.find((item) => item.username === session.username);
+  if (!user || !verifyPassword(currentPassword, user.passwordHash)) {
+    appendAuditLog(req, "auth.password_change_failed", { username: session.username });
+    sendJson(res, 401, { error: "Current password is incorrect." });
+    return;
+  }
+  user.passwordHash = createPasswordHash(newPassword);
+  user.updatedAt = new Date().toISOString();
+  user.lastPasswordChangeAt = user.updatedAt;
+  writeUserStore(store);
+  appendAuditLog(req, "auth.password_changed", { username: session.username });
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminUsersApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const store = readUserStore();
+  if (parts.length === 3 && req.method === "GET") {
+    sendJson(res, 200, { users: store.users.map(publicUser) });
+    return;
+  }
+  if (parts.length === 3 && req.method === "POST") {
+    const payload = await readJsonBody(req);
+    const username = String(payload.username || "").trim();
+    const password = String(payload.password || "");
+    if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) { sendJson(res, 400, { error: "Username must be 3-64 letters, numbers, dots, hyphens, or underscores." }); return; }
+    if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+    if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
+    const now = new Date().toISOString();
+    const user = {
+      username,
+      passwordHash: createPasswordHash(password),
+      role: payload.role === "admin" ? "admin" : "user",
+      displayName: String(payload.displayName || username).trim(),
+      active: payload.active !== false,
+      createdAt: now,
+      updatedAt: now,
+      lastPasswordChangeAt: now,
+    };
+    store.users.push(user);
+    writeUserStore(store);
+    appendAuditLog(req, "admin.user_created", { username, role: user.role });
+    sendJson(res, 200, { user: publicUser(user) });
+    return;
+  }
+  if (parts.length === 4 && req.method === "PUT") {
+    const username = decodeURIComponent(parts[3]);
+    const payload = await readJsonBody(req);
+    const user = store.users.find((item) => item.username === username);
+    if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
+    if (payload.role !== undefined) user.role = payload.role === "admin" ? "admin" : "user";
+    if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
+    if (payload.active !== undefined) user.active = Boolean(payload.active);
+    user.updatedAt = new Date().toISOString();
+    writeUserStore(store);
+    appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false });
+    sendJson(res, 200, { user: publicUser(user) });
+    return;
+  }
+  if (parts.length === 5 && parts[4] === "password" && req.method === "PUT") {
+    const username = decodeURIComponent(parts[3]);
+    const payload = await readJsonBody(req);
+    const password = String(payload.password || "");
+    const user = store.users.find((item) => item.username === username);
+    if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
+    if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+    user.passwordHash = createPasswordHash(password);
+    user.updatedAt = new Date().toISOString();
+    user.lastPasswordChangeAt = user.updatedAt;
+    writeUserStore(store);
+    appendAuditLog(req, "admin.user_password_reset", { username });
+    sendJson(res, 200, { ok: true, user: publicUser(user) });
+    return;
+  }
+  sendJson(res, 404, { error: "User admin route not found." });
+}
+
 async function handleGoogleAuth(req, res) {
   if (!isGoogleDriveEnabled()) {
     sendHtml(res, 503, "<p>Google Drive is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.</p>");
@@ -3343,6 +3438,34 @@ function isAuthConfigured() {
 }
 
 function getAuthUsers() {
+  const store = readUserStore();
+  const users = store.users;
+  return users
+    .filter((user) => user && typeof user.username === "string" && typeof user.passwordHash === "string" && user.active !== false)
+    .map((user) => ({
+      ...user,
+      role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
+      displayName: String(user.displayName || user.username),
+    }));
+}
+
+function readUserStore() {
+  try {
+    if (fsSync.existsSync(USERS_PATH)) {
+      const parsed = JSON.parse(fsSync.readFileSync(USERS_PATH, "utf8"));
+      return { users: Array.isArray(parsed.users) ? parsed.users : [] };
+    }
+  } catch (_) {}
+  const users = parseAuthUsersJson();
+  if (users.length) writeUserStore({ users });
+  return { users };
+}
+
+function writeUserStore(store) {
+  writeJsonFile(USERS_PATH, { users: Array.isArray(store.users) ? store.users : [] });
+}
+
+function parseAuthUsersJson() {
   try {
     const users = JSON.parse(AUTH_USERS_JSON);
     if (!Array.isArray(users)) return [];
@@ -3352,10 +3475,30 @@ function getAuthUsers() {
         ...user,
         role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
         displayName: String(user.displayName || user.username),
+        active: user.active !== false,
+        createdAt: user.createdAt || new Date().toISOString(),
       }));
   } catch (_) {
     return [];
   }
+}
+
+function publicUser(user) {
+  return {
+    username: user.username,
+    role: user.role === "admin" ? "admin" : "user",
+    displayName: user.displayName || user.username,
+    active: user.active !== false,
+    createdAt: user.createdAt || "",
+    updatedAt: user.updatedAt || "",
+    lastPasswordChangeAt: user.lastPasswordChangeAt || "",
+  };
+}
+
+function createPasswordHash(password) {
+  const salt = crypto.randomBytes(16).toString("base64url");
+  const hash = crypto.pbkdf2Sync(String(password || ""), salt, 210000, 32, "sha256").toString("base64url");
+  return `pbkdf2$210000$${salt}$${hash}`;
 }
 
 function authUserForSession(user) {
@@ -3472,6 +3615,52 @@ function writeJsonFile(filePath, value) {
 
 function structuredCloneSafe(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function tokenEncryptionKeyBytes(value) {
+  if (!value) return null;
+  try {
+    const decoded = Buffer.from(value, "base64");
+    if (decoded.length === 32) return decoded;
+  } catch (_) {}
+  return crypto.createHash("sha256").update(value).digest();
+}
+
+function encryptSecretObject(value) {
+  if (!TOKEN_ENCRYPTION_KEY_BYTES || !value) return value;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", TOKEN_ENCRYPTION_KEY_BYTES, iv);
+  const plaintext = Buffer.from(JSON.stringify(value), "utf8");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    encrypted: true,
+    alg: "aes-256-gcm",
+    iv: iv.toString("base64url"),
+    tag: tag.toString("base64url"),
+    data: ciphertext.toString("base64url"),
+  };
+}
+
+function decryptSecretObject(value) {
+  if (!value || value.encrypted !== true) return value;
+  if (!TOKEN_ENCRYPTION_KEY_BYTES) throw new Error("TOKEN_ENCRYPTION_KEY is required to read encrypted tokens.");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", TOKEN_ENCRYPTION_KEY_BYTES, Buffer.from(value.iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(value.tag, "base64url"));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(value.data, "base64url")), decipher.final()]);
+  return JSON.parse(plaintext.toString("utf8"));
+}
+
+function encryptUserMap(map = {}) {
+  const output = {};
+  Object.entries(map || {}).forEach(([key, value]) => { output[key] = encryptSecretObject(value); });
+  return output;
+}
+
+function decryptUserMap(map = {}) {
+  const output = {};
+  Object.entries(map || {}).forEach(([key, value]) => { output[key] = decryptSecretObject(value); });
+  return output;
 }
 
 function readDb() {
@@ -3727,7 +3916,7 @@ function readGoogleTokenStore() {
   try {
     if (!fsSync.existsSync(GOOGLE_TOKEN_PATH)) return { users: {} };
     const parsed = JSON.parse(fsSync.readFileSync(GOOGLE_TOKEN_PATH, "utf8"));
-    if (parsed.users && typeof parsed.users === "object") return { users: parsed.users };
+    if (parsed.users && typeof parsed.users === "object") return { users: decryptUserMap(parsed.users) };
     return { users: { default: parsed } };
   } catch (_) {
     return { users: {} };
@@ -3743,14 +3932,14 @@ function writeGoogleTokens(username, tokens) {
   const store = readGoogleTokenStore();
   store.users[String(username || "default")] = tokens;
   fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
 }
 
 function deleteGoogleTokens(username) {
   const store = readGoogleTokenStore();
   delete store.users[String(username || "default")];
   fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
 }
 
 function isQboEnabled() {
@@ -3761,7 +3950,7 @@ function readQboStore() {
   try {
     if (!fsSync.existsSync(QBO_TOKEN_PATH)) return { users: {} };
     const parsed = JSON.parse(fsSync.readFileSync(QBO_TOKEN_PATH, "utf8"));
-    return { users: parsed.users || {} };
+    return { users: decryptUserMap(parsed.users || {}) };
   } catch (_) {
     return { users: {} };
   }
@@ -3769,7 +3958,7 @@ function readQboStore() {
 
 function writeQboStore(store) {
   fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(QBO_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+  fsSync.writeFileSync(QBO_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
 }
 
 function getQboUserStore(username) {
@@ -3974,7 +4163,7 @@ function readAccountingStore() {
   try {
     if (!fsSync.existsSync(ACCOUNTING_TOKEN_PATH)) return { users: {} };
     const parsed = JSON.parse(fsSync.readFileSync(ACCOUNTING_TOKEN_PATH, "utf8"));
-    return { users: parsed.users || {} };
+    return { users: decryptUserMap(parsed.users || {}) };
   } catch (_) {
     return { users: {} };
   }
@@ -3982,7 +4171,7 @@ function readAccountingStore() {
 
 function writeAccountingStore(store) {
   fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(ACCOUNTING_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+  fsSync.writeFileSync(ACCOUNTING_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
 }
 
 function accountingStoreKey(username, softwareId) {
@@ -5227,6 +5416,9 @@ function saveClientDocument(client, payload = {}) {
   };
   const contentBase64 = String(payload.contentBase64 || payload.content || "");
   if (contentBase64) {
+    if (!CLIENT_FILE_PERSISTENCE_ENABLED) {
+      throw new Error("Local client file persistence is disabled for this deployment. Attach Google Drive-hosted files or wait for R2 storage.");
+    }
     const buffer = Buffer.from(contentBase64, "base64");
     if (buffer.length <= 10 * 1024 && /text|json|csv|markdown|xml/i.test(String(payload.mimeType || ""))) {
       doc.contentBase64 = contentBase64;

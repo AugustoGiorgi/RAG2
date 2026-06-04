@@ -10,3 +10,4 @@ data/qbo_tokens.json
 data/accounting_tokens.json
 data/cost_log.json
 data/audit_log.json
+data/users.json
