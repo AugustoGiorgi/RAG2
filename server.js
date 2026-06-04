@@ -78,7 +78,9 @@ const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
-const GOOGLE_OAUTH_SCOPE = [GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE, GOOGLE_CALENDAR_SCOPE, GOOGLE_USERINFO_SCOPE].join(" ");
+const GOOGLE_OAUTH_SCOPE = (process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
+  .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean).join(" ");
+const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "false").toLowerCase() === "true";
 const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
 const QBO_CLIENT_SECRET = String(process.env.QBO_CLIENT_SECRET || LOCAL_SECRETS.qboClientSecret || "").trim();
 const QBO_REDIRECT_URI = String(process.env.QBO_REDIRECT_URI || LOCAL_SECRETS.qboRedirectUri || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/qbo/callback`).trim();
@@ -7298,6 +7300,10 @@ async function handleDeliverableGmailStatus(_req, res) {
 }
 
 async function handleDeliverableSendGmail(req, res) {
+  if (!GMAIL_SEND_ENABLED || !GOOGLE_OAUTH_SCOPE.includes(GOOGLE_GMAIL_SEND_SCOPE)) {
+    sendJson(res, 403, { error: "Direct Gmail sending is disabled. Create a Gmail draft, review it in Gmail, and send it from there." });
+    return;
+  }
   const payload = await readJsonBody(req);
   if (!payload.to || !payload.subject || (!payload.bodyHtml && !payload.bodyText)) {
     sendJson(res, 400, { error: "Recipient, subject, and email body are required." });

@@ -97,6 +97,20 @@ CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,ftb.ca.gov,tax.ny.gov
 
 This requires Anthropic web search access on the account and a model that supports the tool. If web research is disabled, Claude is instructed not to claim it searched the internet.
 
+## Gmail Draft Setup
+
+For public OAuth access with the least Gmail friction, request only the scopes needed to create drafts:
+
+```text
+GOOGLE_CLIENT_ID=your_google_oauth_client_id
+GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
+GOOGLE_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.compose
+ENABLE_GMAIL_SEND=false
+```
+
+`gmail.compose` lets the app create a draft for the user to review and send in Gmail. Direct sending requires `gmail.send` and should only be enabled after Google OAuth verification.
+
 ## QuickBooks Online Setup
 
 1. Go to https://developer.intuit.com.
