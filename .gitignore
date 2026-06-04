@@ -1,0 +1,11 @@
+node_modules/
+npm-debug.log
+.env
+.env.*
+.vs/
+data/client_files/
+data/local-secrets.json
+data/google_tokens.json
+data/qbo_tokens.json
+data/accounting_tokens.json
+data/cost_log.json

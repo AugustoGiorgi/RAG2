@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: rag-prueba
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: MAX_UPLOAD_MB
+        value: "64"
+      - key: MAX_FILES_PER_REVIEW
+        value: "15"
+      - key: KNOWLEDGE_BASE_DIR
+        value: /app/knowledge_base
+      - key: REVIEW_EXAMPLES_DIR
+        value: /app/review_examples
+      - key: ENABLE_CLAUDE_WEB_SEARCH
+        value: "false"
+      - key: CLAUDE_WEB_ALLOWED_DOMAINS
+        value: irs.gov,ftb.ca.gov,tax.ny.gov
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: AUTH_USERS_JSON
+        sync: false
