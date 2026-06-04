@@ -24,6 +24,7 @@ const DEADLINES_PATH = path.join(DATA_DIR, "deadlines.json");
 const AI_LEARNING_PATH = path.join(DATA_DIR, "ai_learning.json");
 const FEEDBACK_PATH = path.join(DATA_DIR, "feedback.json");
 const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
+const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const CLIENT_FILES_DIR = path.join(DATA_DIR, "client_files");
 const LOCAL_SECRETS_PATH = path.join(DATA_DIR, "local-secrets.json");
@@ -53,6 +54,10 @@ const AUTH_USERS_JSON = String(process.env.AUTH_USERS_JSON || LOCAL_SECRETS.auth
 const SESSION_COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "tax_review_session";
 const SESSION_TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS || 8 * 60 * 60);
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === "production" ? "true" : "false")).toLowerCase() === "true";
+const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
+const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
 const WEB_SEARCH_ENABLED = String(process.env.ENABLE_CLAUDE_WEB_SEARCH || "true").toLowerCase() === "true";
 const WEB_SEARCH_MAX_USES = Number(process.env.CLAUDE_WEB_SEARCH_MAX_USES || 3);
 const WEB_SEARCH_ALLOWED_DOMAINS = String(process.env.CLAUDE_WEB_ALLOWED_DOMAINS || "")
@@ -90,6 +95,7 @@ if (ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY;
 const MASTER_REVIEW_PROMPT = loadMasterReviewPrompt();
 ensureDatabase();
 const researchHistories = new Map();
+const rateLimitBuckets = new Map();
 
 const ACCOUNTING_SOFTWARE = {
   quickbooks: {
@@ -629,6 +635,10 @@ const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
     if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
+    if (isApiRequest(req) && req.url !== "/api/login" && isRateLimited(req, "api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS)) {
+      sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
+      return;
+    }
     if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
     if (req.method === "POST" && req.url === "/api/logout") { await handleLogout(req, res); return; }
     if (req.method === "GET" && req.url === "/api/auth/status") { await handleAuthStatus(req, res); return; }
@@ -664,14 +674,39 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/deliverable/create-gmail-draft") { await handleDeliverableCreateGmailDraft(req, res); return; }
     if (req.method === "GET" && req.url === "/api/deliverable/gmail-status") { await handleDeliverableGmailStatus(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/api/tax-software/list") { sendJson(res, 200, publicTaxSoftwareList()); return; }
-    if (req.method === "GET" && requestUrl.pathname === "/api/database/export") { sendJson(res, 200, readDb()); return; }
-    if (req.method === "DELETE" && requestUrl.pathname === "/api/database") { writeDb({ clients: {}, sessions: {} }); sendJson(res, 200, { ok: true }); return; }
-    if (requestUrl.pathname.startsWith("/api/library")) { await handleLibraryApi(req, res, requestUrl); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/database/export") {
+      if (!requireAdmin(req, res)) return;
+      appendAuditLog(req, "database.export", { clients: Object.keys(readDb().clients || {}).length });
+      sendJson(res, 200, readDb());
+      return;
+    }
+    if (req.method === "DELETE" && requestUrl.pathname === "/api/database") {
+      if (!requireAdmin(req, res)) return;
+      appendAuditLog(req, "database.delete_all", {});
+      writeDb({ clients: {}, sessions: {} });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (requestUrl.pathname.startsWith("/api/library")) {
+      if (req.method !== "GET" && !requireAdmin(req, res)) return;
+      await handleLibraryApi(req, res, requestUrl);
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/deadlines")) { await handleDeadlinesApi(req, res, requestUrl); return; }
-    if (requestUrl.pathname.startsWith("/api/learning")) { await handleLearningApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/learning")) {
+      if (!requireAdmin(req, res)) return;
+      await handleLearningApi(req, res, requestUrl);
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/feedback")) { await handleFeedbackApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/requests")) { await handleRequestsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/database/drive-sync")) { await handleDatabaseDriveSyncApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/admin/audit-log")) {
+      if (!requireAdmin(req, res)) return;
+      const limit = Math.min(Number(requestUrl.searchParams.get("limit") || 200), 1000);
+      sendJson(res, 200, { entries: readAuditEntries(limit) });
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/tracker")) { await handleTrackerApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/pto")) { await handlePtoApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/clients")) { await handleClientApi(req, res, requestUrl); return; }
@@ -681,7 +716,11 @@ const server = http.createServer(async (req, res) => {
     if (requestUrl.pathname.startsWith("/api/accounting")) { await handleAccountingApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/qbo")) { await handleQboApi(req, res, requestUrl); return; }
     if (req.method === "GET" && req.url.startsWith("/api/context")) { await handleContextList(req, res); return; }
-    if (req.method === "POST" && req.url === "/api/context/upload") { await handleContextUpload(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/context/upload") {
+      if (!requireAdmin(req, res)) return;
+      await handleContextUpload(req, res);
+      return;
+    }
     if (req.method === "GET") { await serveStatic(req, res); return; }
     sendJson(res, 405, { error: "Method not allowed" });
   } catch (error) {
@@ -3126,9 +3165,15 @@ async function handleLogin(req, res) {
   const payload = await readJsonBody(req);
   const username = String(payload.username || "").trim();
   const password = String(payload.password || "");
+  if (isRateLimited(req, `login:${username || "blank"}`, LOGIN_RATE_LIMIT_MAX, LOGIN_RATE_LIMIT_WINDOW_MS)) {
+    appendAuditLog(req, "auth.rate_limited", { username });
+    sendJson(res, 429, { error: "Too many login attempts. Please wait and try again." });
+    return;
+  }
   const user = getAuthUsers().find((candidate) => candidate.username === username);
 
   if (!user || !verifyPassword(password, user.passwordHash)) {
+    appendAuditLog(req, "auth.login_failed", { username });
     sendJson(res, 401, { error: "Invalid username or password." });
     return;
   }
@@ -3136,10 +3181,12 @@ async function handleLogin(req, res) {
   const sessionUser = authUserForSession(user);
   const token = signSession({ ...sessionUser, user: sessionUser, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS });
   res.setHeader("set-cookie", buildSessionCookie(token));
+  appendAuditLog(req, "auth.login_success", { username: sessionUser.username, role: sessionUser.role });
   sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
 }
 
-async function handleLogout(_req, res) {
+async function handleLogout(req, res) {
+  appendAuditLog(req, "auth.logout", {});
   res.setHeader("set-cookie", clearSessionCookie());
   sendJson(res, 200, { ok: true });
 }
@@ -3155,11 +3202,17 @@ async function handleAuthStatus(req, res) {
   });
 }
 
-async function handleGoogleAuth(_req, res) {
+async function handleGoogleAuth(req, res) {
   if (!isGoogleDriveEnabled()) {
     sendHtml(res, 503, "<p>Google Drive is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.</p>");
     return;
   }
+  const session = getSession(req);
+  if (!session?.username) {
+    redirect(res, "/login");
+    return;
+  }
+  const statePayload = Buffer.from(JSON.stringify({ username: session.username, sig: hmac(`google:${session.username}`) })).toString("base64url");
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     redirect_uri: GOOGLE_REDIRECT_URI,
@@ -3167,6 +3220,7 @@ async function handleGoogleAuth(_req, res) {
     scope: GOOGLE_OAUTH_SCOPE,
     access_type: "offline",
     prompt: "consent",
+    state: statePayload,
   });
   redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
 }
@@ -3179,6 +3233,13 @@ async function handleGoogleCallback(_req, res, requestUrl) {
   const code = requestUrl.searchParams.get("code");
   if (!code) {
     sendHtml(res, 400, "<p>Missing Google OAuth code.</p>");
+    return;
+  }
+  let state = {};
+  try { state = JSON.parse(Buffer.from(requestUrl.searchParams.get("state") || "", "base64url").toString("utf8")); } catch (_) {}
+  const username = String(state.username || "");
+  if (!username || !safeEqual(String(state.sig || ""), hmac(`google:${username}`))) {
+    sendHtml(res, 400, "<p>Google OAuth state is invalid. Start the connection again from the app.</p>");
     return;
   }
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
@@ -3197,7 +3258,8 @@ async function handleGoogleCallback(_req, res, requestUrl) {
     sendHtml(res, 400, `<p>Google OAuth failed: ${escapeHtml(String(tokenData.error_description || tokenData.error || "Unknown error"))}</p>`);
     return;
   }
-  writeGoogleTokens(normalizeGoogleTokens(tokenData));
+  writeGoogleTokens(username, normalizeGoogleTokens(tokenData, username));
+  appendAuditLog({ user: { username } }, "google.connected", { scopes: tokenData.scope || GOOGLE_OAUTH_SCOPE });
   sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"google_connected"},"*"); window.close();</script><p>Google connected. You can close this tab.</p></body></html>`);
 }
 
@@ -3349,6 +3411,26 @@ function requireAdmin(req, res) {
   return true;
 }
 
+function canAccessOwner(req, ownerUsername) {
+  const session = req.user || getSession(req);
+  if (!session?.username) return false;
+  return session.role === "admin" || !ownerUsername || ownerUsername === session.username;
+}
+
+function requireOwnerAccess(req, res, ownerUsername) {
+  if (canAccessOwner(req, ownerUsername)) return true;
+  sendJson(res, 403, { error: "Access denied." });
+  return false;
+}
+
+function clientOwner(client) {
+  return String(client?.ownerUsername || client?.createdBy || "");
+}
+
+function sessionOwner(session, db) {
+  return String(session?.ownerUsername || session?.createdBy || clientOwner(db?.clients?.[session?.clientId]) || "");
+}
+
 function hmac(value) {
   return crypto.createHmac("sha256", AUTH_SECRET).update(value).digest("base64url");
 }
@@ -3370,6 +3452,7 @@ function ensureDatabase() {
   if (!fsSync.existsSync(AI_LEARNING_PATH)) writeJsonFile(AI_LEARNING_PATH, { globalCorrections: [], clientCorrections: {}, returnTypePatterns: {} });
   if (!fsSync.existsSync(FEEDBACK_PATH)) writeJsonFile(FEEDBACK_PATH, { entries: [] });
   if (!fsSync.existsSync(COST_LOG_PATH)) writeJsonFile(COST_LOG_PATH, { entries: [] });
+  if (!fsSync.existsSync(AUDIT_LOG_PATH)) writeJsonFile(AUDIT_LOG_PATH, { entries: [] });
 }
 
 function readJsonFile(filePath, fallback) {
@@ -3409,6 +3492,56 @@ function writeDb(db) {
   fsSync.writeFileSync(tempPath, JSON.stringify({ clients: db.clients || {}, sessions: db.sessions || {} }, null, 2), "utf8");
   fsSync.renameSync(tempPath, DB_PATH);
   writeJsonFile(CLIENTS_PATH, { clients: db.clients || {} });
+}
+
+function appendAuditLog(reqOrUser, action, details = {}) {
+  try {
+    const store = readJsonFile(AUDIT_LOG_PATH, { entries: [] });
+    const entries = Array.isArray(store.entries) ? store.entries : [];
+    const user = reqOrUser?.user || getSession(reqOrUser || {}) || {};
+    entries.push({
+      id: crypto.randomUUID(),
+      at: new Date().toISOString(),
+      action: String(action || "unknown"),
+      username: String(user.username || ""),
+      role: String(user.role || ""),
+      ip: reqOrUser?.headers ? clientIp(reqOrUser) : "",
+      details: sanitizeAuditDetails(details),
+    });
+    writeJsonFile(AUDIT_LOG_PATH, { entries: entries.slice(-5000) });
+  } catch (error) {
+    console.warn("Could not write audit log:", error.message);
+  }
+}
+
+function readAuditEntries(limit = 200) {
+  const store = readJsonFile(AUDIT_LOG_PATH, { entries: [] });
+  return (Array.isArray(store.entries) ? store.entries : []).slice(-limit).reverse();
+}
+
+function sanitizeAuditDetails(details = {}) {
+  const redactedKeys = /token|secret|password|authorization|api[_-]?key|content|base64/i;
+  const output = {};
+  Object.entries(details || {}).forEach(([key, value]) => {
+    output[key] = redactedKeys.test(key) ? "[redacted]" : typeof value === "string" ? value.slice(0, 500) : value;
+  });
+  return output;
+}
+
+function clientIp(req) {
+  return String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+}
+
+function isRateLimited(req, bucket, maxRequests, windowMs) {
+  const now = Date.now();
+  const key = `${bucket}:${clientIp(req) || "unknown"}`;
+  const current = rateLimitBuckets.get(key);
+  if (!current || current.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+  current.count += 1;
+  return current.count > maxRequests;
 }
 
 function pickClientFields(payload = {}) {
@@ -3473,6 +3606,8 @@ function normalizeSession(payload = {}) {
   const session = {
     id: String(payload.id || crypto.randomUUID()),
     clientId: String(payload.clientId || ""),
+    ownerUsername: String(payload.ownerUsername || payload.createdBy || ""),
+    createdBy: String(payload.createdBy || payload.ownerUsername || ""),
     taxYear: String(payload.taxYear || ""),
     returnType: String(payload.returnType || ""),
     reviewStage: String(payload.reviewStage || "Initial review"),
@@ -3577,8 +3712,8 @@ function isGoogleDriveEnabled() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
-function normalizeGoogleTokens(tokenData = {}) {
-  const existing = readGoogleTokens() || {};
+function normalizeGoogleTokens(tokenData = {}, username = "default") {
+  const existing = readGoogleTokens(username) || {};
   return {
     access_token: tokenData.access_token || existing.access_token || "",
     refresh_token: tokenData.refresh_token || existing.refresh_token || "",
@@ -3588,18 +3723,34 @@ function normalizeGoogleTokens(tokenData = {}) {
   };
 }
 
-function readGoogleTokens() {
+function readGoogleTokenStore() {
   try {
-    if (!fsSync.existsSync(GOOGLE_TOKEN_PATH)) return null;
-    return JSON.parse(fsSync.readFileSync(GOOGLE_TOKEN_PATH, "utf8"));
+    if (!fsSync.existsSync(GOOGLE_TOKEN_PATH)) return { users: {} };
+    const parsed = JSON.parse(fsSync.readFileSync(GOOGLE_TOKEN_PATH, "utf8"));
+    if (parsed.users && typeof parsed.users === "object") return { users: parsed.users };
+    return { users: { default: parsed } };
   } catch (_) {
-    return null;
+    return { users: {} };
   }
 }
 
-function writeGoogleTokens(tokens) {
+function readGoogleTokens(username = "default") {
+  const store = readGoogleTokenStore();
+  return store.users[String(username || "default")] || null;
+}
+
+function writeGoogleTokens(username, tokens) {
+  const store = readGoogleTokenStore();
+  store.users[String(username || "default")] = tokens;
   fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf8");
+  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
+}
+
+function deleteGoogleTokens(username) {
+  const store = readGoogleTokenStore();
+  delete store.users[String(username || "default")];
+  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: store.users || {} }, null, 2), "utf8");
 }
 
 function isQboEnabled() {
@@ -4163,8 +4314,8 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
   return { ...parsed, rowCount: parsed.sections.length, fetchedAt: new Date().toISOString() };
 }
 
-async function getGoogleAccessToken() {
-  let tokens = readGoogleTokens();
+async function getGoogleAccessToken(username = "default") {
+  let tokens = readGoogleTokens(username);
   if (!tokens) throw Object.assign(new Error("Google Drive is not connected."), { statusCode: 401, expose: true });
   if (tokens.access_token && Number(tokens.expiry_date || 0) > Date.now()) return tokens.access_token;
   if (!tokens.refresh_token) throw Object.assign(new Error("Google Drive refresh token is missing."), { statusCode: 401, expose: true });
@@ -4180,13 +4331,13 @@ async function getGoogleAccessToken() {
   });
   const data = await refresh.json().catch(() => ({}));
   if (!refresh.ok) throw Object.assign(new Error(data.error_description || data.error || "Could not refresh Google token."), { statusCode: 401, expose: true });
-  tokens = normalizeGoogleTokens({ ...data, refresh_token: tokens.refresh_token });
-  writeGoogleTokens(tokens);
+  tokens = normalizeGoogleTokens({ ...data, refresh_token: tokens.refresh_token }, username);
+  writeGoogleTokens(username, tokens);
   return tokens.access_token;
 }
 
-async function googleApiFetch(url, options = {}) {
-  const token = await getGoogleAccessToken();
+async function googleApiFetch(url, options = {}, username = "default") {
+  const token = await getGoogleAccessToken(username);
   return fetch(url, { ...options, headers: { ...(options.headers || {}), authorization: `Bearer ${token}` } });
 }
 
@@ -4213,45 +4364,45 @@ function driveFields() {
   return "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink),nextPageToken";
 }
 
-async function listDriveFolders(parentId = "root") {
+async function listDriveFolders(parentId = "root", username = "default") {
   const query = parentId === "shared-with-me"
     ? "sharedWithMe=true and trashed=false and mimeType='application/vnd.google-apps.folder'"
     : `'${parentId}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`;
   const q = encodeURIComponent(query);
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`, {}, username);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive folders."), { statusCode: res.status, expose: true });
   return data.files || [];
 }
 
-async function listDriveFiles(folderId = "root", fileTypes = [], pageToken = "") {
+async function listDriveFiles(folderId = "root", fileTypes = [], pageToken = "", username = "default") {
   const query = folderId === "shared-with-me"
     ? `sharedWithMe=true and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`
     : `'${folderId}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`;
   const q = encodeURIComponent(query);
   const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true${token}`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true${token}`, {}, username);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive files."), { statusCode: res.status, expose: true });
   return { files: data.files || [], nextPageToken: data.nextPageToken || null };
 }
 
-async function searchDriveFiles(query, fileTypes = []) {
+async function searchDriveFiles(query, fileTypes = [], username = "default") {
   const safeQuery = String(query || "").replace(/'/g, "\\'");
   const q = encodeURIComponent(`name contains '${safeQuery}' and trashed=false and mimeType!='application/vnd.google-apps.folder'${driveMimeFilter(fileTypes)}`);
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent(driveFields())}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`, {}, username);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not search Drive."), { statusCode: res.status, expose: true });
   return { files: data.files || [], nextPageToken: data.nextPageToken || null };
 }
 
-async function readDriveFile(fileId, fileName, mimeType) {
+async function readDriveFile(fileId, fileName, mimeType, username = "default") {
   if (!fileId) throw Object.assign(new Error("Missing Drive file id."), { statusCode: 400, expose: true });
   const exportMime = googleExportMimeType(mimeType);
   const url = exportMime
     ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent(exportMime)}`
     : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`;
-  const res = await googleApiFetch(url);
+  const res = await googleApiFetch(url, {}, username);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw Object.assign(new Error(data.error?.message || "Could not read Drive file."), { statusCode: res.status, expose: true });
@@ -4266,17 +4417,17 @@ async function readDriveFile(fileId, fileName, mimeType) {
   };
 }
 
-async function getDriveFileMetadata(fileId, fields = "id,name,mimeType") {
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}&supportsAllDrives=true`);
+async function getDriveFileMetadata(fileId, fields = "id,name,mimeType", username = "default") {
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(fields)}&supportsAllDrives=true`, {}, username);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not read Drive metadata."), { statusCode: res.status, expose: true });
   return data;
 }
 
-async function loadClientDataFromDriveFolder(folderId) {
-  const folderMeta = await getDriveFileMetadata(folderId, "id,name");
+async function loadClientDataFromDriveFolder(folderId, username = "default") {
+  const folderMeta = await getDriveFileMetadata(folderId, "id,name", username);
   const query = encodeURIComponent(`'${folderId}' in parents and trashed=false and (mimeType='text/plain' or mimeType='application/json' or mimeType='application/vnd.google-apps.document' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document')`);
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType)&orderBy=name&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType)&orderBy=name&pageSize=20&supportsAllDrives=true&includeItemsFromAllDrives=true`, {}, username);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not scan client folder."), { statusCode: res.status, expose: true });
   const files = data.files || [];
@@ -4299,7 +4450,7 @@ async function loadClientDataFromDriveFolder(folderId) {
     confidence: "low",
   };
   if (clientInfoFile) {
-    const content = await readDriveTextForClientInfo(clientInfoFile);
+    const content = await readDriveTextForClientInfo(clientInfoFile, username);
     Object.assign(clientData, parseClientInfoContent(content));
     clientData.sourceFile = clientInfoFile.name;
   }
@@ -4310,13 +4461,13 @@ async function loadClientDataFromDriveFolder(folderId) {
   return clientData;
 }
 
-async function loadClientDataFromDriveFile(filePayload = {}) {
+async function loadClientDataFromDriveFile(filePayload = {}, username = "default") {
   let file = filePayload;
   let content = "";
   if (filePayload.fileId) {
-    const meta = await getDriveFileMetadata(filePayload.fileId, "id,name,mimeType");
+    const meta = await getDriveFileMetadata(filePayload.fileId, "id,name,mimeType", username);
     file = { id: meta.id, name: meta.name, mimeType: meta.mimeType };
-    content = await readDriveTextForClientInfo(file);
+    content = await readDriveTextForClientInfo(file, username);
   } else if (filePayload.contentBase64) {
     const buffer = Buffer.from(String(filePayload.contentBase64 || ""), "base64");
     content = clientInfoBufferToText(buffer, filePayload.mimeType || filePayload.type || "", filePayload.name || "");
@@ -4338,12 +4489,12 @@ async function loadClientDataFromDriveFile(filePayload = {}) {
   };
 }
 
-async function readDriveTextForClientInfo(file) {
+async function readDriveTextForClientInfo(file, username = "default") {
   const exportMime = file.mimeType === "application/vnd.google-apps.document" ? "text/plain" : "";
   const url = exportMime
     ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export?mimeType=text/plain`
     : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`;
-  const res = await googleApiFetch(url);
+  const res = await googleApiFetch(url, {}, username);
   if (!res.ok) return "";
   const buffer = Buffer.from(await res.arrayBuffer());
   return clientInfoBufferToText(buffer, exportMime || file.mimeType, file.name);
@@ -4524,21 +4675,21 @@ function parseClientInfoContent(content) {
   return data;
 }
 
-async function readDriveFolder(folderId, folderName, fileTypes = []) {
+async function readDriveFolder(folderId, folderName, fileTypes = [], username = "default") {
   if (!folderId || folderId === "shared-with-me") throw Object.assign(new Error("Select a specific Drive folder first."), { statusCode: 400, expose: true });
   const files = [];
-  await collectDriveFolderFiles(folderId, folderName || "Drive folder", fileTypes, files, 0);
+  await collectDriveFolderFiles(folderId, folderName || "Drive folder", fileTypes, files, 0, username);
   return { folderName: folderName || "Drive folder", files, truncated: files.length >= MAX_DRIVE_FOLDER_FILES, maxFiles: MAX_DRIVE_FOLDER_FILES };
 }
 
-async function collectDriveFolderFiles(folderId, folderPath, fileTypes, files, depth) {
+async function collectDriveFolderFiles(folderId, folderPath, fileTypes, files, depth, username = "default") {
   if (files.length >= MAX_DRIVE_FOLDER_FILES || depth > 10) return;
   let pageToken = "";
   do {
-    const page = await listDriveFiles(folderId, fileTypes, pageToken);
+    const page = await listDriveFiles(folderId, fileTypes, pageToken, username);
     for (const item of page.files) {
       if (files.length >= MAX_DRIVE_FOLDER_FILES) return;
-      const downloaded = await readDriveFile(item.id, item.name, item.mimeType);
+      const downloaded = await readDriveFile(item.id, item.name, item.mimeType, username);
       downloaded.fileName = `${folderPath}/${downloaded.fileName}`;
       downloaded.driveFileId = item.id;
       downloaded.driveWebViewLink = item.webViewLink || "";
@@ -4547,10 +4698,10 @@ async function collectDriveFolderFiles(folderId, folderPath, fileTypes, files, d
     pageToken = page.nextPageToken || "";
   } while (pageToken && files.length < MAX_DRIVE_FOLDER_FILES);
 
-  const folders = await listDriveFolders(folderId);
+  const folders = await listDriveFolders(folderId, username);
   for (const folder of folders) {
     if (files.length >= MAX_DRIVE_FOLDER_FILES) return;
-    await collectDriveFolderFiles(folder.id, `${folderPath}/${folder.name}`, fileTypes, files, depth + 1);
+    await collectDriveFolderFiles(folder.id, `${folderPath}/${folder.name}`, fileTypes, files, depth + 1, username);
   }
 }
 
@@ -5105,6 +5256,7 @@ function handleClientSubresource(req, res, parts) {
   const db = readDb();
   const client = clientFromDbOr404(db, clientId, res);
   if (!client) return true;
+  if (!requireOwnerAccess(req, res, clientOwner(client))) return true;
 
   const collectionMap = {
     instructions: "permanentInstructions",
@@ -5143,6 +5295,7 @@ function handleClientSubresource(req, res, parts) {
       readJsonBody(req).then((payload) => {
         const document = saveClientDocument(client, payload);
         writeDb(db);
+        appendAuditLog(req, "client.document_added", { clientId: client.id, documentId: document.id, name: document.name });
         sendJson(res, 200, { document, client });
       }).catch((error) => sendJson(res, 400, { error: error.message || "Could not save document." }));
       return true;
@@ -5150,12 +5303,14 @@ function handleClientSubresource(req, res, parts) {
     if (req.method === "DELETE" && parts.length === 5) {
       if (!deleteCollectionItem(client, "documents", itemId)) { sendJson(res, 404, { error: "Document not found." }); return true; }
       writeDb(db);
+      appendAuditLog(req, "client.document_deleted", { clientId: client.id, documentId: itemId });
       sendJson(res, 200, { ok: true, client });
       return true;
     }
     if (req.method === "GET" && parts.length === 6 && parts[5] === "download") {
       const doc = (client.documents || []).find((item) => item.id === itemId);
       if (!doc) { sendJson(res, 404, { error: "Document not found." }); return true; }
+      appendAuditLog(req, "client.document_downloaded", { clientId: client.id, documentId: itemId, name: doc.name });
       if (doc.contentBase64) { sendJson(res, 200, { name: doc.name, contentBase64: doc.contentBase64 }); return true; }
       if (doc.localPath) {
         const absPath = path.resolve(ROOT, doc.localPath.replace(/^\.\//, ""));
@@ -5182,6 +5337,7 @@ function handleClientSubresource(req, res, parts) {
 }
 
 function handleClientApi(req, res, requestUrl) {
+  const username = req.user?.username || "unknown";
   const parts = requestUrl.pathname.split("/").filter(Boolean);
   if (parts.length >= 4 && handleClientSubresource(req, res, parts)) return;
   if (parts.length === 4 && parts[3] === "tax-software" && req.method === "PUT") {
@@ -5189,6 +5345,7 @@ function handleClientApi(req, res, requestUrl) {
       const db = readDb();
       const client = db.clients[parts[2]];
       if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      if (!requireOwnerAccess(req, res, clientOwner(client))) return;
       client.taxSoftware = normalizeTaxSoftware(payload);
       client.updatedAt = new Date().toISOString();
       writeDb(db);
@@ -5201,6 +5358,7 @@ function handleClientApi(req, res, requestUrl) {
       const db = readDb();
       const client = db.clients[parts[2]];
       if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      if (!requireOwnerAccess(req, res, clientOwner(client))) return;
       const softwareId = String(payload.softwareId || "").trim();
       const companyId = String(payload.companyId || "").trim();
       if (!softwareId || !companyId) { sendJson(res, 400, { error: "Missing accounting software or company." }); return; }
@@ -5221,6 +5379,7 @@ function handleClientApi(req, res, requestUrl) {
       const db = readDb();
       const client = db.clients[parts[2]];
       if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      if (!requireOwnerAccess(req, res, clientOwner(client))) return;
       const realmId = String(payload.realmId || "");
       const company = Object.values(readQboStore().users || {}).flatMap((user) => Object.values(user.companies || {})).find((item) => item.realmId === realmId);
       client.qboRealmId = realmId;
@@ -5236,6 +5395,7 @@ function handleClientApi(req, res, requestUrl) {
     const db = readDb();
     const client = db.clients[parts[2]];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
     delete client.qboRealmId;
     delete client.qboCompanyName;
     delete client.qboLinkedAt;
@@ -5246,16 +5406,17 @@ function handleClientApi(req, res, requestUrl) {
   }
   if (parts.length === 2 && req.method === "GET") {
     const db = readDb();
-    sendJson(res, 200, { clients: Object.values(db.clients).sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+    sendJson(res, 200, { clients: Object.values(db.clients).filter((client) => canAccessOwner(req, clientOwner(client))).sort((a, b) => String(a.name).localeCompare(String(b.name))) });
     return;
   }
   if (parts.length === 2 && req.method === "POST") {
     readJsonBody(req).then((payload) => {
       const db = readDb();
       const now = new Date().toISOString();
-      const client = { id: crypto.randomUUID(), ...pickClientFields(payload), name: String(payload.name || "Unnamed client").trim(), createdAt: now, updatedAt: now };
+      const client = { id: crypto.randomUUID(), ...pickClientFields(payload), name: String(payload.name || "Unnamed client").trim(), ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now };
       db.clients[client.id] = client;
       writeDb(db);
+      appendAuditLog(req, "client.created", { clientId: client.id, name: client.name });
       sendJson(res, 200, { client });
     }).catch((error) => sendJson(res, 400, { error: error.message || "Could not create client." }));
     return;
@@ -5264,6 +5425,7 @@ function handleClientApi(req, res, requestUrl) {
     const db = readDb();
     const client = db.clients[parts[2]];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
     sendJson(res, 200, { client, sessions: Object.values(db.sessions).filter((session) => session.clientId === client.id) });
     return;
   }
@@ -5272,8 +5434,10 @@ function handleClientApi(req, res, requestUrl) {
       const db = readDb();
       const client = db.clients[parts[2]];
       if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      if (!requireOwnerAccess(req, res, clientOwner(client))) return;
       Object.assign(client, pickClientFields(payload), { updatedAt: new Date().toISOString() });
       writeDb(db);
+      appendAuditLog(req, "client.updated", { clientId: client.id });
       sendJson(res, 200, { client });
     }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update client." }));
     return;
@@ -5726,6 +5890,7 @@ async function handleDatabaseDriveSyncApi(req, res, requestUrl) {
     const db = readDb();
     const client = db.clients[parts[3]];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
     sendJson(res, 200, { ok: true, folderId: client.driveFolderId || null, message: "Drive sync metadata recorded. Use the Drive picker to attach Drive-hosted files." });
     return;
   }
@@ -5737,12 +5902,14 @@ async function handleDatabaseDriveSyncApi(req, res, requestUrl) {
 }
 
 async function handleRequestsApi(req, res, requestUrl) {
+  const username = req.user?.username || "default";
   if (req.method === "POST" && requestUrl.pathname === "/api/requests/search-files") {
     const payload = await readJsonBody(req);
     const db = readDb();
     const client = db.clients[String(payload.clientId || "")];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
-    const results = await searchClientRequestFiles(client, payload);
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
+    const results = await searchClientRequestFiles(client, payload, username);
     sendJson(res, 200, { results, total: results.length, clientName: client.name });
     return;
   }
@@ -5751,7 +5918,8 @@ async function handleRequestsApi(req, res, requestUrl) {
     const db = readDb();
     const client = db.clients[String(payload.clientId || "")];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
-    const result = await readClientRequestFiles(client, Array.isArray(payload.files) ? payload.files : []);
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
+    const result = await readClientRequestFiles(client, Array.isArray(payload.files) ? payload.files : [], username);
     sendJson(res, 200, result);
     return;
   }
@@ -5764,6 +5932,7 @@ async function handleRequestsApi(req, res, requestUrl) {
     const db = readDb();
     const client = db.clients[String(payload.clientId || "")];
     if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+    if (!requireOwnerAccess(req, res, clientOwner(client))) return;
     const sentAt = payload.sentAt || new Date().toISOString();
     const filesSent = Array.isArray(payload.filesSent) ? payload.filesSent : [];
     client.communicationLog = Array.isArray(client.communicationLog) ? client.communicationLog : [];
@@ -5779,13 +5948,14 @@ async function handleRequestsApi(req, res, requestUrl) {
     });
     client.updatedAt = new Date().toISOString();
     writeDb(db);
+    appendAuditLog(req, "client_request.logged", { clientId: client.id, filesSent: filesSent.length });
     sendJson(res, 200, { ok: true, client });
     return;
   }
   sendJson(res, 404, { error: "Client request route not found." });
 }
 
-async function searchClientRequestFiles(client, payload = {}) {
+async function searchClientRequestFiles(client, payload = {}, username = "default") {
   const query = String(payload.query || "").trim().toLowerCase();
   const sources = Array.isArray(payload.sources) && payload.sources.length ? payload.sources : ["database", "drive"];
   const fileTypes = Array.isArray(payload.fileTypes) && payload.fileTypes.length ? payload.fileTypes.map((item) => String(item).toLowerCase()) : ["all"];
@@ -5818,12 +5988,12 @@ async function searchClientRequestFiles(client, payload = {}) {
     });
   }
 
-  if (sources.includes("drive") && client.driveFolderId && isGoogleDriveEnabled() && readGoogleTokens()) {
+  if (sources.includes("drive") && client.driveFolderId && isGoogleDriveEnabled() && readGoogleTokens(username)) {
     try {
       const safeTerms = query ? query.split(/\s+/).filter(Boolean) : [];
       const queryFilter = safeTerms.length ? ` and (${safeTerms.map((term) => `name contains '${term.replace(/'/g, "\\'")}'`).join(" or ")})` : "";
       const q = encodeURIComponent(`'${client.driveFolderId}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'${queryFilter}${driveMimeFilter(fileTypes)}`);
-      const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent("files(id,name,mimeType,size,modifiedTime,webViewLink)")}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`);
+      const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent("files(id,name,mimeType,size,modifiedTime,webViewLink)")}&orderBy=modifiedTime desc&pageSize=50&supportsAllDrives=true&includeItemsFromAllDrives=true`, {}, username);
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const existingDriveIds = new Set((client.documents || []).map((doc) => doc.driveFileId).filter(Boolean));
@@ -5891,13 +6061,13 @@ function extractYearFromName(filename = "") {
   return match ? match[1] : null;
 }
 
-async function readClientRequestFiles(client, files) {
+async function readClientRequestFiles(client, files, username = "default") {
   const output = [];
   const errors = [];
   for (const item of files) {
     try {
       if (item.source === "drive_only") {
-        const file = await readDriveFile(item.driveFileId, item.name || "drive-file", item.mimeType || "");
+        const file = await readDriveFile(item.driveFileId, item.name || "drive-file", item.mimeType || "", username);
         output.push({ name: file.fileName, mimeType: file.mimeType, contentBase64: file.contentBase64, size: file.sizeBytes });
         continue;
       }
@@ -5915,7 +6085,7 @@ async function readClientRequestFiles(client, files) {
         continue;
       }
       if (doc.driveFileId) {
-        const file = await readDriveFile(doc.driveFileId, doc.name, doc.mimeType || "");
+        const file = await readDriveFile(doc.driveFileId, doc.name, doc.mimeType || "", username);
         output.push({ name: file.fileName, mimeType: file.mimeType, contentBase64: file.contentBase64, size: file.sizeBytes });
         continue;
       }
@@ -5973,19 +6143,24 @@ function buildClientRequestEmailSystemPrompt() {
 }
 
 function handleSessionApi(req, res, requestUrl) {
+  const username = req.user?.username || "unknown";
   const parts = requestUrl.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && req.method === "GET") {
-    sendJson(res, 200, { sessions: listSessionsWithClients(readDb()) });
+    const db = readDb();
+    sendJson(res, 200, { sessions: listSessionsWithClients(db).filter((session) => canAccessOwner(req, sessionOwner(session, db))) });
     return;
   }
   if (parts.length === 2 && req.method === "POST") {
     readJsonBody(req).then((payload) => {
       const db = readDb();
       const client = getOrCreateClient(db, payload.client || payload);
+      client.ownerUsername = client.ownerUsername || username;
+      client.createdBy = client.createdBy || username;
       const now = new Date().toISOString();
-      const session = normalizeSession({ ...payload, id: crypto.randomUUID(), clientId: client.id, returnType: payload.returnType || client.returnType || "", createdAt: now, updatedAt: now });
+      const session = normalizeSession({ ...payload, id: crypto.randomUUID(), clientId: client.id, returnType: payload.returnType || client.returnType || "", ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now });
       db.sessions[session.id] = session;
       writeDb(db);
+      appendAuditLog(req, "session.created", { sessionId: session.id, clientId: client.id });
       sendJson(res, 200, { session, client });
     }).catch((error) => sendJson(res, 400, { error: error.message || "Could not create session." }));
     return;
@@ -5994,6 +6169,7 @@ function handleSessionApi(req, res, requestUrl) {
     const db = readDb();
     const session = db.sessions[parts[2]];
     if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+    if (!requireOwnerAccess(req, res, sessionOwner(session, db))) return;
     sendJson(res, 200, { session, client: db.clients[session.clientId] || null });
     return;
   }
@@ -6002,11 +6178,13 @@ function handleSessionApi(req, res, requestUrl) {
       const db = readDb();
       const session = db.sessions[parts[2]];
       if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+      if (!requireOwnerAccess(req, res, sessionOwner(session, db))) return;
       Object.assign(session, normalizeSessionUpdate(payload), { updatedAt: new Date().toISOString() });
       session.issues = countSessionIssues(session);
       if (payload.client && db.clients[session.clientId]) Object.assign(db.clients[session.clientId], pickClientFields(payload.client), { updatedAt: new Date().toISOString() });
       if (payload.deliverableSent && db.clients[session.clientId]) appendClientDeliverableRecord(db.clients[session.clientId], session, payload.deliverableSent);
       writeDb(db);
+      appendAuditLog(req, "session.updated", { sessionId: session.id, clientId: session.clientId });
       sendJson(res, 200, { session, client: db.clients[session.clientId] || null });
     }).catch((error) => sendJson(res, 400, { error: error.message || "Could not update session." }));
     return;
@@ -6014,8 +6192,10 @@ function handleSessionApi(req, res, requestUrl) {
   if (parts.length === 3 && req.method === "DELETE") {
     const db = readDb();
     if (!db.sessions[parts[2]]) { sendJson(res, 404, { error: "Session not found." }); return; }
+    if (!requireOwnerAccess(req, res, sessionOwner(db.sessions[parts[2]], db))) return;
     delete db.sessions[parts[2]];
     writeDb(db);
+    appendAuditLog(req, "session.deleted", { sessionId: parts[2] });
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -6024,6 +6204,7 @@ function handleSessionApi(req, res, requestUrl) {
       const db = readDb();
       const session = db.sessions[parts[2]];
       if (!session) { sendJson(res, 404, { error: "Session not found." }); return; }
+      if (!requireOwnerAccess(req, res, sessionOwner(session, db))) return;
       session.resolvedIssues = Array.isArray(session.resolvedIssues) ? session.resolvedIssues : [];
       session.resolvedIssues.push({ issueIndex: Number(payload.issueIndex), resolution: String(payload.resolution || ""), resolvedAt: new Date().toISOString() });
       session.issues = countSessionIssues(session);
@@ -6037,11 +6218,12 @@ function handleSessionApi(req, res, requestUrl) {
 }
 
 async function handleDriveApi(req, res, requestUrl) {
+  const username = req.user?.username || "default";
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/status") {
-    const tokens = readGoogleTokens();
+    const tokens = readGoogleTokens(username);
     const status = { enabled: isGoogleDriveEnabled(), connected: Boolean(tokens?.refresh_token || tokens?.access_token), email: "" };
     if (status.enabled && status.connected) {
-      const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo").then((r) => r.ok ? r.json() : {}).catch(() => ({}));
+      const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username).then((r) => r.ok ? r.json() : {}).catch(() => ({}));
       status.email = profile.email || "";
     }
     sendJson(res, 200, status);
@@ -6049,11 +6231,11 @@ async function handleDriveApi(req, res, requestUrl) {
   }
 
   if (!isGoogleDriveEnabled()) { sendJson(res, 503, { enabled: false, connected: false, error: "Google Drive is not configured." }); return; }
-  if (!readGoogleTokens()) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
+  if (!readGoogleTokens(username)) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
 
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/folders") {
     const parentId = requestUrl.searchParams.get("parentId") || "root";
-    const folders = await listDriveFolders(parentId);
+    const folders = await listDriveFolders(parentId, username);
     sendJson(res, 200, { folders });
     return;
   }
@@ -6061,27 +6243,27 @@ async function handleDriveApi(req, res, requestUrl) {
     const folderId = requestUrl.searchParams.get("folderId") || "root";
     const fileTypes = parseDriveFileTypes(requestUrl.searchParams.get("fileTypes"));
     const pageToken = requestUrl.searchParams.get("pageToken") || "";
-    const payload = await listDriveFiles(folderId, fileTypes, pageToken);
+    const payload = await listDriveFiles(folderId, fileTypes, pageToken, username);
     sendJson(res, 200, payload);
     return;
   }
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/search") {
     const q = requestUrl.searchParams.get("q") || "";
     const fileTypes = parseDriveFileTypes(requestUrl.searchParams.get("fileTypes"));
-    const payload = await searchDriveFiles(q, fileTypes);
+    const payload = await searchDriveFiles(q, fileTypes, username);
     sendJson(res, 200, payload);
     return;
   }
   if (req.method === "POST" && requestUrl.pathname === "/api/drive/read-file") {
     const payload = await readJsonBody(req);
-    const file = await readDriveFile(payload.fileId, payload.fileName, payload.mimeType);
+    const file = await readDriveFile(payload.fileId, payload.fileName, payload.mimeType, username);
     sendJson(res, 200, file);
     return;
   }
   if (req.method === "POST" && requestUrl.pathname === "/api/drive/read-folder") {
     const payload = await readJsonBody(req);
     const fileTypes = parseDriveFileTypes(payload.fileTypes);
-    const result = await readDriveFolder(payload.folderId, payload.folderName, fileTypes);
+    const result = await readDriveFolder(payload.folderId, payload.folderName, fileTypes, username);
     sendJson(res, 200, result);
     return;
   }
@@ -7248,6 +7430,7 @@ async function handleDeliverableEmailDraft(req, res) {
 }
 
 async function handleDeliverableLoadClientFolder(req, res) {
+  const username = req.user?.username || "default";
   const payload = await readJsonBody(req);
   const folderId = String(payload.folderId || "").trim();
   const fileId = String(payload.fileId || payload.file?.driveFileId || "").trim();
@@ -7260,10 +7443,10 @@ async function handleDeliverableLoadClientFolder(req, res) {
         fileId,
         mimeType: filePayload?.mimeType || filePayload?.type || payload.mimeType,
         name: filePayload?.name || payload.fileName,
-      }));
+      }, username));
       return;
     }
-    sendJson(res, 200, await loadClientDataFromDriveFolder(folderId));
+    sendJson(res, 200, await loadClientDataFromDriveFolder(folderId, username));
   } catch (error) {
     sendJson(res, error.statusCode || 500, { error: error.expose ? error.message : "Could not read the client info source." });
   }
@@ -7294,8 +7477,8 @@ async function handleDeliverableGenerateDraft(req, res) {
   });
 }
 
-async function handleDeliverableGmailStatus(_req, res) {
-  const status = await gmailAuthorizationStatus();
+async function handleDeliverableGmailStatus(req, res) {
+  const status = await gmailAuthorizationStatus(req.user?.username || "default");
   sendJson(res, 200, { ...status, enabled: isGoogleDriveEnabled() });
 }
 
@@ -7314,7 +7497,8 @@ async function handleDeliverableSendGmail(req, res) {
     sendJson(res, 400, { error: "Total attachments exceed Gmail's 25MB limit. Consider sending Drive links instead." });
     return;
   }
-  const gmailStatus = await gmailAuthorizationStatus();
+  const username = req.user?.username || "default";
+  const gmailStatus = await gmailAuthorizationStatus(username);
   if (!gmailStatus.authorized) {
     sendJson(res, 403, { error: "Gmail send permission is not authorized. Reconnect Google and grant Gmail permission." });
     return;
@@ -7332,12 +7516,13 @@ async function handleDeliverableSendGmail(req, res) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ raw: encodedEmail }),
-  });
+  }, username);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     sendJson(res, response.status, { error: data.error?.message || "Gmail could not send the email." });
     return;
   }
+  appendAuditLog(req, "gmail.sent", { to: payload.to, attachmentCount: (payload.attachments || []).length });
   sendJson(res, 200, { ok: true, messageId: data.id, threadId: data.threadId });
 }
 
@@ -7352,7 +7537,8 @@ async function handleDeliverableCreateGmailDraft(req, res) {
     sendJson(res, 400, { error: "Total attachments exceed Gmail's 25MB limit. Consider sending Drive links instead." });
     return;
   }
-  const gmailStatus = await gmailAuthorizationStatus();
+  const username = req.user?.username || "default";
+  const gmailStatus = await gmailAuthorizationStatus(username);
   if (!gmailStatus.authorized) {
     sendJson(res, 403, { error: "Gmail permission is not authorized. Reconnect Google and grant Gmail permission." });
     return;
@@ -7370,13 +7556,14 @@ async function handleDeliverableCreateGmailDraft(req, res) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ message: { raw: encodedEmail } }),
-  });
+  }, username);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     sendJson(res, response.status, { error: data.error?.message || "Gmail could not create the draft." });
     return;
   }
   const draftId = data.id || "";
+  appendAuditLog(req, "gmail.draft_created", { to: payload.to, attachmentCount: (payload.attachments || []).length });
   sendJson(res, 200, {
     ok: true,
     draftId,
@@ -8741,18 +8928,18 @@ function normalizeEmailDraft(parsed, raw) {
   };
 }
 
-async function googleProfileEmail() {
-  const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo").then((r) => r.ok ? r.json() : {});
+async function googleProfileEmail(username = "default") {
+  const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username).then((r) => r.ok ? r.json() : {});
   return profile.email || null;
 }
 
-async function gmailAuthorizationStatus() {
-  const tokens = readGoogleTokens();
+async function gmailAuthorizationStatus(username = "default") {
+  const tokens = readGoogleTokens(username);
   if (!tokens || !isGoogleDriveEnabled()) return { authorized: false, email: null };
   const scopes = String(tokens.scope || "");
-  const email = await googleProfileEmail().catch(() => null);
+  const email = await googleProfileEmail(username).catch(() => null);
   if (!scopes.includes(GOOGLE_GMAIL_COMPOSE_SCOPE)) return { authorized: false, email };
-  const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile").catch(() => ({ ok: false }));
+  const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username).catch(() => ({ ok: false }));
   if (!profileRes.ok) return { authorized: true, email };
   const profile = await profileRes.json().catch(() => ({}));
   return { authorized: true, email: profile.emailAddress || email };
@@ -9405,7 +9592,20 @@ function redirect(res, location) {
 function setSecurityHeaders(res) {
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
-  res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+  res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
+  res.setHeader("content-security-policy", [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join("; "));
   res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
 }
 
