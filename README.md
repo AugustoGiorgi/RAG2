@@ -22,9 +22,9 @@ MAX_FILES_PER_REVIEW=15
 KNOWLEDGE_BASE_DIR=/app/knowledge_base
 REVIEW_EXAMPLES_DIR=/app/review_examples
 CLAUDE_MODEL=claude-sonnet-4-6
-ENABLE_CLAUDE_WEB_SEARCH=false
+ENABLE_CLAUDE_WEB_SEARCH=true
 CLAUDE_WEB_SEARCH_MAX_USES=3
-CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,ftb.ca.gov,tax.ny.gov
+CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.gov
 ```
 
 `ANTHROPIC_API_KEY`, `AUTH_SECRET`, and `AUTH_USERS_JSON` are required for production. The other variables are optional.
@@ -92,24 +92,25 @@ Web research is controlled only by backend environment variables:
 ```text
 ENABLE_CLAUDE_WEB_SEARCH=true
 CLAUDE_WEB_SEARCH_MAX_USES=3
-CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,ftb.ca.gov,tax.ny.gov
+CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.gov
 ```
 
 This requires Anthropic web search access on the account and a model that supports the tool. If web research is disabled, Claude is instructed not to claim it searched the internet.
 
 ## Gmail Draft Setup
 
-For public OAuth access with the least Gmail friction, request only the scopes needed to create drafts:
+For Google Drive file access and Gmail draft creation, request these scopes:
 
 ```text
 GOOGLE_CLIENT_ID=your_google_oauth_client_id
 GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
 GOOGLE_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
-GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.compose
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose
 ENABLE_GMAIL_SEND=false
 ```
 
 `gmail.compose` lets the app create a draft for the user to review and send in Gmail. Direct sending requires `gmail.send` and should only be enabled after Google OAuth verification.
+`drive.readonly` lets the app browse and read files selected from Google Drive without modifying them. Users who connected Google before this scope was added must reconnect once.
 
 ## QuickBooks Online Setup
 

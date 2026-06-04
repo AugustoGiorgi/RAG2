@@ -87,7 +87,7 @@ const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
-const GOOGLE_OAUTH_SCOPE = (process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
+const GOOGLE_OAUTH_SCOPE = (process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
   .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean).join(" ");
 const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "false").toLowerCase() === "true";
 const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
@@ -3901,6 +3901,11 @@ function isGoogleDriveEnabled() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
+function googleTokenHasScope(tokens, scope) {
+  const grantedScopes = String(tokens?.scope || "").split(/\s+/).filter(Boolean);
+  return grantedScopes.includes(scope);
+}
+
 function normalizeGoogleTokens(tokenData = {}, username = "default") {
   const existing = readGoogleTokens(username) || {};
   return {
@@ -6413,7 +6418,15 @@ async function handleDriveApi(req, res, requestUrl) {
   const username = req.user?.username || "default";
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/status") {
     const tokens = readGoogleTokens(username);
-    const status = { enabled: isGoogleDriveEnabled(), connected: Boolean(tokens?.refresh_token || tokens?.access_token), email: "" };
+    const hasToken = Boolean(tokens?.refresh_token || tokens?.access_token);
+    const driveAuthorized = hasToken && googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE);
+    const status = {
+      enabled: isGoogleDriveEnabled(),
+      connected: driveAuthorized,
+      driveAuthorized,
+      reconnectRequired: hasToken && !driveAuthorized,
+      email: "",
+    };
     if (status.enabled && status.connected) {
       const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username).then((r) => r.ok ? r.json() : {}).catch(() => ({}));
       status.email = profile.email || "";
@@ -7796,7 +7809,12 @@ async function handleResearchChat(req, res) {
 
   const answer = extractResearchText(result.data);
   const thinking = extractResearchThinking(result.data);
-  const sources = parseSourcesFromAnswer(answer);
+  const sources = extractResearchSources(result.data, answer);
+  const webSearchUsed = (result.data.content || []).some((block) =>
+    block?.type === "web_search_tool_result" ||
+    (block?.type === "server_tool_use" && block?.name === "web_search") ||
+    (Array.isArray(block?.citations) && block.citations.some((citation) => citation?.url))
+  );
   const nextHistory = [...history, { role: "user", content: question }, { role: "assistant", content: answer }].slice(-20);
   researchHistories.set(username, nextHistory);
   logClaudeCost(req, result, "research", "research", { context: payload.context || {}, question }, startedAt);
@@ -7811,6 +7829,7 @@ async function handleResearchChat(req, res) {
     outputTokens: Number(usage.output_tokens || 0),
     thinkingTokens: Number(usage.output_tokens || 0),
     totalCost: cost.totalCost,
+    webSearchUsed,
   });
 }
 
@@ -7883,7 +7902,7 @@ function extractResearchThinking(data) {
 
 function parseSourcesFromAnswer(answerText) {
   const sources = [];
-  const sourcePattern = /\[(\d+)\]\s+(.+?)(?:\s+[â€”-]\s+(.+?))?\n\s+URL:\s+(https?:\/\/\S+)\n\s+Relevance:\s+(.+?)(?=\n\[\d+\]|\n\*\*|$)/gs;
+  const sourcePattern = /\[(\d+)\]\s+(.+?)(?:\s+[\u2013\u2014-]\s+(.+?))?\n\s+URL:\s+(https?:\/\/\S+)\n\s+Relevance:\s+(.+?)(?=\n\[\d+\]|\n\*\*|$)/gs;
   let match;
   while ((match = sourcePattern.exec(String(answerText || ""))) !== null) {
     sources.push({
@@ -7895,6 +7914,33 @@ function parseSourcesFromAnswer(answerText) {
     });
   }
   return sources;
+}
+
+function extractResearchSources(data, answerText) {
+  const sources = parseSourcesFromAnswer(answerText);
+  const seen = new Set(sources.map((source) => source.url));
+
+  function addSource(candidate = {}) {
+    const url = String(candidate.url || "").trim().replace(/[),.]+$/, "");
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) return;
+    seen.add(url);
+    sources.push({
+      index: sources.length + 1,
+      title: String(candidate.title || candidate.name || new URL(url).hostname).trim(),
+      section: String(candidate.section || "").trim(),
+      url,
+      relevance: String(candidate.relevance || candidate.cited_text || "Primary source consulted during web research.").trim(),
+    });
+  }
+
+  for (const block of data?.content || []) {
+    for (const citation of block?.citations || []) addSource(citation);
+    if (block?.type === "web_search_tool_result" && Array.isArray(block.content)) {
+      for (const result of block.content) addSource(result);
+    }
+  }
+
+  return sources.map((source, index) => ({ ...source, index: index + 1 }));
 }
 
 function buildResearchQuestion(question, context = {}) {
@@ -9793,6 +9839,7 @@ function setSecurityHeaders(res) {
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
     "connect-src 'self'",
+    "worker-src 'self' blob:",
     "frame-ancestors 'none'",
     "object-src 'none'",
     "base-uri 'self'",

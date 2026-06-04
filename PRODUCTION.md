@@ -30,13 +30,15 @@ MAX_FILES_PER_REVIEW=15
 KNOWLEDGE_BASE_DIR=/app/knowledge_base
 REVIEW_EXAMPLES_DIR=/app/review_examples
 CLAUDE_MODEL=claude-sonnet-4-6
-ENABLE_CLAUDE_WEB_SEARCH=false
+ENABLE_CLAUDE_WEB_SEARCH=true
 CLAUDE_WEB_SEARCH_MAX_USES=3
-CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,ftb.ca.gov,tax.ny.gov
+CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.gov
 GOOGLE_REDIRECT_URI=https://your-production-domain.com/auth/google/callback
-GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.compose
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose
 ENABLE_GMAIL_SEND=false
 ```
+
+Existing Google connections created without `drive.readonly` must reconnect once before Drive folders and files can be read.
 
 ## Runtime Endpoints
 

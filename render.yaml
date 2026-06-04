@@ -22,11 +22,11 @@ services:
       - key: REVIEW_EXAMPLES_DIR
         value: /app/review_examples
       - key: ENABLE_CLAUDE_WEB_SEARCH
-        value: "false"
+        value: "true"
       - key: CLAUDE_WEB_ALLOWED_DOMAINS
-        value: irs.gov,ftb.ca.gov,tax.ny.gov
+        value: irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.gov
       - key: GOOGLE_OAUTH_SCOPES
-        value: https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.compose
+        value: https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose
       - key: ENABLE_GMAIL_SEND
         value: "false"
       - key: ENABLE_CLIENT_FILE_PERSISTENCE
