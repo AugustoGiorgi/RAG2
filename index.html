@@ -1824,7 +1824,7 @@
               </div>
               <textarea id="databaseGlobalInstructions" rows="8" placeholder="Enter firm-wide instructions that always apply."></textarea>
               <div class="database-actions">
-                <span id="databaseGlobalTokenEstimate" class="database-muted">~0 tokens included in every AI call</span>
+                <span id="databaseGlobalTokenEstimate" class="database-muted admin-only" hidden>~0 tokens included in every AI call</span>
                 <button id="databaseSaveGlobalInstructions" class="primary-button small-button" type="button">Save</button>
               </div>
             </article>
@@ -1905,8 +1905,16 @@
                 <select id="databaseFeedbackTab">
                   <option value="review">Review</option>
                   <option value="preparation">Preparation</option>
+                  <option value="preparer">Preparer</option>
+                  <option value="deliverable">Deliverable</option>
+                  <option value="estimates">Estimated Taxes</option>
+                  <option value="tracker">Tracker</option>
+                  <option value="tax_research">Tax Research</option>
                   <option value="notices">Notices</option>
                   <option value="diagnostics">Diagnostics</option>
+                  <option value="client_requests">Client Requests</option>
+                  <option value="client_presentations">Client Presentations</option>
+                  <option value="misc_calculations">Misc Calculations</option>
                   <option value="general">General</option>
                 </select>
                 <select id="databaseFeedbackType">

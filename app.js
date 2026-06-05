@@ -2954,14 +2954,16 @@ function renderResearchAnswer(data) {
     </div>` : "";
   const sourcesHtml = renderResearchSources(data.sources || []);
   const totalTokens = Number(data.inputTokens || 0) + Number(data.outputTokens || 0);
+  const adminMeta = currentUser.role === "admin"
+    ? `<span>${Math.round(totalTokens / 1000)}K tokens</span><span>~$${Number(data.totalCost || 0).toFixed(4)}</span>`
+    : "";
   return `
     ${thinkingHtml}
     <div class="research-answer-text">${formatResearchAnswer(data.answer || "")}</div>
     ${sourcesHtml}
     <div class="research-answer-footer">
       <span>Model: ${escapeHtml(data.model || "claude")}</span>
-      <span>${Math.round(totalTokens / 1000)}K tokens</span>
-      <span>~$${Number(data.totalCost || 0).toFixed(4)}</span>
+      ${adminMeta}
       <span class="research-disclaimer">Always verify with primary sources.</span>
     </div>`;
 }
@@ -5872,7 +5874,7 @@ async function ensureEntryGuide(options = {}) {
   const taxYear = document.getElementById("taxYear")?.value || document.getElementById("prepCurrentYear")?.value || new Date().getFullYear();
   const outputTokens = entryGuideOutputTokens(returnType);
   const estimate = estimateObjectCost(entryGuideRequestPayload(software, returnType, taxYear), outputTokens);
-  const ok = options.skipConfirm || window.confirm(`Generating the entry guide uses approximately ${formatNumber(estimate.inputTokens + estimate.outputTokens)} tokens (~$${Number(estimate.totalUsd || 0).toFixed(4)} USD).\n\nGenerate anyway?`);
+  const ok = options.skipConfirm || currentUser.role !== "admin" || window.confirm(`Generating the entry guide uses approximately ${formatNumber(estimate.inputTokens + estimate.outputTokens)} tokens (~$${Number(estimate.totalUsd || 0).toFixed(4)} USD).\n\nGenerate anyway?`);
   if (!ok) throw new Error("Entry guide generation skipped.");
 
   updateEntryGuideStatus(`Generating ${entryGuideSoftwareName(software)} entry guide...`);
@@ -7512,8 +7514,178 @@ function parseStructuredReview(raw) {
       const parsed = JSON.parse(cleaned);
       if (parsed && typeof parsed === "object") return parsed;
     } catch (_) {}
+    try {
+      const repaired = repairJsonTextForParsing(cleaned);
+      const parsed = JSON.parse(repaired);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (_) {}
   }
-  return null;
+  return parseJsonLikeReview(text);
+}
+
+function repairJsonTextForParsing(text) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of String(text || "")) {
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      output += char;
+      continue;
+    }
+    if (inString && char === "\n") {
+      output += "\\n";
+      continue;
+    }
+    if (inString && char === "\r") {
+      continue;
+    }
+    if (inString && char === "\t") {
+      output += "\\t";
+      continue;
+    }
+    output += char;
+  }
+  return output.replace(/,\s*([}\]])/g, "$1");
+}
+
+function parseJsonLikeReview(text) {
+  const raw = String(text || "");
+  if (!/"executiveSummary"|"issues"|"documentSummary"/.test(raw)) return null;
+  const executiveSummary = extractJsonLikeString(raw, "executiveSummary") || extractJsonLikeString(raw, "summary");
+  const documentSummaryBlock = extractJsonLikeArrayBlock(raw, "documentSummary");
+  const documentSummary = documentSummaryBlock ? extractJsonLikeArrayStrings(documentSummaryBlock) : [];
+  const issuesBlock = raw.slice(Math.max(0, raw.indexOf('"issues"')));
+  const issueChunks = issuesBlock.split(/\{\s*"priority"\s*:/).slice(1);
+  const issues = issueChunks.map((chunk) => {
+    const block = `{"priority":${chunk}`;
+    return {
+      priority: extractJsonLikeString(block, "priority") || "Info",
+      areaReviewed: extractJsonLikeString(block, "areaReviewed"),
+      formOrSchedule: extractJsonLikeString(block, "formOrSchedule"),
+      issueDescription: extractJsonLikeString(block, "issueDescription"),
+      evidence: extractJsonLikeString(block, "evidence"),
+      whyItMatters: extractJsonLikeString(block, "whyItMatters"),
+      recommendedAction: extractJsonLikeString(block, "recommendedAction"),
+      reviewerComment: extractJsonLikeString(block, "reviewerComment"),
+      source: extractJsonLikeString(block, "source"),
+      needsMoreInfo: extractJsonLikeString(block, "needsMoreInfo"),
+    };
+  }).filter((issue) => issue.issueDescription || issue.areaReviewed || issue.formOrSchedule);
+  if (!executiveSummary && !documentSummary.length && !issues.length) return null;
+  return {
+    executiveSummary,
+    documentSummary,
+    issues,
+    finalConclusion: extractJsonLikeString(raw, "finalConclusion") || "",
+    missingInformation: extractJsonLikeArrayStrings(extractJsonLikeArrayBlock(raw, "missingInformation") || ""),
+    questions: extractJsonLikeArrayStrings(extractJsonLikeArrayBlock(raw, "questions") || ""),
+    reviewerComments: extractJsonLikeArrayStrings(extractJsonLikeArrayBlock(raw, "reviewerComments") || ""),
+  };
+}
+
+function extractJsonLikeString(text, key) {
+  const marker = `"${key}"`;
+  const start = String(text || "").indexOf(marker);
+  if (start < 0) return "";
+  const colon = text.indexOf(":", start + marker.length);
+  if (colon < 0) return "";
+  let quote = text.indexOf('"', colon + 1);
+  if (quote < 0) return "";
+  let output = "";
+  let escaped = false;
+  for (let index = quote + 1; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      output += char === "n" ? "\n" : char === "t" ? "\t" : char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') return output.trim();
+    output += char;
+  }
+  return output.trim();
+}
+
+function extractJsonLikeArrayBlock(text, key) {
+  const marker = `"${key}"`;
+  const start = String(text || "").indexOf(marker);
+  if (start < 0) return "";
+  const open = text.indexOf("[", start + marker.length);
+  if (open < 0) return "";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = open; index < text.length; index += 1) {
+    const char = text[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "[") depth += 1;
+    if (char === "]") {
+      depth -= 1;
+      if (depth === 0) return text.slice(open, index + 1);
+    }
+  }
+  return text.slice(open);
+}
+
+function extractJsonLikeArrayStrings(block) {
+  const text = String(block || "");
+  const values = [];
+  let inString = false;
+  let escaped = false;
+  let current = "";
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (!inString) {
+      if (char === '"') {
+        inString = true;
+        current = "";
+      }
+      continue;
+    }
+    if (escaped) {
+      current += char === "n" ? "\n" : char === "t" ? "\t" : char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      values.push(current.trim());
+      inString = false;
+      continue;
+    }
+    current += char;
+  }
+  return values.filter(Boolean);
 }
 
 function jsonToReadableText(raw) {
@@ -7821,6 +7993,7 @@ function renderStringList(title, items) {
 }
 
 function renderCostSummary(payload) {
+  if (currentUser.role !== "admin") return "";
   const cost = payload.costEstimate;
   if (!cost) return "";
   return `
@@ -7851,7 +8024,7 @@ async function downloadReview(type) {
 }
 
 function toCleanWrittenReview(response, metadata = {}) {
-  const structured = response?.structured;
+  const structured = response?.structured || parseStructuredReview(response?.review || "") || (response?.issues || response?.executiveSummary ? response : null);
   if (!structured) return safeText(response?.review) || "";
   const lines = [
     "RAG Tax AI",
@@ -7901,12 +8074,23 @@ function toCleanWrittenReview(response, metadata = {}) {
 function addCleanPlainList(lines, items, label) {
   lines.push("", label === "QUESTION" ? "OPEN QUESTIONS" : label === "VERIFIED" ? "CHECKLIST - ITEMS VERIFIED AS CORRECT" : label === "DOCUMENT" ? "DOCUMENTS REVIEWED" : "MISSING INFORMATION");
   lines.push("-".repeat(lines[lines.length - 1].length));
-  const cleanItems = Array.isArray(items) ? items.map(stripDocumentPrefix).filter(Boolean) : [];
+  const cleanItems = Array.isArray(items) ? items.map(cleanReviewListItem).filter(Boolean) : [];
   if (!cleanItems.length) {
     lines.push(`- [${label}] None noted.`);
     return;
   }
   cleanItems.forEach((item) => lines.push(`- [${label}] ${item}`));
+}
+
+function cleanReviewListItem(item) {
+  if (item === null || item === undefined) return "";
+  if (typeof item !== "object") return stripDocumentPrefix(item);
+  const preferred = item.question || item.comment || item.summary || item.description || item.item || item.document || item.name || item.title || item.missingItem || item.action;
+  if (preferred) return stripDocumentPrefix(preferred);
+  return Object.entries(item)
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim())
+    .map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ")}: ${safeText(value)}`)
+    .join("; ");
 }
 
 function toWrittenReview(response, metadata) {
@@ -8583,6 +8767,12 @@ function preflightCostMessage(cost, operationName) {
 
 function showPreflightCost(element, cost, operationName = "this operation") {
   if (!element) return;
+  if (currentUser.role !== "admin") {
+    element.textContent = "";
+    element.hidden = true;
+    return;
+  }
+  element.hidden = false;
   element.textContent = preflightCostMessage(cost, operationName);
 }
 
