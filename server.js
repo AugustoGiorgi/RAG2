@@ -6659,18 +6659,65 @@ async function handleReview(req, res) {
 
   const raw = extractText(result.data);
 
-  const structured = parseClaudeJson(raw);
-  const savedReviewHistory = saveReviewHistoryFromResult(payload, structured, raw);
+  let structured = parseClaudeJson(raw);
+  let finalRaw = raw;
+  let finalResult = result;
+  if (!isUsableSeniorReview(structured, payload)) {
+    const retryPayload = {
+      ...payload,
+      metadata: {
+        ...(payload.metadata || {}),
+        userNotes: [
+          payload.metadata?.userNotes || "",
+          "SYSTEM RETRY REQUIREMENT: The previous response was not a usable senior review. You must read the uploaded current-year return and workpapers, list every document in documentsRead, perform checkbox review, numeric tie-out, balance sheet check, M-1/M-2 review, supporting document review, and return the full JSON schema. Do not return an empty review. If you cannot read a document, add an issue and missingDocuments entry instead of saying no issues were identified.",
+        ].filter(Boolean).join("\n\n"),
+      },
+    };
+    const retryResult = await callClaudeWithFallbacks(apiKey, retryPayload);
+    if (retryResult.ok) {
+      finalResult = retryResult;
+      finalRaw = extractText(retryResult.data);
+      structured = parseClaudeJson(finalRaw);
+    }
+  }
+  if (!isUsableSeniorReview(structured, payload)) {
+    sendJson(res, 502, {
+      error: "Claude did not return a complete senior review. The response did not include documents read, checkbox review, tie-outs, balance sheet review, or findings. Please confirm that a current-year return and current-year workpaper are uploaded, then rerun.",
+      raw: finalRaw,
+    });
+    return;
+  }
+  const savedReviewHistory = saveReviewHistoryFromResult(payload, structured, finalRaw);
 
   sendJson(res, 200, {
-    review: raw,
+    review: finalRaw,
     structured,
-    model: result.data.model || result.model,
-    usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
-    context: result.context || null,
+    model: finalResult.data.model || finalResult.model,
+    usage: finalResult.data.usage || null,
+    costEstimate: estimateClaudeCost(finalResult.data.usage || null),
+    context: finalResult.context || null,
     savedReviewHistory,
   });
+}
+
+function isUsableSeniorReview(structured, payload = {}) {
+  if (!structured || typeof structured !== "object") return false;
+  const docsRead = Array.isArray(structured.documentsRead) ? structured.documentsRead : [];
+  const issues = Array.isArray(structured.issues) ? structured.issues : [];
+  const checkbox = Array.isArray(structured.checkboxReview) ? structured.checkboxReview : [];
+  const tieOut = Array.isArray(structured.tieOutResults) ? structured.tieOutResults : [];
+  const verified = Array.isArray(structured.verifiedItems) ? structured.verifiedItems : [];
+  const missing = Array.isArray(structured.missingDocuments) ? structured.missingDocuments : [];
+  const open = Array.isArray(structured.openQuestions) ? structured.openQuestions : [];
+  const hasBalance = structured.balanceSheetCheck && typeof structured.balanceSheetCheck === "object";
+  const hasDocuments = docsRead.length > 0;
+  const hasReviewWork = issues.length || checkbox.length || tieOut.length || verified.length || missing.length || open.length || hasBalance;
+  const emptyLanguage = /no issues were identified|none noted|review complete/i.test([
+    structured.executiveSummary,
+    structured.finalConclusion,
+    structured.overallRiskScore,
+  ].filter(Boolean).join(" "));
+  return hasDocuments && hasReviewWork && !(emptyLanguage && !issues.length && !checkbox.length && !tieOut.length && !hasBalance);
 }
 
 function saveReviewHistoryFromResult(payload, structured, raw) {
@@ -8473,6 +8520,8 @@ function buildSystemPrompt(context = { knowledgeBase: [], reviewExamples: [] }) 
     "High = blocks or could materially affect filing. Medium = should resolve before filing. Low = cleanup or limited risk. Info = observation.",
     "Every issue must include evidence, riskAnalysis, proposedSolution, source, and whether more information is needed.",
     "documentsRead must list every uploaded document you received and what you extracted from it.",
+    "A response with zero issues is acceptable only if you still provide detailed documentsRead, checkboxReview, tieOutResults, balanceSheetCheck, verifiedItems, filingReadiness, and finalConclusion showing what was actually checked. Never return only 'No issues identified' or 'None noted'.",
+    "If a current-year return or current-year workpaper is missing or unreadable, do not say the review is clean. Add a HIGH issue and missingDocuments entry explaining that the review cannot be completed.",
     "If User Review Notes ask for a specific list or final note, include that requested output in verifiedItems, openQuestions, finalConclusion, or an issue as appropriate.",
     "",
     contextSummary,

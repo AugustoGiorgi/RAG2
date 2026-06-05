@@ -7407,7 +7407,7 @@ function renderReviewResult(payload, metadata) {
   const client = metadata.entityName || metadata.clientName || "Unnamed client";
   const taxYear = metadata.taxYear || "not specified";
 
-  if (structured && Array.isArray(structured.issues)) {
+  if (structured && Array.isArray(structured.issues) && hasSeniorReviewSubstance(structured)) {
     payload.structured = structured;
     payload.issueResponses = payload.issueResponses || issueResolutionState || {};
     issueResolutionState = payload.issueResponses;
@@ -7444,8 +7444,9 @@ function renderReviewResult(payload, metadata) {
   const fallbackMemo = jsonToReadableText(raw);
   els.results.innerHTML = `
     <article>
-      <span class="tag success">Complete</span>
+      <span class="tag danger">Incomplete</span>
       <h3>${escapeHtml(client)} ? Tax year ${escapeHtml(taxYear)}</h3>
+      <p>The backend did not return a complete senior review. Rerun after confirming the current-year return and current-year workpaper are uploaded.</p>
       ${model ? `<p>${escapeHtml(model)}</p>` : ""}
       ${renderCostSummary(payload)}
     </article>
@@ -7482,6 +7483,20 @@ function parseStructuredReview(raw) {
     } catch (_) {}
   }
   return parseJsonLikeReview(text) || parsePlainTextReview(text);
+}
+
+function hasSeniorReviewSubstance(structured) {
+  const hasDocs = Array.isArray(structured.documentsRead) && structured.documentsRead.length > 0;
+  const hasReviewWork = Boolean(
+    (Array.isArray(structured.issues) && structured.issues.length) ||
+    (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) ||
+    (Array.isArray(structured.tieOutResults) && structured.tieOutResults.length) ||
+    structured.balanceSheetCheck ||
+    (Array.isArray(structured.reviewerComments) && structured.reviewerComments.length) ||
+    (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) ||
+    (Array.isArray(structured.questions) && structured.questions.length)
+  );
+  return hasDocs && hasReviewWork;
 }
 
 function normalizeReviewForExport(response = {}, metadata = {}) {
@@ -7825,7 +7840,7 @@ function parsePlainTextList(text) {
 function jsonToReadableText(raw) {
   const structured = parseStructuredReview(raw);
   if (!structured) return raw || "";
-  return toWrittenReview({ structured }, {
+  return toCleanWrittenReview({ structured }, {
     clientName: document.getElementById("clientName").value.trim(),
     entityName: document.getElementById("entityName").value.trim(),
     taxYear: document.getElementById("taxYear").value.trim(),
@@ -8259,7 +8274,7 @@ function toCleanWrittenReview(response, metadata = {}) {
       lines.push("");
     });
   } else {
-    lines.push("- No issues were identified in this review.", "");
+    lines.push("- No issue list was returned. Treat this review as incomplete unless the checklist, tie-outs, balance sheet check, and verified items above support a clean conclusion.", "");
   }
 
   addCheckboxReviewText(lines, structured.checkboxReview);
@@ -8324,44 +8339,7 @@ function cleanReviewListItem(item) {
 }
 
 function toWrittenReview(response, metadata) {
-  const structured = normalizeReviewForExport(response, metadata);
-  if (!structured) return response.review || "";
-  const lines = [
-    `Hi ${metadata.preparerName || "preparer"},`,
-    "",
-    `The ${metadata.returnType || "tax"} return for ${metadata.entityName || metadata.clientName || "the client"}, Tax Year ${metadata.taxYear || "not specified"}, is ready for your review.`,
-    "Here are my comments:",
-    "",
-    "ISSUES & ITEMS TO REVIEW",
-    "------------------------",
-  ];
-
-  const issues = [...(structured.issues || [])].sort((a, b) => priorityRank(a) - priorityRank(b));
-  if (issues.length) {
-    issues.forEach((issue) => {
-      lines.push(
-        `- [${(issue.priority || "Info").toUpperCase()}] ${issue.formOrSchedule || issue.areaReviewed || "Review item"}: ${issue.issueDescription || "Issue noted."}`,
-        issue.evidence ? `  Evidence: ${issue.evidence}` : "",
-        issue.recommendedAction ? `  Recommended action: ${issue.recommendedAction}` : "",
-        issue.source ? `  Source: ${issue.source}` : "",
-        ""
-      );
-    });
-  } else {
-    lines.push("- No issues were identified in this review.", "");
-  }
-
-  lines.push("OPEN QUESTIONS", "--------------");
-  addPlainList(lines, structured.questions, "QUESTION");
-  lines.push("", "CHECKLIST - ITEMS VERIFIED AS CORRECT", "-------------------------------------");
-  addPlainList(lines, structured.reviewerComments, "VERIFIED");
-  lines.push("", "DOCUMENTS REVIEWED", "------------------");
-  addPlainList(lines, structured.documentSummary, "DOCUMENT");
-  lines.push("", "MISSING INFORMATION", "-------------------");
-  addPlainList(lines, structured.missingInformation, "MISSING");
-  lines.push("", "FINAL CONCLUSION", "----------------");
-  lines.push(structured.finalConclusion || structured.executiveSummary || "Review complete.");
-  return lines.filter((line) => line !== null && line !== undefined).join("\n");
+  return toCleanWrittenReview(response, metadata);
 }
 
 function addPlainList(lines, items, label) {
