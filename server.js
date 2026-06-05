@@ -7415,13 +7415,18 @@ async function handlePrepareWorkpaper(req, res) {
   payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
   const content = buildPreparerContent(payload);
   const softwareContext = buildSoftwareContext(taxSoftware, returnType, taxYear);
+  const entryGuideSystem = buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware)
+    .replace(
+      "OUTPUT FORMAT: respond ONLY with valid JSON inside ```json fences using this schema:",
+      "ENTRY GUIDE PROPERTY FORMAT: inside the workbook JSON, the entryGuide property must use this schema:"
+    );
   const startedAt = Date.now();
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
-    maxTokens: 16000,
+    maxTokens: 20000,
     webSearch: false,
     system: [{
       type: "text",
-      text: withDatabaseContext(`${softwareContext}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper.`, payload, "preparation"),
+      text: withDatabaseContext(`${softwareContext}\n\n${entryGuideSystem}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper. The data entry guide must be generated in this same response so the app does not make a second Claude call.`, payload, "preparation"),
     }],
   });
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
@@ -7439,6 +7444,16 @@ async function handlePrepareWorkpaper(req, res) {
   let workbook;
   try {
     workbook = normalizeWorkbook(parsed, raw, payload);
+    const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
+    appendEntryGuideSheetToWorkbook(workbook, entryGuide);
+    sendJson(res, 200, {
+      workbook,
+      entryGuide,
+      raw,
+      model: result.data.model || result.model,
+      usage: result.data.usage || null,
+      costEstimate: estimateClaudeCost(result.data.usage || null),
+    });
   } catch (error) {
     sendJson(res, 502, {
       error: error.message || "Claude did not return usable workbook sheets. No Excel file was generated.",
@@ -7446,13 +7461,6 @@ async function handlePrepareWorkpaper(req, res) {
     });
     return;
   }
-  sendJson(res, 200, {
-    workbook,
-    raw,
-    model: result.data.model || result.model,
-    usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
-  });
 }
 
 async function handlePreparationDataEntryGuide(req, res) {
@@ -8593,7 +8601,7 @@ function buildPreparerContent(payload) {
       "The JSON must be complete and parseable. If the full workbook would be too long, prioritize the main workpaper tabs and summarize lower-priority detail in AI Notes rather than truncating the JSON.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"]}',
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","value":"string","valueSource":"string","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
@@ -8604,6 +8612,15 @@ function buildPreparerContent(payload) {
       "Always include useful headers in row 1.",
       "Do not include formulas unless the formula is obvious and safe.",
       "Always include aiNotes with things you could not complete and information still needed.",
+      "",
+      "Rules for entryGuide:",
+      "Generate entryGuide in the same JSON response. Do not leave entryGuide empty.",
+      "The app will insert entryGuide into the downloaded Excel workbook as a Data Entry Guide sheet, so the guide must be complete on the first generation.",
+      "The entryGuide must be specific to the selected tax software below. Use that software's screen terminology, navigation paths, and field labels. Do not default to ProConnect unless ProConnect is the selected software.",
+      "For every material workbook line item, source-file value, tax adjustment, balance sheet item, payment, deduction, credit, state amount, and reviewer-required item, create an entryGuide field with screenPath, softwareNavigation, fieldName, value, valueSource, status, and statusNote.",
+      "If a value is not entered in tax software, mark it not_applicable and explain why.",
+      "If a value requires preparer judgment, mark it decision_needed with the decision item.",
+      "At minimum, include the core client information, income, deductions, book-to-tax adjustments, tax/payments, balance sheet, state items, and any review-sensitive entries that are supported by the uploaded files.",
       "",
       `Tax software: ${softwareDisplayName(metadata.taxSoftware || payload.taxSoftware || "proconnect")}`,
       "Any software-specific guidance or entry steps must use the selected tax software's screen terminology and navigation paths from the system prompt.",
@@ -8914,6 +8931,228 @@ function normalizeEntryGuide(parsed, fallback) {
     entryOrder: String(guide.entryOrder || "Enter fields in screen number order from top to bottom."),
     estimatedEntryTime: String(guide.estimatedEntryTime || "30-60 minutes"),
   };
+}
+
+function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
+  const metadata = payload.metadata || {};
+  const fallback = {
+    ...payload,
+    returnType: metadata.returnType || payload.returnType || "",
+    taxYear: metadata.taxYear || payload.taxYear || "",
+    taxSoftware: metadata.taxSoftware || payload.taxSoftware || "proconnect",
+    clientName: metadata.clientName || metadata.entityName || payload.clientName || payload.entityName || "",
+    ein: metadata.ein || payload.ein || "",
+  };
+  const rawGuide = parsed?.entryGuide || parsed?.dataEntryGuide || parsed?.taxSoftwareEntryGuide || {};
+  let guide = normalizeEntryGuide(rawGuide, fallback);
+  if (!guide.screens.length || Number(guide.totalFields || 0) === 0) {
+    guide = buildFallbackEntryGuideFromWorkbook(workbook, fallback);
+  }
+  return guide;
+}
+
+function appendEntryGuideSheetToWorkbook(workbook, guide) {
+  if (!workbook || !Array.isArray(workbook.sheets) || !guide) return workbook;
+  const guideSheet = buildEntryGuideWorkbookSheet(guide);
+  workbook.sheets = workbook.sheets.filter((sheet) => {
+    const name = String(sheet?.name || "").trim().toLowerCase();
+    return name !== "data entry guide" && name !== "proconnect entry guide";
+  });
+  workbook.sheets.push(guideSheet);
+  if (Array.isArray(workbook.aiNotes)) {
+    workbook.aiNotes.push(`${guide.software || "Tax software"} data entry guide included in the workbook with ${guide.totalFields || 0} mapped field(s).`);
+  }
+  return workbook;
+}
+
+function buildEntryGuideWorkbookSheet(guideData) {
+  const guide = normalizeEntryGuide(guideData, guideData || {});
+  const rows = [
+    [`${guide.software || "Tax Software"} - Data Entry Guide`, "", "", "", "", "", "", ""],
+    [`${guide.clientName || "Client"} | EIN: ${guide.ein || "Not provided"} | Form ${guide.returnType || ""} | TY ${guide.taxYear || ""}`, "", "", "", "", "", "", ""],
+    [`Total fields: ${guide.totalFields || 0} | Ready: ${countGuideStatus(guide, "ready")} | Decision needed: ${guide.fieldsNeedingDecision || 0} | Verify: ${countGuideStatus(guide, "verify")} | Review issues: ${guide.fieldsFromReviewIssues || 0} | Est. entry time: ${guide.estimatedEntryTime || "30-60 minutes"}`, "", "", "", "", "", "", ""],
+    [guide.entryOrder || "Enter fields in screen number order from top to bottom.", "", "", "", "", "", "", ""],
+    [""],
+    ["#", "Screen / Navigation Path", "Software Navigation", "Field Name", "Value to Enter", "Source", "Status", "Notes / Action Required"],
+  ];
+
+  let fieldNum = 1;
+  for (const screen of guide.screens || []) {
+    rows.push([`Screen ${screen.screenNumber || ""}: ${screen.screenPath || "Input screen"}`, screen.screenDescription || "", screen.softwareNavigation || "", "", "", "", "", screen.screenNotes || ""]);
+    for (const field of screen.fields || []) {
+      rows.push([
+        fieldNum++,
+        screen.screenPath || "",
+        screen.softwareNavigation || "",
+        field.fieldName || "",
+        field.value || "",
+        field.valueSource || "",
+        entryGuideStatusText(field.status),
+        field.statusNote || field.reviewIssueRef || "",
+      ]);
+    }
+    rows.push([""]);
+  }
+
+  if ((guide.decisionItems || []).length) {
+    rows.push([""], ["DECISION ITEMS - Preparer Action Required", "", "", "", "", "", "", ""], ["Screen", "Field", "Question", "Options", "Impact if Wrong", "", "", ""]);
+    for (const item of guide.decisionItems) {
+      rows.push([String(item.screen || ""), String(item.field || ""), String(item.question || ""), Array.isArray(item.options) ? item.options.join("; ") : String(item.options || ""), String(item.impactIfWrong || ""), "", "", ""]);
+    }
+  }
+
+  if ((guide.reviewIssueFields || []).length) {
+    rows.push([""], ["REVIEW ISSUES AFFECTING DATA ENTRY", "", "", "", "", "", "", ""], ["Screen", "Field", "Issue Description", "Blocks Entry", "", "", "", ""]);
+    for (const item of guide.reviewIssueFields) {
+      rows.push([String(item.screen || ""), String(item.field || ""), String(item.issue || ""), item.blocksEntry ? "Yes" : "No", "", "", "", ""]);
+    }
+  }
+
+  return {
+    name: "Data Entry Guide",
+    rows,
+    merges: [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 7 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 7 } },
+      { s: { r: 3, c: 0 }, e: { r: 3, c: 7 } },
+    ],
+    cols: [{ wch: 6 }, { wch: 30 }, { wch: 34 }, { wch: 32 }, { wch: 20 }, { wch: 30 }, { wch: 16 }, { wch: 42 }],
+    styles: [
+      { r: 0, c: 0, bold: true, underline: true },
+      { r: 5, c: 0, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 1, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 2, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 3, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 4, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 5, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 6, bold: true, fill: "EAF2FF", border: true },
+      { r: 5, c: 7, bold: true, fill: "EAF2FF", border: true },
+    ],
+  };
+}
+
+function buildFallbackEntryGuideFromWorkbook(workbook, fallback) {
+  const software = taxSoftwareById(fallback.taxSoftware);
+  const softwareName = softwareDisplayName(fallback.taxSoftware);
+  const candidates = extractEntryGuideCandidates(workbook);
+  const grouped = new Map();
+  for (const item of candidates.slice(0, 80)) {
+    const mapping = inferEntryGuideMapping(item.label, software, fallback.returnType);
+    const key = mapping.screenPath;
+    if (!grouped.has(key)) grouped.set(key, { mapping, fields: [] });
+    grouped.get(key).fields.push({
+      fieldNumber: grouped.get(key).fields.length + 1,
+      fieldName: item.label,
+      fieldDescription: `Enter or verify ${item.label}.`,
+      value: item.value,
+      valueSource: item.source,
+      status: item.value ? "ready" : "verify",
+      statusNote: item.value ? "Mapped from generated workpaper because Claude did not return a complete entryGuide object." : "Value was blank in the workpaper; verify source support before entry.",
+      dataType: inferEntryDataType(item.value),
+      reviewIssueRef: null,
+    });
+  }
+  const screens = [...grouped.values()].map((group, index) => ({
+    screenNumber: index + 1,
+    screenPath: group.mapping.screenPath,
+    screenDescription: group.mapping.description,
+    softwareNavigation: group.mapping.softwareNavigation,
+    fields: group.fields,
+    screenNotes: "Fallback guide generated from workbook rows. Review against source files before entry.",
+  }));
+  return normalizeEntryGuide({
+    returnType: fallback.returnType,
+    taxYear: fallback.taxYear,
+    software: softwareName,
+    clientName: fallback.clientName,
+    ein: fallback.ein,
+    generatedAt: new Date().toISOString(),
+    screens,
+    entryOrder: `Follow the ${softwareName} navigation paths in screen order. Verify any fallback-mapped fields against the source files.`,
+    estimatedEntryTime: screens.length ? "30-60 minutes" : "Unable to estimate",
+  }, fallback);
+}
+
+function extractEntryGuideCandidates(workbook) {
+  const candidates = [];
+  const sheets = Array.isArray(workbook?.sheets) ? workbook.sheets : [];
+  for (const sheet of sheets) {
+    const sheetName = String(sheet.name || "Workpaper");
+    if (/ai notes|entry guide/i.test(sheetName)) continue;
+    const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      const cells = row.map((cell) => String(cell ?? "").trim());
+      const nonEmpty = cells.filter(Boolean);
+      if (nonEmpty.length < 2) continue;
+      const labelIndex = cells.findIndex((cell) => /[A-Za-z]/.test(cell) && !/^\$?-?\d[\d,]*(\.\d+)?%?$/.test(cell));
+      const valueIndex = cells.findLastIndex((cell, index) => index !== labelIndex && looksLikeEntryValue(cell));
+      if (labelIndex < 0 || valueIndex < 0) continue;
+      const label = cells[labelIndex].replace(/\s+/g, " ").slice(0, 120);
+      if (!label || /total fields|screen|source|status|notes/i.test(label)) continue;
+      candidates.push({ label, value: cells[valueIndex], source: `${sheetName} row ${rows.indexOf(row) + 1}` });
+    }
+  }
+  return candidates;
+}
+
+function looksLikeEntryValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (/^\$?-?\(?\d[\d,]*(\.\d+)?\)?%?$/.test(text)) return true;
+  return /^(yes|no|true|false|cash|accrual|initial|final)$/i.test(text);
+}
+
+function inferEntryGuideMapping(label, software, returnType) {
+  const paths = software?.commonScreenPaths || {};
+  const text = String(label || "").toLowerCase();
+  let key = "otherDeductions";
+  let description = "General tax software input";
+  if (/client|name|ein|address|entity/.test(text)) { key = "clientInfo"; description = "Client and entity information"; }
+  else if (/gross receipt|sales|revenue|income/.test(text)) { key = "grossReceipts"; description = "Income entry"; }
+  else if (/cost of goods|cogs|inventory/.test(text)) { key = "cogs"; description = "Cost of goods sold"; }
+  else if (/officer|compensation/.test(text)) { key = "officerComp"; description = "Officer compensation"; }
+  else if (/depreciation|amortization|4562/.test(text)) { key = "depreciation"; description = "Depreciation and amortization"; }
+  else if (/balance sheet|asset|liabilit|equity|schedule l/.test(text)) { key = "scheduleL"; description = "Schedule L balance sheet"; }
+  else if (/m-1|m1|book.?to.?tax|tax adjustment|addback|reconciliation/.test(text)) { key = "scheduleM1"; description = "Book-to-tax reconciliation"; }
+  else if (/m-3|m3/.test(text)) { key = "scheduleM3"; description = "Schedule M-3 reconciliation"; }
+  else if (/payment|estimated|withholding|tax due|refund/.test(text)) { key = "efiling"; description = "Tax payments and filing information"; }
+  else if (/state|apportion|franchise/.test(text)) { key = "stateReturn"; description = "State return input"; }
+  else if (/interest|dividend|investment/.test(text)) { key = "investments"; description = "Investment income"; }
+  else if (/capital|gain|loss|sale|disposition/.test(text)) { key = "dispositions"; description = "Dispositions and gains/losses"; }
+  const screenPath = paths[key] || `${returnType || "Return"} > ${description}`;
+  return {
+    screenPath,
+    description,
+    softwareNavigation: software?.screenTerminology?.navigate
+      ? software.screenTerminology.navigate.replace(/\[Screen\]/g, screenPath).replace(/\[Screen name\]/g, screenPath).replace(/\[Form name\]/g, screenPath).replace(/\[N\]/g, "").replace(/\[CODE\]/g, screenPath).replace(/\[Field\]/g, label)
+      : `Go to ${screenPath}`,
+  };
+}
+
+function inferEntryDataType(value) {
+  const text = String(value || "").trim();
+  if (/^\$?-?\(?\d[\d,]*(\.\d+)?\)?$/.test(text)) return "currency";
+  if (/^-?\d+(\.\d+)?%$/.test(text)) return "percentage";
+  if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}$/.test(text)) return "date";
+  if (/^(yes|no|true|false)$/i.test(text)) return "checkbox";
+  return "text";
+}
+
+function countGuideStatus(guide, status) {
+  return (guide.screens || []).reduce((sum, screen) => sum + (screen.fields || []).filter((field) => field.status === status).length, 0);
+}
+
+function entryGuideStatusText(status) {
+  const labels = {
+    ready: "READY",
+    decision_needed: "DECISION",
+    verify: "VERIFY",
+    review_issue: "REVIEW ISSUE",
+    not_applicable: "N/A",
+  };
+  return labels[normalizeEntryStatus(status)] || "READY";
 }
 
 function normalizeEntryStatus(status) {

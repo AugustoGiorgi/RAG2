@@ -622,7 +622,7 @@ function init() {
   els.runPreparer.addEventListener("click", runPreparerWorkflow);
   els.downloadPrepWord.addEventListener("click", downloadPreparerWord);
   els.entryGuideClose?.addEventListener("click", closeEntryGuide);
-  els.entryGuideDownload?.addEventListener("click", () => downloadEntryGuide());
+  els.entryGuideDownload?.addEventListener("click", () => downloadPreparerWord());
   els.noticeFile.addEventListener("change", () => {
     noticeFiles.noticeFile = Array.from(els.noticeFile.files || [])[0] || null;
     els.noticeFile.value = "";
@@ -5688,7 +5688,7 @@ async function runPreparerWorkflow() {
       taxSoftware: prepState.taxSoftware,
       files,
     };
-    showPreflightCost(els.prepCostEstimate, estimatePayloadCost(payload, 16000), "preparation workbook generation");
+    showPreflightCost(els.prepCostEstimate, estimatePayloadCost(payload, 20000), "preparation workbook and data entry guide generation");
     els.prepRunHint.textContent = "Sending preparation package to backend...";
     const response = await runWithCostEstimate("preparation", {
       returnType: payload.metadata?.returnType || "",
@@ -5701,7 +5701,8 @@ async function runPreparerWorkflow() {
     const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
     lastPreparerOutput = { response: responsePayload, payload };
-    invalidateEntryGuideCache();
+    lastEntryGuideOutput = responsePayload.entryGuide ? { guide: validateEntryGuide(responsePayload.entryGuide) } : null;
+    entryGuideGeneratedAt = responsePayload.entryGuide?.generatedAt || (lastEntryGuideOutput ? new Date().toISOString() : "");
     renderPreparerResult(responsePayload);
     els.prepExportActions.hidden = false;
     els.prepStatus.textContent = "Complete";
@@ -5711,7 +5712,7 @@ async function runPreparerWorkflow() {
     els.prepResults.innerHTML = `<article><span class="tag warning">Attention</span><h3>Template failed</h3><p>${escapeHtml(error.message || "The backend could not complete the preparer workflow.")}</p></article>`;
   } finally {
     els.runPreparer.disabled = false;
-    els.prepRunHint.textContent = "The app will send your instructions and files to Claude, then build an Excel workbook with an AI Notes tab.";
+    els.prepRunHint.textContent = "The app will send your instructions and files to Claude, then build one Excel workbook with AI Notes and a software-specific Data Entry Guide.";
   }
 }
 
@@ -5767,11 +5768,12 @@ function renderSimpleFileList(list, files, type) {
 
 function renderPreparerResult(response) {
   const summary = workbookSummary(response.workbook);
+  const guide = response.entryGuide ? validateEntryGuide(response.entryGuide) : null;
   els.prepResults.innerHTML = `
     <article>
       <span class="tag success">Excel</span>
       <h3>Workbook ready</h3>
-      <p>The Excel workpaper was generated successfully. Download the workbook to review the formatted sheets.</p>
+      <p>The Excel workpaper was generated successfully. The Data Entry Guide is included in the same workbook, so the download will not run a second AI generation.</p>
       <div class="workbook-ready-summary">
         <div><strong>${summary.sheetCount}</strong><span>Sheets</span></div>
         <div><strong>${summary.rowCount}</strong><span>Rows</span></div>
@@ -5780,36 +5782,26 @@ function renderPreparerResult(response) {
       ${summary.sheetNames.length ? `<p class="muted-note">Included sheets: ${escapeHtml(summary.sheetNames.join(", "))}</p>` : ""}
     </article>
     <article class="entry-guide-card">
-      <span class="tag neutral">Optional</span>
-      <h3>ProConnect Data Entry Guide</h3>
-      <p>Add step-by-step tax software entry instructions as a tab named <strong>ProConnect Entry Guide</strong> inside the same Excel workbook.</p>
-      <div class="entry-guide-controls">
-        <label class="field compact">
-          <span>Software</span>
-          <select id="entryGuideSoftware">
-            <option value="proconnect">ProConnect Tax (Intuit)</option>
-            <option value="lacerte">Lacerte (Intuit)</option>
-            <option value="proseries">ProSeries (Intuit)</option>
-            <option value="drake">Drake Tax</option>
-            <option value="ultratax">UltraTax CS</option>
-            <option value="cch_axcess">CCH Axcess</option>
-            <option value="cch_prosystem">CCH ProSystem fx</option>
-            <option value="other">Other / Generic guide</option>
-          </select>
-        </label>
-        <label class="entry-guide-default"><input id="entryGuideSaveDefault" type="checkbox" /> Save as default</label>
-      </div>
-      <p id="entryGuideCacheStatus" class="muted-note">${entryGuideCacheStatusText()}</p>
+      <span class="tag success">Included</span>
+      <h3>Data Entry Guide</h3>
+      <p>${guide
+        ? `${escapeHtml(guide.software || prepState.taxSoftwareLabel || "Selected tax software")} guide included with ${Number(guide.totalFields || 0)} mapped field${Number(guide.totalFields || 0) === 1 ? "" : "s"}.`
+        : "The workbook includes the Data Entry Guide sheet generated from the selected tax software context."}</p>
       <div class="export-actions">
-        <button id="downloadEntryGuideWorkbook" class="primary-button small-button" type="button">Download with Entry Guide (.xlsx)</button>
-        <button id="previewEntryGuide" class="ghost-button small-button" type="button">Preview Entry Guide</button>
-        <button id="regenerateEntryGuide" class="ghost-button small-button" type="button"${lastEntryGuideOutput ? "" : " hidden"}>Regenerate</button>
+        <button id="previewEntryGuide" class="ghost-button small-button" type="button"${guide ? "" : " hidden"}>Preview Entry Guide</button>
       </div>
-      <p id="entryGuideRunStatus" class="preflight-cost">The entry guide is generated only when you click preview or download.</p>
+      <p class="muted-note">Sheet name: <strong>Data Entry Guide</strong>. Software-specific instructions are generated during the first workbook run.</p>
     </article>
     ${renderCostSummary(response)}
   `;
-  setupEntryGuideControls();
+  document.getElementById("previewEntryGuide")?.addEventListener("click", () => {
+    if (!lastEntryGuideOutput?.guide) return;
+    renderEntryGuidePreview(lastEntryGuideOutput.guide);
+    if (els.entryGuideModal) {
+      els.entryGuideModal.style.display = "flex";
+      document.body.style.overflow = "hidden";
+    }
+  });
 }
 
 function workbookSummary(workbook) {
@@ -5883,7 +5875,7 @@ async function ensureEntryGuide(options = {}) {
   const ok = options.skipConfirm || window.confirm(`Generating the entry guide uses approximately ${formatNumber(estimate.inputTokens + estimate.outputTokens)} tokens (~$${Number(estimate.totalUsd || 0).toFixed(4)} USD).\n\nGenerate anyway?`);
   if (!ok) throw new Error("Entry guide generation skipped.");
 
-  updateEntryGuideStatus("Generating ProConnect entry guide...");
+  updateEntryGuideStatus(`Generating ${entryGuideSoftwareName(software)} entry guide...`);
   startEntryGuideLoadingMessages();
   try {
     const payload = entryGuideRequestPayload(software, returnType, taxYear);
@@ -5930,11 +5922,25 @@ function entryGuideOutputTokens(returnType) {
   return map[String(returnType || "").toUpperCase()] || 3500;
 }
 
+function entryGuideSoftwareName(value) {
+  const names = {
+    proconnect: "ProConnect Tax",
+    lacerte: "Lacerte",
+    proseries: "ProSeries",
+    drake: "Drake Tax",
+    ultratax: "UltraTax CS",
+    cch_axcess: "CCH Axcess",
+    cch_prosystem: "CCH ProSystem fx",
+    other: "the selected tax software",
+  };
+  return names[String(value || "").toLowerCase()] || prepState.taxSoftwareLabel || "the selected tax software";
+}
+
 let entryGuideLoadingTimer = null;
 function startEntryGuideLoadingMessages() {
   const messages = [
     "Analyzing return type and screens...",
-    "Mapping fields to ProConnect screens...",
+    "Mapping fields to selected tax software screens...",
     "Pre-calculating entry values...",
     "Ordering screens for efficient entry...",
     "Building Excel sheet...",
@@ -6232,11 +6238,12 @@ function addEntryGuideToWorkbook(workbook, guideData) {
   const XLSX = window.XLSX;
   const ws = buildEntryGuideSheet(guideData);
   const existing = workbook.SheetNames || [];
-  if (existing.includes("ProConnect Entry Guide")) {
-    delete workbook.Sheets["ProConnect Entry Guide"];
-    workbook.SheetNames = existing.filter((name) => name !== "ProConnect Entry Guide");
+  for (const name of ["ProConnect Entry Guide", "Data Entry Guide"]) {
+    if (!existing.includes(name)) continue;
+    delete workbook.Sheets[name];
+    workbook.SheetNames = workbook.SheetNames.filter((sheetName) => sheetName !== name);
   }
-  XLSX.utils.book_append_sheet(workbook, ws, "ProConnect Entry Guide");
+  XLSX.utils.book_append_sheet(workbook, ws, "Data Entry Guide");
   return workbook;
 }
 
@@ -6244,7 +6251,7 @@ function buildEntryGuideSheet(guideData) {
   const XLSX = window.XLSX;
   const guide = validateEntryGuide(guideData);
   const rows = [
-    ["ProConnect Tax - Data Entry Guide", "", "", "", "", "", "", ""],
+    [`${safeText(guide.software) || "Tax Software"} - Data Entry Guide`, "", "", "", "", "", "", ""],
     [`${safeText(guide.clientName) || "Client"} | EIN: ${safeText(guide.ein) || "Not provided"} | Form ${safeText(guide.returnType)} | TY ${safeText(guide.taxYear)}`, "", "", "", "", "", "", ""],
     [`Total fields: ${safeNumber(guide.totalFields)} | Ready to enter: ${countEntryGuideStatus(guide, "ready")} | Decision needed: ${safeNumber(guide.fieldsNeedingDecision)} | Verify: ${countEntryGuideStatus(guide, "verify")} | From review issues: ${safeNumber(guide.fieldsFromReviewIssues)} | Est. entry time: ${safeText(guide.estimatedEntryTime)}`, "", "", "", "", "", "", ""],
     [""],
@@ -6274,7 +6281,7 @@ function buildEntryGuideSheet(guideData) {
     for (const item of guide.decisionItems) rows.push([safeText(item.screen), safeText(item.field), safeText(item.question), safeText(item.options), safeText(item.impactIfWrong), "", "", ""]);
   }
   if ((guide.reviewIssueFields || []).length) {
-    rows.push([""], ["REVIEW ISSUES AFFECTING DATA ENTRY", "", "", "", "", "", "", ""], ["Resolve these issues in the Review tab before entering the affected fields in ProConnect.", "", "", "", "", "", "", ""], ["Screen", "Field", "Issue Description", "Blocks Entry", "", "", "", ""]);
+    rows.push([""], ["REVIEW ISSUES AFFECTING DATA ENTRY", "", "", "", "", "", "", ""], [`Resolve these issues in the Review tab before entering the affected fields in ${safeText(guide.software) || "the selected tax software"}.`, "", "", "", "", "", "", ""], ["Screen", "Field", "Issue Description", "Blocks Entry", "", "", "", ""]);
     for (const item of guide.reviewIssueFields) rows.push([safeText(item.screen), safeText(item.field), safeText(item.issue), item.blocksEntry ? "Yes" : "No", "", "", "", ""]);
   }
   rows.push([""], ["ENTRY CHECKLIST SUMMARY", "", "", "", "", "", "", ""], ["Screen name", "# fields", "Status summary", "", "", "", "", ""]);
