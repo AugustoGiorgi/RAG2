@@ -76,6 +76,7 @@ const els = {
   exampleStatus: document.getElementById("exampleStatus"),
   exportActions: document.getElementById("exportActions"),
   downloadWord: document.getElementById("downloadWord"),
+  downloadText: document.getElementById("downloadText"),
   knowledgeUpload: document.getElementById("knowledgeUpload"),
   knowledgeFolderUpload: document.getElementById("knowledgeFolderUpload"),
   exampleUpload: document.getElementById("exampleUpload"),
@@ -584,6 +585,7 @@ function init() {
   els.settingsClearDataButton?.addEventListener("click", clearAllData);
   els.driveHeaderStatus.addEventListener("click", connectGoogleDrive);
   els.downloadWord.addEventListener("click", () => downloadReview("word"));
+  els.downloadText?.addEventListener("click", () => downloadReview("text"));
   els.reviewModeButton.addEventListener("click", () => setWorkspaceMode("review"));
   els.preparationModeButton.addEventListener("click", () => setWorkspaceMode("preparation"));
   els.deliverableModeButton.addEventListener("click", () => setWorkspaceMode("deliverable"));
@@ -6073,6 +6075,8 @@ function sanitizeIssue(issue = {}) {
     description: safeText(issue.issueDescription || issue.title || issue.detail || issue.description || "Issue noted."),
     evidence: safeText(issue.evidence),
     whyItMatters: safeText(issue.whyItMatters),
+    riskAnalysis: safeText(issue.riskAnalysis),
+    proposedSolution: safeText(issue.proposedSolution),
     recommendedAction: safeText(issue.recommendedAction || issue.recommendation),
     reviewerComment: safeText(issue.reviewerComment || issue.comment),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
@@ -7337,6 +7341,14 @@ function validateBeforeReview({ showWarnings }) {
     messages.push({ blocks: false, text: "No ZIP package uploaded. The review can continue with individual files, but a ZIP is usually better for complete client packages." });
   }
 
+  if (showWarnings && filesByType.taxReturns.length && !filesByType.taxReturns.some((file) => (taxReturnRoles.get(fileKey(file)) || "current-year") === "current-year")) {
+    messages.push({ blocks: false, text: "No current year return is marked. The review may be incomplete without the return being reviewed." });
+  }
+
+  if (showWarnings && getAllFiles().length && !filesByType.workpapers.length) {
+    messages.push({ blocks: false, text: "No current year workpaper detected. Numeric tie-out checks may be incomplete." });
+  }
+
   if (showWarnings && !document.getElementById("userNotes").value.trim()) {
     messages.push({ blocks: false, text: "No specific instructions entered. Claude will run the standard senior review checklist." });
   }
@@ -7399,16 +7411,22 @@ function renderReviewResult(payload, metadata) {
     payload.structured = structured;
     payload.issueResponses = payload.issueResponses || issueResolutionState || {};
     issueResolutionState = payload.issueResponses;
-    const memo = toWrittenReview({ structured }, metadata);
+    const memo = toCleanWrittenReview({ structured }, metadata);
     els.results.innerHTML = `
       <article>
-        <span class="tag success">Complete</span>
+        <span class="tag ${readinessTagClass(structured.filingReadiness)}">${escapeHtml(structured.filingReadiness || "Complete")}</span>
         <h3>${escapeHtml(client)} ? Tax year ${escapeHtml(taxYear)}</h3>
-        <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}${model ? ` ? ${escapeHtml(model)}` : ""}</p>
+        <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}</p>
+        ${structured.overallRiskScore ? `<p><strong>Overall risk score:</strong> ${escapeHtml(structured.overallRiskScore)}</p>` : ""}
         ${renderCostSummary(payload)}
       </article>
+      ${renderDocumentsReadSection(structured.documentsRead)}
+      ${renderFeedbackAppliedSection(structured.feedbackApplied)}
       ${renderResolutionSummary(structured, metadata)}
       ${renderIssueSection("Issues and response tracking", structured.issues)}
+      ${renderCheckboxReviewSection(structured.checkboxReview)}
+      ${renderTieOutSection(structured.tieOutResults)}
+      ${renderBalanceSheetCheckSection(structured.balanceSheetCheck)}
       ${renderEfileDiagnosticsCta(structured, metadata)}
       <article>
         <span class="tag neutral">Memo</span>
@@ -7476,13 +7494,21 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
     taxYear: safeText(source.taxYear || metadata.taxYear),
     reviewStage: normalizeReviewStage(source.reviewStage || metadata.reviewStage || "Initial review"),
     generatedDate: safeText(source.generatedDate) || new Date().toLocaleDateString(),
-    preparerName: safeText(source.preparerName || metadata.preparerName),
+    reviewerName: safeText(source.reviewerName || source.preparerName || metadata.preparerName),
     executiveSummary: safeText(source.executiveSummary || source.summary),
+    documentsRead: normalizeDocumentsRead(source.documentsRead || source.documentSummary || source.documentsReviewed),
+    feedbackApplied: normalizeReviewStringArray(source.feedbackApplied || source.firmFeedbackApplied),
     issues,
+    checkboxReview: normalizeCheckboxReview(source.checkboxReview),
+    tieOutResults: normalizeTieOutResults(source.tieOutResults || source.tieOuts || source.numericTieOut),
+    balanceSheetCheck: normalizeBalanceSheetCheck(source.balanceSheetCheck),
     questions: normalizeReviewStringArray(source.questions || source.openQuestions),
-    reviewerComments: normalizeReviewStringArray(source.reviewerComments || source.verifiedItems || source.verifiedItemsAsCorrect),
+    reviewerComments: normalizeReviewStringArray(source.reviewerComments || source.verifiedItems || source.verifiedItemsAsCorrect || source.verifiedItems),
     documentSummary: normalizeReviewStringArray(source.documentSummary || source.documentsReviewed),
-    missingInformation: normalizeReviewStringArray(source.missingInformation || source.missingItems),
+    missingInformation: normalizeReviewStringArray(source.missingInformation || source.missingItems || source.missingDocuments),
+    missingDocuments: normalizeReviewStringArray(source.missingDocuments || source.missingInformation || source.missingItems),
+    filingReadiness: normalizeFilingReadiness(source.filingReadiness),
+    overallRiskScore: safeText(source.overallRiskScore),
     finalConclusion: safeText(source.finalConclusion || source.conclusion || source.executiveSummary || source.summary),
   };
 }
@@ -7490,16 +7516,72 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
 function normalizeReviewIssueForExport(issue = {}) {
   return {
     priority: safePriority(issue.priority || issue.severity),
+    category: safeText(issue.category),
     areaReviewed: safeText(issue.areaReviewed || issue.area || issue.category || issue.formOrSchedule || "Review item"),
     formOrSchedule: safeText(issue.formOrSchedule || issue.form || issue.schedule),
     issueDescription: safeText(issue.issueDescription || issue.description || issue.issue || issue.title || issue.detail),
     evidence: safeText(issue.evidence),
     whyItMatters: safeText(issue.whyItMatters || issue.whyItMattersText),
-    recommendedAction: safeText(issue.recommendedAction || issue.recommendation || issue.action),
+    riskAnalysis: safeText(issue.riskAnalysis || issue.whyItMatters || issue.whyItMattersText),
+    proposedSolution: safeText(issue.proposedSolution || issue.recommendedAction || issue.recommendation || issue.action),
+    recommendedAction: safeText(issue.recommendedAction || issue.proposedSolution || issue.recommendation || issue.action),
     reviewerComment: safeText(issue.reviewerComment || issue.comment),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
     needsMoreInfo: safeText(issue.needsMoreInfo || issue.needsClientInfo || issue.missingInformation),
   };
+}
+
+function normalizeDocumentsRead(value) {
+  if (!Array.isArray(value)) return normalizeReviewStringArray(value).map((summary, index) => ({ filename: `Document ${index + 1}`, role: "", summary }));
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object") return { filename: `Document ${index + 1}`, role: "", summary: safeText(item) };
+    return {
+      filename: safeText(item.filename || item.name || item.document || `Document ${index + 1}`),
+      role: safeText(item.role || item.type),
+      summary: safeText(item.summary || item.description || item.extracted || item.notes),
+    };
+  }).filter((item) => item.filename || item.summary);
+}
+
+function normalizeCheckboxReview(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    box: safeText(item.box || item.checkbox || item.field),
+    currentState: safeText(item.currentState || item.current || item.returnState),
+    shouldBe: safeText(item.shouldBe || item.expectedState || item.correctState),
+    explanation: safeText(item.explanation || item.note || item.reason),
+  })).filter((item) => item.box || item.explanation);
+}
+
+function normalizeTieOutResults(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    lineItem: safeText(item.lineItem || item.line || item.description),
+    returnAmount: safeText(item.returnAmount),
+    workpaperAmount: safeText(item.workpaperAmount || item.sourceAmount),
+    difference: safeText(item.difference),
+    status: safeText(item.status || "OUT_OF_BALANCE"),
+    note: safeText(item.note || item.explanation),
+  })).filter((item) => item.lineItem || item.note);
+}
+
+function normalizeBalanceSheetCheck(value) {
+  if (!value || typeof value !== "object") return null;
+  return {
+    totalAssets: safeText(value.totalAssets),
+    totalLiabEquity: safeText(value.totalLiabEquity || value.totalLiabilitiesEquity),
+    balanced: Boolean(value.balanced),
+    difference: safeText(value.difference),
+    note: safeText(value.note || value.explanation),
+  };
+}
+
+function normalizeFilingReadiness(value) {
+  const text = safeText(value).toUpperCase();
+  if (text.includes("CONDITION")) return "READY WITH CONDITIONS";
+  if (text.includes("NOT")) return "NOT READY";
+  if (text.includes("READY")) return "READY";
+  return "";
 }
 
 function normalizeReviewStringArray(value) {
@@ -7560,6 +7642,8 @@ function parseJsonLikeReview(text) {
       issueDescription: extractJsonLikeString(block, "issueDescription"),
       evidence: extractJsonLikeString(block, "evidence"),
       whyItMatters: extractJsonLikeString(block, "whyItMatters"),
+      riskAnalysis: extractJsonLikeString(block, "riskAnalysis"),
+      proposedSolution: extractJsonLikeString(block, "proposedSolution"),
       recommendedAction: extractJsonLikeString(block, "recommendedAction"),
       reviewerComment: extractJsonLikeString(block, "reviewerComment"),
       source: extractJsonLikeString(block, "source"),
@@ -7755,6 +7839,65 @@ function renderDocumentSummary(summary) {
   return renderStringList("Documents Reviewed", rows);
 }
 
+function readinessTagClass(readiness) {
+  const text = safeText(readiness).toUpperCase();
+  if (text.includes("NOT")) return "danger";
+  if (text.includes("CONDITION")) return "warning";
+  if (text.includes("READY")) return "success";
+  return "neutral";
+}
+
+function renderDocumentsReadSection(documents) {
+  if (!Array.isArray(documents) || !documents.length) return "";
+  return `
+    <article>
+      <span class="tag neutral">Documents</span>
+      <h3>Documents Read</h3>
+      <ul class="result-list">${documents.map((doc) => `<li><strong>${escapeHtml(doc.filename || "Document")}</strong>${doc.role ? ` - ${escapeHtml(doc.role)}` : ""}: ${escapeHtml(doc.summary || "Read for review.")}</li>`).join("")}</ul>
+    </article>`;
+}
+
+function renderFeedbackAppliedSection(items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return renderStringList("Firm Review Feedback Applied", items);
+}
+
+function renderCheckboxReviewSection(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  return renderReviewTable("Checkbox Review", ["Box", "Current State", "Should Be", "Explanation"], rows.map((row) => [row.box, row.currentState, row.shouldBe, row.explanation]));
+}
+
+function renderTieOutSection(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  return renderReviewTable("Numeric Tie-Out", ["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"], rows.map((row) => [row.lineItem, row.returnAmount, row.workpaperAmount, row.difference, row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("OUT") ? "danger-row" : "");
+}
+
+function renderBalanceSheetCheckSection(check) {
+  if (!check) return "";
+  const status = check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${check.difference}` : ""}`;
+  return `
+    <article>
+      <span class="tag ${check.balanced ? "success" : "danger"}">Schedule L</span>
+      <h3>Balance Sheet Check</h3>
+      <p><strong>Total Assets:</strong> ${escapeHtml(check.totalAssets || "Not provided")} | <strong>Total Liabilities & Equity:</strong> ${escapeHtml(check.totalLiabEquity || "Not provided")} | <strong>${escapeHtml(status)}</strong></p>
+      ${check.note ? `<p>${escapeHtml(check.note)}</p>` : ""}
+    </article>`;
+}
+
+function renderReviewTable(title, headers, rows, rowClassFn = null) {
+  return `
+    <article>
+      <span class="tag neutral">Review Detail</span>
+      <h3>${escapeHtml(title)}</h3>
+      <div class="table-scroll">
+        <table class="review-detail-table">
+          <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
+          <tbody>${rows.map((row) => `<tr class="${rowClassFn ? escapeHtml(rowClassFn({ status: row[4], row })) : ""}">${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+        </table>
+      </div>
+    </article>`;
+}
+
 function renderIssueSection(title, issues) {
   if (!issues.length) return "";
   return `
@@ -7806,8 +7949,8 @@ function renderIssueCard(issue, index) {
         ${renderDefinition("Form or schedule", issue.formOrSchedule)}
         ${renderDefinition("Issue", issue.issueDescription || issue.title || issue.detail)}
         ${renderDefinition("Evidence", issue.evidence)}
-        ${renderDefinition("Why it matters", issue.whyItMatters)}
-        ${renderDefinition("Recommended action", issue.recommendedAction || issue.recommendation)}
+        ${renderDefinition("Risk analysis", issue.riskAnalysis || issue.whyItMatters)}
+        ${renderDefinition("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation)}
         ${renderDefinition("Reviewer comment", issue.reviewerComment)}
         ${renderDefinition("Source", issue.source)}
         ${renderDefinition("Needs more info?", issue.needsMoreInfo)}
@@ -8063,6 +8206,8 @@ async function downloadReview(type) {
   const baseName = `${metadata.entityName || metadata.clientName || "tax-review"}-${metadata.taxYear || "year"}`.replace(/[^a-z0-9-]+/gi, "-");
   if (type === "word") {
     await downloadWordDocument(`${baseName}.docx`, toCleanWrittenReview(lastReview.response, metadata));
+  } else if (type === "text") {
+    downloadBlob(`${baseName}.txt`, toCleanWrittenReview(lastReview.response, metadata), "text/plain;charset=utf-8");
   }
 }
 
@@ -8077,12 +8222,24 @@ function toCleanWrittenReview(response, metadata = {}) {
     `Return Type: ${safeText(metadata.returnType) || "Not specified"}`,
     `Tax Year: ${safeText(metadata.taxYear) || "Not specified"}`,
     `Review Stage: ${normalizeReviewStage(metadata.reviewStage || "Initial review")}`,
-    metadata.preparerName ? `Preparer: ${safeText(metadata.preparerName)}` : "",
+    structured.reviewerName ? `Reviewer: ${safeText(structured.reviewerName)}` : "",
     `Generated: ${new Date().toLocaleDateString()}`,
     "",
     "EXECUTIVE SUMMARY",
     "-----------------",
     safeText(structured.executiveSummary) || "No executive summary provided.",
+    "",
+    "FILING READINESS",
+    "----------------",
+    `${safeText(structured.filingReadiness) || "Not specified"}${structured.overallRiskScore ? ` | Overall Risk Score: ${safeText(structured.overallRiskScore)}` : ""}`,
+    "",
+    "DOCUMENTS READ",
+    "--------------",
+    ...(structured.documentsRead?.length ? structured.documentsRead.map((doc) => `- ${safeText(doc.filename)}${doc.role ? ` - ${safeText(doc.role)}` : ""}: ${safeText(doc.summary)}`) : ["- None noted."]),
+    "",
+    "FIRM REVIEW FEEDBACK APPLIED",
+    "----------------------------",
+    ...(structured.feedbackApplied?.length ? structured.feedbackApplied.map((item) => `- ${safeText(item)}`) : ["- None noted."]),
     "",
     "ISSUES & ITEMS TO REVIEW",
     "------------------------",
@@ -8094,8 +8251,8 @@ function toCleanWrittenReview(response, metadata = {}) {
       lines.push(`Issue ${index + 1}: [${issue.priority}] ${issue.area}`);
       lines.push(`Issue: ${issue.description}`);
       if (issue.evidence) lines.push(`Evidence: ${issue.evidence}`);
-      if (issue.whyItMatters) lines.push(`Why it matters: ${issue.whyItMatters}`);
-      if (issue.recommendedAction) lines.push(`Recommended action: ${issue.recommendedAction}`);
+      if (issue.riskAnalysis || issue.whyItMatters) lines.push(`Risk analysis: ${issue.riskAnalysis || issue.whyItMatters}`);
+      if (issue.proposedSolution || issue.recommendedAction) lines.push(`Proposed solution: ${issue.proposedSolution || issue.recommendedAction}`);
       if (issue.reviewerComment) lines.push(`Reviewer comment: ${issue.reviewerComment}`);
       if (issue.source) lines.push(`Source: ${issue.source}`);
       if (issue.needsMoreInfo) lines.push(`Needs more info: ${issue.needsMoreInfo}`);
@@ -8105,13 +8262,43 @@ function toCleanWrittenReview(response, metadata = {}) {
     lines.push("- No issues were identified in this review.", "");
   }
 
+  addCheckboxReviewText(lines, structured.checkboxReview);
+  addTieOutText(lines, structured.tieOutResults);
+  addBalanceSheetCheckText(lines, structured.balanceSheetCheck);
   addCleanPlainList(lines, structured.questions, "QUESTION");
   addCleanPlainList(lines, structured.reviewerComments, "VERIFIED");
-  addCleanPlainList(lines, structured.documentSummary, "DOCUMENT");
-  addCleanPlainList(lines, structured.missingInformation, "MISSING");
+  addCleanPlainList(lines, structured.missingDocuments || structured.missingInformation, "MISSING");
   lines.push("", "FINAL CONCLUSION", "----------------");
   lines.push(safeText(structured.finalConclusion || structured.executiveSummary) || "Review complete.");
   return lines.filter((line) => line !== null && line !== undefined).map(safeText).join("\n");
+}
+
+function addCheckboxReviewText(lines, rows) {
+  lines.push("", "CHECKBOX REVIEW", "---------------");
+  if (!Array.isArray(rows) || !rows.length) {
+    lines.push("- None noted.");
+    return;
+  }
+  rows.forEach((row) => lines.push(`- ${safeText(row.box)} | Current: ${safeText(row.currentState)} | Should be: ${safeText(row.shouldBe)} | ${safeText(row.explanation)}`));
+}
+
+function addTieOutText(lines, rows) {
+  lines.push("", "NUMERIC TIE-OUT", "---------------");
+  if (!Array.isArray(rows) || !rows.length) {
+    lines.push("- None noted.");
+    return;
+  }
+  rows.forEach((row) => lines.push(`- ${safeText(row.lineItem)} | Return: ${safeText(row.returnAmount)} | Workpaper: ${safeText(row.workpaperAmount)} | Difference: ${safeText(row.difference)} | Status: ${safeText(row.status)}${row.note ? ` | ${safeText(row.note)}` : ""}`));
+}
+
+function addBalanceSheetCheckText(lines, check) {
+  lines.push("", "BALANCE SHEET CHECK", "-------------------");
+  if (!check) {
+    lines.push("- None noted.");
+    return;
+  }
+  lines.push(`Total Assets: ${safeText(check.totalAssets)} | Total Liabilities & Equity: ${safeText(check.totalLiabEquity)} | ${check.balanced ? "BALANCED" : `OUT OF BALANCE by ${safeText(check.difference)}`}`);
+  if (check.note) lines.push(safeText(check.note));
 }
 
 function addCleanPlainList(lines, items, label) {

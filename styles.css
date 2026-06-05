@@ -7229,3 +7229,29 @@ h1 {
     grid-template-columns: 1fr;
   }
 }
+
+/* Review detail tables */
+.table-scroll {
+  overflow-x: auto;
+}
+.review-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.review-detail-table th,
+.review-detail-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.review-detail-table th {
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 700;
+}
+.review-detail-table tr.danger-row td {
+  background: #fef2f2;
+  color: #7f1d1d;
+}
