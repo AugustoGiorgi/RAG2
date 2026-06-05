@@ -4282,7 +4282,7 @@ async function runReview(event) {
     renderProgress(null, 2);
     const response = await requestClaudeReview(payload);
     renderProgress(null, 4);
-    if (!response.structured) response.structured = parseStructuredReview(response.review || "");
+    response.structured = normalizeReviewForExport(response, payload.metadata);
     issueResolutionState = response.issueResponses || {};
     lastReview = { response, payload };
     invalidateEntryGuideCache();
@@ -7446,7 +7446,7 @@ function renderProgress(labels, completedIndex) {
 }
 
 function renderReviewResult(payload, metadata) {
-  const structured = payload.structured || parseStructuredReview(payload.review || "");
+  const structured = normalizeReviewForExport(payload, metadata);
   const raw = payload.review || "";
   const model = payload.model || "";
   const client = metadata.entityName || metadata.clientName || "Unnamed client";
@@ -7520,7 +7520,48 @@ function parseStructuredReview(raw) {
       if (parsed && typeof parsed === "object") return parsed;
     } catch (_) {}
   }
-  return parseJsonLikeReview(text);
+  return parseJsonLikeReview(text) || parsePlainTextReview(text);
+}
+
+function normalizeReviewForExport(response = {}, metadata = {}) {
+  const source = response?.structured || parseStructuredReview(response?.review || "") || (response?.issues || response?.executiveSummary ? response : null);
+  if (!source || typeof source !== "object") return null;
+  const issues = Array.isArray(source.issues) ? source.issues.map(normalizeReviewIssueForExport).filter((issue) => issue.issueDescription || issue.areaReviewed || issue.formOrSchedule) : [];
+  return {
+    clientName: safeText(source.clientName || metadata.entityName || metadata.clientName),
+    returnType: safeText(source.returnType || metadata.returnType),
+    taxYear: safeText(source.taxYear || metadata.taxYear),
+    reviewStage: normalizeReviewStage(source.reviewStage || metadata.reviewStage || "Initial review"),
+    generatedDate: safeText(source.generatedDate) || new Date().toLocaleDateString(),
+    preparerName: safeText(source.preparerName || metadata.preparerName),
+    executiveSummary: safeText(source.executiveSummary || source.summary),
+    issues,
+    questions: normalizeReviewStringArray(source.questions || source.openQuestions),
+    reviewerComments: normalizeReviewStringArray(source.reviewerComments || source.verifiedItems || source.verifiedItemsAsCorrect),
+    documentSummary: normalizeReviewStringArray(source.documentSummary || source.documentsReviewed),
+    missingInformation: normalizeReviewStringArray(source.missingInformation || source.missingItems),
+    finalConclusion: safeText(source.finalConclusion || source.conclusion || source.executiveSummary || source.summary),
+  };
+}
+
+function normalizeReviewIssueForExport(issue = {}) {
+  return {
+    priority: safePriority(issue.priority || issue.severity),
+    areaReviewed: safeText(issue.areaReviewed || issue.area || issue.category || issue.formOrSchedule || "Review item"),
+    formOrSchedule: safeText(issue.formOrSchedule || issue.form || issue.schedule),
+    issueDescription: safeText(issue.issueDescription || issue.description || issue.issue || issue.title || issue.detail),
+    evidence: safeText(issue.evidence),
+    whyItMatters: safeText(issue.whyItMatters || issue.whyItMattersText),
+    recommendedAction: safeText(issue.recommendedAction || issue.recommendation || issue.action),
+    reviewerComment: safeText(issue.reviewerComment || issue.comment),
+    source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
+    needsMoreInfo: safeText(issue.needsMoreInfo || issue.needsClientInfo || issue.missingInformation),
+  };
+}
+
+function normalizeReviewStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map(cleanReviewListItem).filter(Boolean);
 }
 
 function repairJsonTextForParsing(text) {
@@ -7686,6 +7727,72 @@ function extractJsonLikeArrayStrings(block) {
     current += char;
   }
   return values.filter(Boolean);
+}
+
+function parsePlainTextReview(text) {
+  const raw = String(text || "").trim();
+  if (!raw || !/ISSUES|EXECUTIVE SUMMARY|FINAL CONCLUSION/i.test(raw)) return null;
+  const section = (name, nextNames = []) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const next = nextNames.length ? `(?=${nextNames.map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")}|$)` : "$";
+    const match = raw.match(new RegExp(`${escaped}\\s*-*\\s*([\\s\\S]*?)${next}`, "i"));
+    return match ? match[1].trim() : "";
+  };
+  const headers = ["ISSUES & ITEMS TO REVIEW", "OPEN QUESTIONS", "CHECKLIST - ITEMS VERIFIED AS CORRECT", "DOCUMENTS REVIEWED", "MISSING INFORMATION", "FINAL CONCLUSION"];
+  const executiveSummary = section("EXECUTIVE SUMMARY", headers);
+  const issuesText = section("ISSUES & ITEMS TO REVIEW", headers.slice(1));
+  const issues = parsePlainTextIssues(issuesText);
+  const questions = parsePlainTextList(section("OPEN QUESTIONS", headers.slice(2)));
+  const reviewerComments = parsePlainTextList(section("CHECKLIST - ITEMS VERIFIED AS CORRECT", headers.slice(3)));
+  const documentSummary = parsePlainTextList(section("DOCUMENTS REVIEWED", headers.slice(4)));
+  const missingInformation = parsePlainTextList(section("MISSING INFORMATION", headers.slice(5)));
+  const finalConclusion = section("FINAL CONCLUSION");
+  if (!executiveSummary && !issues.length && !documentSummary.length && !finalConclusion) return null;
+  return { executiveSummary, issues, questions, reviewerComments, documentSummary, missingInformation, finalConclusion };
+}
+
+function parsePlainTextIssues(text) {
+  const chunks = String(text || "").split(/(?=\n?(?:Issue\s+\d+\s*:)?\s*(?:[-*•]\s*)?\[(?:HIGH|MEDIUM|LOW|INFO)\])/i).map((item) => item.trim()).filter(Boolean);
+  return chunks.map((chunk) => {
+    const firstLine = chunk.split(/\r?\n/)[0] || "";
+    const heading = firstLine.match(/\[(HIGH|MEDIUM|LOW|INFO)\]\s*(?:[-—:]\s*)?(.*)$/i);
+    const issue = {
+      priority: heading?.[1] || "Info",
+      areaReviewed: heading?.[2] || "",
+      formOrSchedule: "",
+      issueDescription: "",
+      evidence: "",
+      whyItMatters: "",
+      recommendedAction: "",
+      reviewerComment: "",
+      source: "",
+      needsMoreInfo: "",
+    };
+    const body = chunk.split(/\r?\n/).slice(1).join("\n");
+    issue.formOrSchedule = extractPlainLabel(body, ["Form / Schedule", "Form or schedule", "Form"]);
+    issue.issueDescription = extractPlainLabel(body, ["Issue", "Description"]) || (heading?.[2] || "");
+    issue.evidence = extractPlainLabel(body, ["Evidence"]);
+    issue.whyItMatters = extractPlainLabel(body, ["Why It Matters", "Why it matters"]);
+    issue.recommendedAction = extractPlainLabel(body, ["Recommended Action", "Recommended action"]);
+    issue.reviewerComment = extractPlainLabel(body, ["Reviewer Comment", "Reviewer comment"]);
+    issue.source = extractPlainLabel(body, ["Source"]);
+    issue.needsMoreInfo = extractPlainLabel(body, ["Needs More Info", "Needs more info"]);
+    return issue;
+  }).filter((issue) => issue.issueDescription || issue.areaReviewed);
+}
+
+function extractPlainLabel(text, labels) {
+  const labelPattern = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const nextLabel = "(?:Form \\/ Schedule|Form or schedule|Form|Issue|Description|Evidence|Why It Matters|Why it matters|Recommended Action|Recommended action|Reviewer Comment|Reviewer comment|Source|Needs More Info|Needs more info)";
+  const match = String(text || "").match(new RegExp(`(?:^|\\n)\\s*(?:${labelPattern})\\s*:\\s*([\\s\\S]*?)(?=\\n\\s*${nextLabel}\\s*:|$)`, "i"));
+  return match ? match[1].trim() : "";
+}
+
+function parsePlainTextList(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+\.)\s*/, "").replace(/^\[[A-Z ]+\]\s*/, "").trim())
+    .filter((line) => line && !/^-+$/.test(line) && !/^none noted\.?$/i.test(line));
 }
 
 function jsonToReadableText(raw) {
@@ -8017,6 +8124,7 @@ function renderMessage(type, title, message) {
 async function downloadReview(type) {
   if (!lastReview) return;
   const metadata = lastReview.payload.metadata;
+  lastReview.response.structured = normalizeReviewForExport(lastReview.response, metadata);
   const baseName = `${metadata.entityName || metadata.clientName || "tax-review"}-${metadata.taxYear || "year"}`.replace(/[^a-z0-9-]+/gi, "-");
   if (type === "word") {
     await downloadWordDocument(`${baseName}.docx`, toCleanWrittenReview(lastReview.response, metadata));
@@ -8024,7 +8132,7 @@ async function downloadReview(type) {
 }
 
 function toCleanWrittenReview(response, metadata = {}) {
-  const structured = response?.structured || parseStructuredReview(response?.review || "") || (response?.issues || response?.executiveSummary ? response : null);
+  const structured = normalizeReviewForExport(response, metadata);
   if (!structured) return safeText(response?.review) || "";
   const lines = [
     "RAG Tax AI",
@@ -8039,7 +8147,7 @@ function toCleanWrittenReview(response, metadata = {}) {
     "",
     "EXECUTIVE SUMMARY",
     "-----------------",
-    safeText(structured.executiveSummary || structured.summary || "No executive summary was returned."),
+    safeText(structured.executiveSummary) || "No executive summary provided.",
     "",
     "ISSUES & ITEMS TO REVIEW",
     "------------------------",
@@ -8049,7 +8157,7 @@ function toCleanWrittenReview(response, metadata = {}) {
   if (issues.length) {
     issues.forEach((issue, index) => {
       lines.push(`Issue ${index + 1}: [${issue.priority}] ${issue.area}`);
-      lines.push(`Description: ${issue.description}`);
+      lines.push(`Issue: ${issue.description}`);
       if (issue.evidence) lines.push(`Evidence: ${issue.evidence}`);
       if (issue.whyItMatters) lines.push(`Why it matters: ${issue.whyItMatters}`);
       if (issue.recommendedAction) lines.push(`Recommended action: ${issue.recommendedAction}`);
@@ -8059,7 +8167,7 @@ function toCleanWrittenReview(response, metadata = {}) {
       lines.push("");
     });
   } else {
-    lines.push("- No issues were returned by Claude.", "");
+    lines.push("- No issues were identified in this review.", "");
   }
 
   addCleanPlainList(lines, structured.questions, "QUESTION");
@@ -8094,7 +8202,7 @@ function cleanReviewListItem(item) {
 }
 
 function toWrittenReview(response, metadata) {
-  const structured = response.structured;
+  const structured = normalizeReviewForExport(response, metadata);
   if (!structured) return response.review || "";
   const lines = [
     `Hi ${metadata.preparerName || "preparer"},`,
@@ -8110,15 +8218,15 @@ function toWrittenReview(response, metadata) {
   if (issues.length) {
     issues.forEach((issue) => {
       lines.push(
-        `â€¢ [${(issue.priority || issue.severity || "Info").toUpperCase()}] ${issue.formOrSchedule || issue.areaReviewed || "Review item"}: ${issue.issueDescription || issue.title || issue.detail || "Issue noted."}`,
+        `- [${(issue.priority || "Info").toUpperCase()}] ${issue.formOrSchedule || issue.areaReviewed || "Review item"}: ${issue.issueDescription || "Issue noted."}`,
         issue.evidence ? `  Evidence: ${issue.evidence}` : "",
-        issue.recommendedAction || issue.recommendation ? `  Recommended action: ${issue.recommendedAction || issue.recommendation}` : "",
+        issue.recommendedAction ? `  Recommended action: ${issue.recommendedAction}` : "",
         issue.source ? `  Source: ${issue.source}` : "",
         ""
       );
     });
   } else {
-    lines.push("â€¢ No issues were returned by Claude.", "");
+    lines.push("- No issues were identified in this review.", "");
   }
 
   lines.push("OPEN QUESTIONS", "--------------");
@@ -8136,10 +8244,10 @@ function toWrittenReview(response, metadata) {
 
 function addPlainList(lines, items, label) {
   if (!Array.isArray(items) || !items.length) {
-    lines.push(`â€¢ [${label}] None noted.`);
+    lines.push(`- [${label}] None noted.`);
     return;
   }
-  items.forEach((item) => lines.push(`â€¢ [${label}] ${item}`));
+  items.forEach((item) => lines.push(`- [${label}] ${cleanReviewListItem(item)}`));
 }
 
 function priorityRank(issue) {
@@ -8198,7 +8306,7 @@ function jsonToReadableDocument(value, title = "AI Generated Document", depth = 
 }
 
 function toMarkdown(response, metadata) {
-  const structured = response.structured;
+  const structured = normalizeReviewForExport(response, metadata);
   if (!structured) return response.review || "";
   const lines = [
     `# AI Senior Tax Review - ${metadata.entityName || metadata.clientName || "Unnamed client"}`,
