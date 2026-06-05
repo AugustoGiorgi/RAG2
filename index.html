@@ -821,7 +821,7 @@
               <p class="eyebrow">Step 4</p>
               <h2>Run the senior review</h2>
               <p id="runHint">The app will validate files, send grouped documents to the backend, and display a structured review.</p>
-              <p id="reviewCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+              <p id="reviewCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="runReview" class="primary-button" type="submit">Run Senior Review</button>
           </section>
@@ -980,7 +980,7 @@
               <p class="eyebrow">Generate</p>
               <h2>Prepare Excel output</h2>
               <p id="prepRunHint">The app will send your instructions and files to Claude, then build an Excel workbook with an AI Notes tab.</p>
-              <p id="prepCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+              <p id="prepCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="runPreparer" class="primary-button" type="button">Generate Excel Workpaper</button>
           </section>
@@ -1155,7 +1155,7 @@
                 <textarea id="deliverableCustomInstructions" rows="2" placeholder="Any specific message or context to include..."></textarea>
               </label>
             </div>
-            <p id="deliverableCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+            <p id="deliverableCostEstimate" class="preflight-cost" hidden></p>
             <button id="generateEmailDraft" class="primary-button" type="button">Generate Email Draft</button>
             <div id="deliverableDraftPanel" class="gmail-send-section" hidden>
               <label class="field full">
@@ -1536,7 +1536,7 @@
               <p class="eyebrow">Section 3</p>
               <h2>Analyze notice</h2>
               <p id="noticeRunHint">The app will send the notice and supporting context to Claude.</p>
-              <p id="noticeCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+              <p id="noticeCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="analyzeNotice" class="primary-button" type="button">Analyze Notice</button>
           </section>
@@ -1653,7 +1653,7 @@
               <p class="eyebrow">Section 3</p>
               <h2>Analyze errors</h2>
               <p id="diagnosticsRunHint">Select software and provide error text or a screenshot.</p>
-              <p id="diagnosticsCostEstimate" class="preflight-cost">Estimated operation cost: not calculated yet.</p>
+              <p id="diagnosticsCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="analyzeDiagnostics" class="primary-button" type="button" disabled>Analyze Errors</button>
           </section>
@@ -1824,7 +1824,7 @@
               </div>
               <textarea id="databaseGlobalInstructions" rows="8" placeholder="Enter firm-wide instructions that always apply."></textarea>
               <div class="database-actions">
-                <span id="databaseGlobalTokenEstimate" class="database-muted admin-only" hidden>~0 tokens included in every AI call</span>
+                <span id="databaseGlobalTokenEstimate" class="database-muted admin-only" hidden></span>
                 <button id="databaseSaveGlobalInstructions" class="primary-button small-button" type="button">Save</button>
               </div>
             </article>

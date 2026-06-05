@@ -7413,6 +7413,7 @@ async function handlePrepareWorkpaper(req, res) {
   const returnType = resolveReturnTypeFromPayload(payload);
   const taxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
   payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
+  payload.files = annotatePreparationFileRoles(payload.files || [], payload);
   const content = buildPreparerContent(payload);
   const softwareContext = buildSoftwareContext(taxSoftware, returnType, taxYear);
   const entryGuideSystem = buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware)
@@ -7423,10 +7424,12 @@ async function handlePrepareWorkpaper(req, res) {
   const startedAt = Date.now();
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 20000,
+    models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+    thinking: { type: "enabled", budget_tokens: 10000 },
     webSearch: false,
     system: [{
       type: "text",
-      text: withDatabaseContext(`${softwareContext}\n\n${entryGuideSystem}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper. The data entry guide must be generated in this same response so the app does not make a second Claude call.`, payload, "preparation"),
+      text: withDatabaseContext(`${softwareContext}\n\n${entryGuideSystem}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper. The data entry guide must be generated in this same response so the app does not make a second Claude call.\n\nABSOLUTE PREPARATION RULES:\n- Files labeled current_financials are the only source of truth for current-year P&L, balance sheet, and GL amounts.\n- Files labeled prior_workpaper provide structure, sheet order, labels, prior adjustment categories, and formatting only. Prior-year amounts are reference only and must never be copied as current-year amounts.\n- Files labeled prior_return provide beginning balances, carryforwards, depreciation/tax basis support, Schedule A/Schedule 2 style support where relevant, and prior tax positions only.\n- Replace every prior-year amount when producing the current-year workpaper. If a current-year amount is not found, use 0 or blank and flag it; never silently carry forward a prior-year value.\n- Book-to-tax reconciliation starts from current-year net income per books from current_financials, then applies supported tax adjustments. M-1/M-3, taxable income, M-2, and retained earnings must foot or clearly flag the unreconciled difference.\n- The Data Entry Guide must include tie-out checks against current-year P&L, current-year balance sheet, and book-to-tax reconciliation.`, payload, "preparation"),
     }],
   });
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
@@ -8594,14 +8597,20 @@ function buildPreparerContent(payload) {
       "You are a senior tax preparer assistant. Your task is to produce an Excel-ready workpaper workbook based on the user's instructions and uploaded files.",
       "Do not prepare a tax return and do not invent amounts.",
       "Use the uploaded files according to the user's instructions. If prior-year workpapers and current-year reports are included, use prior-year workpapers for workbook structure, sheet names, section order, labels, and row layout; use current-year reports for updated values.",
+      "The backend labels each uploaded file with a preparation role. Follow those labels exactly:",
+      "- current_financials: source of truth for every current-year P&L, balance sheet, trial balance, and GL amount.",
+      "- prior_return: source for beginning balances, carryforwards, depreciation/tax basis support, prior tax positions, and prior-year tax return disclosures only.",
+      "- prior_workpaper: source for workbook structure, section order, labels, formulas/categories, and formatting only. Prior-year amounts are reference only.",
+      "- supporting_document: use only for directly supported values/context.",
       "For a requested new-year workbook, keep a similar visual format to the prior-year Excel file: section boxes, underlined labels, title/header rows, column widths, merged cells, spacing, and sheet order should be mirrored as closely as the structured output allows while updating the numbers and year labels.",
       "The output must be a new workpaper workbook, not a narrative memo and not JSON pasted into Excel.",
       "If a requested value cannot be verified, leave the cell blank or write Unable to verify based on documents provided, and explain the missing support in AI Notes.",
+      "Never invent a current-year amount. Never reuse a prior-year amount as a current-year amount unless a current-year source explicitly supports it. If a current-year P&L account is absent, the current-year amount is zero or blank and the issue belongs in AI Notes/flags, not silently copied from prior year.",
       "Return ONLY a JSON object inside ```json``` fences. No prose outside JSON.",
       "The JSON must be complete and parseable. If the full workbook would be too long, prioritize the main workpaper tabs and summarize lower-priority detail in AI Notes rather than truncating the JSON.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","value":"string","valueSource":"string","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
@@ -8613,11 +8622,25 @@ function buildPreparerContent(payload) {
       "Do not include formulas unless the formula is obvious and safe.",
       "Always include aiNotes with things you could not complete and information still needed.",
       "",
+      "Mandatory workpaper refresh process:",
+      "1. Balance sheet: beginning balances come from prior_return or prior-year ending balances; ending balances must come from current_financials. Flag any imbalance between assets and liabilities/equity.",
+      "2. P&L: current-year values must come from current_financials. Map current-year accounts into the prior_workpaper structure; add new accounts when needed; set prior-year accounts with no current-year activity to 0 or blank.",
+      "3. GL detail: reconcile supporting detail to refreshed P&L and balance sheet lines where GL detail is provided.",
+      "4. Book-to-tax: start from current-year net income per books from current_financials. Then apply current-year supported addbacks/deductions and tax adjustments. Always evaluate meals, entertainment, depreciation timing, penalties, federal income tax, Section 163(j), officer life insurance, state tax, charitable contributions, and any other prior-year recurring adjustment category. If an adjustment has no current-year support, do not use prior-year amount; mark it 0/blank and flag as not supported.",
+      "5. M-1/M-3: taxable income must foot from book income plus/minus book-to-tax adjustments. If it does not foot, include an unreconciled difference row and flag it.",
+      "6. M-2 / retained earnings: tie beginning retained earnings, book income, distributions/dividends, and ending retained earnings to the balance sheet or flag the difference.",
+      "7. Source every material number in a nearby source/notes column or AI Notes. Every current-year amount must be traceable to a current_financials line, GL line, or explicit user instruction.",
+      "",
       "Rules for entryGuide:",
       "Generate entryGuide in the same JSON response. Do not leave entryGuide empty.",
       "The app will insert entryGuide into the downloaded Excel workbook as a Data Entry Guide sheet, so the guide must be complete on the first generation.",
       "The entryGuide must be specific to the selected tax software below. Use that software's screen terminology, navigation paths, and field labels. Do not default to ProConnect unless ProConnect is the selected software.",
       "For every material workbook line item, source-file value, tax adjustment, balance sheet item, payment, deduction, credit, state amount, and reviewer-required item, create an entryGuide field with screenPath, softwareNavigation, fieldName, value, valueSource, status, and statusNote.",
+      "For ProConnect 1120 workpapers, use field-level paths precise enough for a preparer to enter the return without guessing. Other Deductions must list each component separately, not as one combined number.",
+      "The entryGuide must include tieOutChecks with these checks at minimum: income lines vs current-year P&L revenue; COGS vs current-year P&L; deductions vs P&L/book-to-tax bridge; assets vs current-year balance sheet; liabilities plus equity vs current-year balance sheet; net income vs current-year P&L; taxable income vs M-1/M-3.",
+      "Each tieOutChecks item must include check, guideAmount, financialAmount, difference, status (OK or NEEDS_REVIEW), and note.",
+      "The entryGuide must include completenessFlags for any P&L or balance sheet account that was not mapped into the workbook or tax software guide.",
+      "Each field should include lineReference, amountSource, tieOutStatus, and dataType when available.",
       "If a value is not entered in tax software, mark it not_applicable and explain why.",
       "If a value requires preparer judgment, mark it decision_needed with the decision item.",
       "At minimum, include the core client information, income, deductions, book-to-tax adjustments, tax/payments, balance sheet, state items, and any review-sensitive entries that are supported by the uploaded files.",
@@ -8640,7 +8663,13 @@ function buildPreparerContent(payload) {
       : "";
     content.push({
       type: "text",
-      text: [`=== PREPARATION SOURCE FILE: ${file.name} ===`, file.text, templateBlock].filter(Boolean).join("\n\n"),
+      text: [
+        `=== PREPARATION SOURCE FILE: ${file.name} ===`,
+        `ROLE: ${file.preparationRole || "supporting_document"}`,
+        `ROLE PURPOSE: ${file.preparationRoleDescription || "Use only for directly supported values or context."}`,
+        file.text,
+        templateBlock,
+      ].filter(Boolean).join("\n\n"),
     });
   }
 
@@ -8885,9 +8914,56 @@ function safeJsonForPrompt(value, maxChars) {
   return `${text.slice(0, maxChars)}\n...[truncated for prompt length]`;
 }
 
+function annotatePreparationFileRoles(files, payload = {}) {
+  return (Array.isArray(files) ? files : []).map((file) => {
+    const role = detectPreparationFileRole(file, payload);
+    return { ...file, preparationRole: role.id, preparationRoleDescription: role.description };
+  });
+}
+
+function detectPreparationFileRole(file = {}, payload = {}) {
+  const metadata = payload.metadata || {};
+  const taxYear = Number(String(metadata.taxYear || payload.taxYear || "").match(/\d{4}/)?.[0] || 0);
+  const priorYear = taxYear ? String(taxYear - 1) : "";
+  const currentYear = taxYear ? String(taxYear) : "";
+  const name = String(file.name || "").toLowerCase();
+  const text = String(file.text || "").slice(0, 12000).toLowerCase();
+  const joined = `${name}\n${text}`;
+  const hasWorkbookTemplate = Boolean(file.workbookTemplate?.sheets?.length || (Array.isArray(file.workbookTemplates) && file.workbookTemplates.some((template) => template?.sheets?.length)));
+
+  if (hasWorkbookTemplate && /\b(template|workpaper|work paper|estimate|est tax|projection|safe harbor)\b/.test(joined)) {
+    return {
+      id: "prior_workpaper",
+      description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
+    };
+  }
+  if (/\b(form\s*(1040|1041|1065|1120|1120s|1120-s)|u\.s\.\s*(individual|income tax|corporation|partnership)|schedule\s+[a-z0-9-]+|tax return|return transcript)\b/.test(joined) && (!currentYear || !name.includes(currentYear) || name.includes(priorYear))) {
+    return {
+      id: "prior_return",
+      description: "Prior-year tax return: use for beginning balances, carryforwards, depreciation/tax basis, prior tax positions, and prior-year support only.",
+    };
+  }
+  if (/\b(profit\s*(and|&)?\s*loss|p&l|income statement|balance sheet|trial balance|general ledger|gl detail|financial statement|financial report|quickbooks|xero|sage|netsuite|freshbooks|zoho|wave)\b/.test(joined)) {
+    return {
+      id: "current_financials",
+      description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
+    };
+  }
+  if (hasWorkbookTemplate) {
+    return {
+      id: "prior_workpaper",
+      description: "Workbook/template file: use structure and prior-year categories only unless user explicitly says otherwise.",
+    };
+  }
+  return {
+    id: "supporting_document",
+    description: "Supporting document: use only for values or context directly supported by the file.",
+  };
+}
+
 function normalizeEntryGuide(parsed, fallback) {
   const guide = parsed && typeof parsed === "object" ? parsed : {};
-  const screens = Array.isArray(guide.screens) ? guide.screens : [];
+  const screens = Array.isArray(guide.screens) ? guide.screens : buildEntryGuideScreensFromRows(guide.rows || guide.fields || guide.entries, fallback);
   let nextScreenNumber = 1;
   const normalizedScreens = screens.map((screen) => {
     let screenNumber = Number(screen.screenNumber || 0);
@@ -8895,10 +8971,12 @@ function normalizeEntryGuide(parsed, fallback) {
     nextScreenNumber = Math.max(nextScreenNumber, screenNumber + 1);
     const fields = Array.isArray(screen.fields) ? screen.fields.map((field, index) => ({
       fieldNumber: Number(field.fieldNumber || index + 1),
-      fieldName: String(field.fieldName || "Field"),
+      fieldName: String(field.fieldName || field.field || "Field"),
       fieldDescription: String(field.fieldDescription || ""),
-      value: formatEntryGuideValue(field.value, field.dataType),
-      valueSource: String(field.valueSource || "Workpaper data"),
+      lineReference: field.lineReference ? String(field.lineReference) : "",
+      value: formatEntryGuideValue(field.value ?? field.amount, field.dataType),
+      valueSource: String(field.valueSource || field.amountSource || "Workpaper data"),
+      tieOutStatus: field.tieOutStatus ? String(field.tieOutStatus) : "",
       status: normalizeEntryStatus(field.status),
       statusNote: field.statusNote ? String(field.statusNote) : null,
       dataType: String(field.dataType || "text"),
@@ -8925,12 +9003,63 @@ function normalizeEntryGuide(parsed, fallback) {
     totalFields: Number(guide.totalFields || allFields.length),
     fieldsNeedingDecision: Number(guide.fieldsNeedingDecision || allFields.filter((field) => field.status === "decision_needed").length),
     fieldsFromReviewIssues: Number(guide.fieldsFromReviewIssues || allFields.filter((field) => field.status === "review_issue").length),
+    allTiesOut: Boolean(guide.allTiesOut || guide.validationSummary?.allTiesOut || false),
+    tieOutChecks: normalizeTieOutChecks(guide.tieOutChecks || guide.validationChecks || guide.tieOuts || []),
+    completenessFlags: Array.isArray(guide.completenessFlags) ? guide.completenessFlags.map((item) => String(item)).filter(Boolean) : [],
     screens: normalizedScreens,
     decisionItems: Array.isArray(guide.decisionItems) ? guide.decisionItems : [],
     reviewIssueFields: Array.isArray(guide.reviewIssueFields) ? guide.reviewIssueFields : [],
     entryOrder: String(guide.entryOrder || "Enter fields in screen number order from top to bottom."),
     estimatedEntryTime: String(guide.estimatedEntryTime || "30-60 minutes"),
   };
+}
+
+function buildEntryGuideScreensFromRows(rows, fallback = {}) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+  const grouped = new Map();
+  rows.forEach((row, index) => {
+    if (!row || typeof row !== "object") return;
+    const screen = String(row.screen || row.proConnectScreen || row.softwareScreen || row.screenPath || "Tax Software Inputs");
+    const section = String(row.section || row.softwareSection || "").trim();
+    const screenPath = section ? `${screen} > ${section}` : screen;
+    if (!grouped.has(screenPath)) {
+      grouped.set(screenPath, {
+        screenNumber: grouped.size + 1,
+        screenPath,
+        screenDescription: String(row.description || row.screenDescription || ""),
+        softwareNavigation: String(row.navigation || row.softwareNavigation || row.path || screenPath || `Refer to ${softwareDisplayName(fallback.taxSoftware)} input screens`),
+        fields: [],
+        screenNotes: "",
+      });
+    }
+    const group = grouped.get(screenPath);
+    group.fields.push({
+      fieldNumber: group.fields.length + 1,
+      fieldName: String(row.field || row.fieldName || row.label || `Field ${index + 1}`),
+      fieldDescription: String(row.fieldDescription || row.description || ""),
+      lineReference: String(row.lineReference || row.formLine || row.formLineReference || ""),
+      value: row.amount ?? row.value ?? "",
+      valueSource: String(row.amountSource || row.valueSource || row.source || "Workpaper data"),
+      tieOutStatus: String(row.tieOutStatus || row.status || ""),
+      status: normalizeEntryStatus(row.entryStatus || row.status),
+      statusNote: String(row.statusNote || row.note || ""),
+      dataType: String(row.dataType || inferEntryDataType(row.amount ?? row.value)),
+      reviewIssueRef: row.reviewIssueRef ? String(row.reviewIssueRef) : null,
+    });
+  });
+  return [...grouped.values()];
+}
+
+function normalizeTieOutChecks(checks) {
+  if (!Array.isArray(checks)) return [];
+  return checks.map((check) => ({
+    check: String(check.check || check.name || check.label || "Tie-out check"),
+    guideAmount: check.guideAmount ?? check.workpaperAmount ?? check.entryGuideAmount ?? "",
+    financialAmount: check.financialAmount ?? check.sourceAmount ?? "",
+    difference: check.difference ?? "",
+    status: String(check.status || "").toUpperCase().includes("OK") || String(check.status || "").toUpperCase().includes("PASS") ? "OK" : "NEEDS_REVIEW",
+    note: String(check.note || check.notes || ""),
+  })).filter((check) => check.check);
 }
 
 function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
@@ -8967,28 +9096,58 @@ function appendEntryGuideSheetToWorkbook(workbook, guide) {
 
 function buildEntryGuideWorkbookSheet(guideData) {
   const guide = normalizeEntryGuide(guideData, guideData || {});
+  const tieOutChecks = Array.isArray(guide.tieOutChecks) ? guide.tieOutChecks : [];
+  const completenessFlags = Array.isArray(guide.completenessFlags) ? guide.completenessFlags : [];
+  const validationOk = tieOutChecks.length && tieOutChecks.every((check) => String(check.status || "").toUpperCase() === "OK") && !completenessFlags.length;
   const rows = [
-    [`${guide.software || "Tax Software"} - Data Entry Guide`, "", "", "", "", "", "", ""],
-    [`${guide.clientName || "Client"} | EIN: ${guide.ein || "Not provided"} | Form ${guide.returnType || ""} | TY ${guide.taxYear || ""}`, "", "", "", "", "", "", ""],
-    [`Total fields: ${guide.totalFields || 0} | Ready: ${countGuideStatus(guide, "ready")} | Decision needed: ${guide.fieldsNeedingDecision || 0} | Verify: ${countGuideStatus(guide, "verify")} | Review issues: ${guide.fieldsFromReviewIssues || 0} | Est. entry time: ${guide.estimatedEntryTime || "30-60 minutes"}`, "", "", "", "", "", "", ""],
-    [guide.entryOrder || "Enter fields in screen number order from top to bottom.", "", "", "", "", "", "", ""],
+    [`${guide.software || "Tax Software"} - Data Entry Guide`, "", "", "", "", "", ""],
+    [`${guide.clientName || "Client"} | EIN: ${guide.ein || "Not provided"} | Form ${guide.returnType || ""} | TY ${guide.taxYear || ""}`, "", "", "", "", "", ""],
+    [`Validation summary: ${validationOk ? "ALL PRIMARY TIE-OUTS OK" : "NEEDS REVIEW"} | Total fields: ${guide.totalFields || 0} | Ready: ${countGuideStatus(guide, "ready")} | Decision needed: ${guide.fieldsNeedingDecision || 0} | Verify: ${countGuideStatus(guide, "verify")} | Review issues: ${guide.fieldsFromReviewIssues || 0}`, "", "", "", "", "", ""],
+    [guide.entryOrder || "Enter fields in screen number order from top to bottom.", "", "", "", "", "", ""],
     [""],
-    ["#", "Screen / Navigation Path", "Software Navigation", "Field Name", "Value to Enter", "Source", "Status", "Notes / Action Required"],
+    ["TIE-OUT CHECKS", "", "", "", "", "", ""],
+    ["Check", "Guide Amount", "Financial Amount", "Difference", "Status", "Note", ""],
   ];
+
+  if (tieOutChecks.length) {
+    for (const check of tieOutChecks) {
+      rows.push([
+        check.check || "",
+        check.guideAmount ?? "",
+        check.financialAmount ?? "",
+        check.difference ?? "",
+        check.status || "NEEDS_REVIEW",
+        check.note || "",
+        "",
+      ]);
+    }
+  } else {
+    rows.push(["No tie-out checks were returned. Review generated workpaper manually against current-year financials.", "", "", "", "NEEDS_REVIEW", "", ""]);
+  }
+
+  if (completenessFlags.length) {
+    rows.push([""], ["COMPLETENESS FLAGS", "", "", "", "", "", ""], ["Flag", "", "", "", "", "", ""]);
+    completenessFlags.forEach((flag) => rows.push([flag, "", "", "", "", "", ""]));
+  }
+
+  rows.push(
+    [""],
+    ["DATA ENTRY FIELDS", "", "", "", "", "", ""],
+    ["#", `${guide.software || "Tax Software"} Screen > Section > Field`, "Form Line", "Amount", "Source", "Tie-Out Status", "Done"]
+  );
 
   let fieldNum = 1;
   for (const screen of guide.screens || []) {
-    rows.push([`Screen ${screen.screenNumber || ""}: ${screen.screenPath || "Input screen"}`, screen.screenDescription || "", screen.softwareNavigation || "", "", "", "", "", screen.screenNotes || ""]);
+    rows.push([`Screen ${screen.screenNumber || ""}: ${screen.screenPath || "Input screen"}`, screen.screenDescription || "", screen.softwareNavigation || "", "", "", screen.screenNotes || ""]);
     for (const field of screen.fields || []) {
       rows.push([
         fieldNum++,
-        screen.screenPath || "",
-        screen.softwareNavigation || "",
-        field.fieldName || "",
-        field.value || "",
+        [screen.screenPath, field.fieldName].filter(Boolean).join(" > "),
+        field.lineReference || field.fieldDescription || "",
+        field.value ?? "",
         field.valueSource || "",
-        entryGuideStatusText(field.status),
-        field.statusNote || field.reviewIssueRef || "",
+        field.tieOutStatus || entryGuideStatusText(field.status),
+        "",
       ]);
     }
     rows.push([""]);
@@ -9012,22 +9171,22 @@ function buildEntryGuideWorkbookSheet(guideData) {
     name: "Data Entry Guide",
     rows,
     merges: [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 7 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 7 } },
-      { s: { r: 2, c: 0 }, e: { r: 2, c: 7 } },
-      { s: { r: 3, c: 0 }, e: { r: 3, c: 7 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 6 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 6 } },
+      { s: { r: 2, c: 0 }, e: { r: 2, c: 6 } },
+      { s: { r: 3, c: 0 }, e: { r: 3, c: 6 } },
     ],
-    cols: [{ wch: 6 }, { wch: 30 }, { wch: 34 }, { wch: 32 }, { wch: 20 }, { wch: 30 }, { wch: 16 }, { wch: 42 }],
+    cols: [{ wch: 6 }, { wch: 46 }, { wch: 18 }, { wch: 18 }, { wch: 34 }, { wch: 18 }, { wch: 12 }],
     styles: [
       { r: 0, c: 0, bold: true, underline: true },
+      { r: 2, c: 0, bold: true, fill: validationOk ? "DCFCE7" : "FEE2E2", border: true },
       { r: 5, c: 0, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 1, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 2, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 3, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 4, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 5, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 6, bold: true, fill: "EAF2FF", border: true },
-      { r: 5, c: 7, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 0, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 1, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 2, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 3, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 4, bold: true, fill: "EAF2FF", border: true },
+      { r: 6, c: 5, bold: true, fill: "EAF2FF", border: true },
     ],
   };
 }

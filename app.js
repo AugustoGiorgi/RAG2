@@ -2953,17 +2953,12 @@ function renderResearchAnswer(data) {
       </div>
     </div>` : "";
   const sourcesHtml = renderResearchSources(data.sources || []);
-  const totalTokens = Number(data.inputTokens || 0) + Number(data.outputTokens || 0);
-  const adminMeta = currentUser.role === "admin"
-    ? `<span>${Math.round(totalTokens / 1000)}K tokens</span><span>~$${Number(data.totalCost || 0).toFixed(4)}</span>`
-    : "";
   return `
     ${thinkingHtml}
     <div class="research-answer-text">${formatResearchAnswer(data.answer || "")}</div>
     ${sourcesHtml}
     <div class="research-answer-footer">
       <span>Model: ${escapeHtml(data.model || "claude")}</span>
-      ${adminMeta}
       <span class="research-disclaimer">Always verify with primary sources.</span>
     </div>`;
 }
@@ -3867,56 +3862,12 @@ async function logout() {
 }
 
 async function runWithCostEstimate(action, params, apiFn) {
-  if (!window.showCostEstimates) return apiFn();
-  const query = new URLSearchParams({
-    action,
-    returnType: params?.returnType || "",
-    hasWorkpaper: String(Boolean(params?.hasWorkpaper)),
-    hasImage: String(Boolean(params?.hasImage)),
-    model: params?.model || "claude-sonnet-4-20250514",
-  });
-  const estimate = await fetch(`${API_BASE_URL}/api/cost/estimate?${query}`).then((res) => res.json());
-  return new Promise((resolve, reject) => {
-    showCostEstimateBanner(
-      estimate,
-      () => apiFn().then(resolve).catch(reject),
-      () => reject(new Error("Cancelled by user"))
-    );
-  });
+  return apiFn();
 }
 
 function showCostEstimateBanner(estimate, onConfirm, onCancel) {
   document.getElementById("cost-estimate-banner")?.remove();
-  const target = document.querySelector(".workflow-card:not([hidden])") || document.querySelector(".workspace-main") || document.body;
-  const banner = document.createElement("div");
-  banner.id = "cost-estimate-banner";
-  banner.className = "cost-estimate-banner";
-  const totalTokens = Number(estimate.estimatedInputTokens || 0) + Number(estimate.estimatedOutputTokens || 0);
-  banner.innerHTML = `
-    <div class="cost-estimate-inner">
-      <div class="cost-estimate-header"><span class="cost-estimate-title">Estimated API Cost</span></div>
-      <div class="cost-estimate-details">
-        <div class="cost-row"><span>Estimated tokens</span><span>~${totalTokens.toLocaleString()}</span></div>
-        <div class="cost-row"><span>Estimated cost</span><strong>$${Number(estimate.estimatedTotalCost || 0).toFixed(4)}</strong></div>
-        <div class="cost-row cost-range"><span>Range</span><span>$${Number(estimate.estimatedRange?.low || 0).toFixed(4)} - $${Number(estimate.estimatedRange?.high || 0).toFixed(4)}</span></div>
-        <div class="cost-model">Model: ${escapeHtml(estimate.model || "")}</div>
-      </div>
-      <div class="cost-estimate-actions">
-        <button class="cost-cancel-btn" type="button">Cancel</button>
-        <button class="cost-confirm-btn" type="button">Proceed</button>
-      </div>
-      <p class="cost-estimate-note">${escapeHtml(estimate.note || "Estimate only.")}</p>
-    </div>`;
-  banner.querySelector(".cost-confirm-btn").addEventListener("click", () => {
-    banner.remove();
-    onConfirm?.();
-  });
-  banner.querySelector(".cost-cancel-btn").addEventListener("click", () => {
-    banner.remove();
-    onCancel?.();
-  });
-  target.prepend(banner);
-  banner.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  onConfirm?.();
 }
 
 function openAdminDashboard() {
@@ -4275,10 +4226,7 @@ async function runReview(event) {
     renderProgress(null, 1);
     const payload = await buildReviewPayload();
     showPreflightCost(els.reviewCostEstimate, estimatePayloadCost(payload, 4500), "senior review");
-    renderValidation([
-      ...validation,
-      { blocks: false, text: preflightCostMessage(estimatePayloadCost(payload, 4500), "senior review") },
-    ]);
+    renderValidation(validation);
     renderProgress(null, 2);
     const response = await requestClaudeReview(payload);
     renderProgress(null, 4);
@@ -4707,8 +4655,7 @@ function setupDatabaseEvents() {
   });
   els.databaseSaveGlobalInstructions?.addEventListener("click", saveDatabaseGlobalInstructions);
   els.databaseGlobalInstructions?.addEventListener("input", () => {
-    const tokens = Math.ceil((els.databaseGlobalInstructions.value || "").length / 4);
-    els.databaseGlobalTokenEstimate.textContent = `~${tokens} tokens included in every AI call`;
+    if (els.databaseGlobalTokenEstimate) els.databaseGlobalTokenEstimate.textContent = "";
   });
   els.databaseAddLibraryItem?.addEventListener("click", addDatabaseLibraryItem);
   els.databaseRebuildDeadlines?.addEventListener("click", rebuildDatabaseDeadlines);
@@ -5302,7 +5249,7 @@ async function loadDatabaseLibrary() {
   const library = await fetch(`${API_BASE_URL}/api/library`).then((res) => res.json()).catch(() => ({ documents: [], globalInstructions: "" }));
   databaseState.library = library;
   if (els.databaseGlobalInstructions && els.databaseGlobalInstructions.value !== library.globalInstructions) els.databaseGlobalInstructions.value = library.globalInstructions || "";
-  if (els.databaseGlobalTokenEstimate) els.databaseGlobalTokenEstimate.textContent = `~${Math.ceil((library.globalInstructions || "").length / 4)} tokens included in every AI call`;
+  if (els.databaseGlobalTokenEstimate) els.databaseGlobalTokenEstimate.textContent = "";
   if (library.defaultTaxSoftware) {
     const defaults = readFirmDefaults();
     if (!defaults.defaultTaxSoftware) {
@@ -5872,10 +5819,6 @@ async function ensureEntryGuide(options = {}) {
   const software = document.getElementById("entryGuideSoftware")?.value || prepState.taxSoftware || localStorage.getItem("taxapp_default_software") || "proconnect";
   const returnType = document.getElementById("returnType")?.value || document.getElementById("organizerReturnType")?.value || "1120";
   const taxYear = document.getElementById("taxYear")?.value || document.getElementById("prepCurrentYear")?.value || new Date().getFullYear();
-  const outputTokens = entryGuideOutputTokens(returnType);
-  const estimate = estimateObjectCost(entryGuideRequestPayload(software, returnType, taxYear), outputTokens);
-  const ok = options.skipConfirm || currentUser.role !== "admin" || window.confirm(`Generating the entry guide uses approximately ${formatNumber(estimate.inputTokens + estimate.outputTokens)} tokens (~$${Number(estimate.totalUsd || 0).toFixed(4)} USD).\n\nGenerate anyway?`);
-  if (!ok) throw new Error("Entry guide generation skipped.");
 
   updateEntryGuideStatus(`Generating ${entryGuideSoftwareName(software)} entry guide...`);
   startEntryGuideLoadingMessages();
@@ -8100,15 +8043,7 @@ function renderStringList(title, items) {
 }
 
 function renderCostSummary(payload) {
-  if (currentUser.role !== "admin") return "";
-  const cost = payload.costEstimate;
-  if (!cost) return "";
-  return `
-    <div class="cost-summary">
-      <strong>Estimated Claude cost</strong>
-      <span>$${Number(cost.totalUsd || 0).toFixed(2)} USD</span>
-      <small>${formatNumber(cost.inputTokens)} new input Â· ${formatNumber(cost.cacheReadInputTokens)} cached input Â· ${formatNumber(cost.outputTokens)} output tokens</small>
-    </div>`;
+  return "";
 }
 
 function renderMessage(type, title, message) {
@@ -8870,18 +8805,13 @@ function estimatePayloadChars(value) {
 }
 
 function preflightCostMessage(cost, operationName) {
-  return `Estimated Claude Console cost before ${operationName}: about $${Number(cost.totalUsd || 0).toFixed(4)} USD (${formatNumber(cost.inputTokens)} input tokens + ${formatNumber(cost.outputTokens)} estimated output tokens).`;
+  return "";
 }
 
 function showPreflightCost(element, cost, operationName = "this operation") {
   if (!element) return;
-  if (currentUser.role !== "admin") {
-    element.textContent = "";
-    element.hidden = true;
-    return;
-  }
-  element.hidden = false;
-  element.textContent = preflightCostMessage(cost, operationName);
+  element.textContent = "";
+  element.hidden = true;
 }
 
 function formatBytes(bytes) {
