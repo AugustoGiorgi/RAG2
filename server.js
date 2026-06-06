@@ -6659,7 +6659,7 @@ async function handleReview(req, res) {
 
   const raw = extractText(result.data);
 
-  let structured = parseClaudeJson(raw);
+  let structured = normalizeSeniorReviewServer(parseClaudeJson(raw), payload);
   let finalRaw = raw;
   let finalResult = result;
   if (!isUsableSeniorReview(structured, payload)) {
@@ -6677,15 +6677,11 @@ async function handleReview(req, res) {
     if (retryResult.ok) {
       finalResult = retryResult;
       finalRaw = extractText(retryResult.data);
-      structured = parseClaudeJson(finalRaw);
+      structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
     }
   }
   if (!isUsableSeniorReview(structured, payload)) {
-    sendJson(res, 502, {
-      error: "Claude did not return a complete senior review. The response did not include documents read, checkbox review, tie-outs, balance sheet review, or findings. Please confirm that a current-year return and current-year workpaper are uploaded, then rerun.",
-      raw: finalRaw,
-    });
-    return;
+    structured = buildIncompleteReviewResult(payload, finalRaw);
   }
   const savedReviewHistory = saveReviewHistoryFromResult(payload, structured, finalRaw);
 
@@ -6717,7 +6713,94 @@ function isUsableSeniorReview(structured, payload = {}) {
     structured.finalConclusion,
     structured.overallRiskScore,
   ].filter(Boolean).join(" "));
-  return hasDocuments && hasReviewWork && !(emptyLanguage && !issues.length && !checkbox.length && !tieOut.length && !hasBalance);
+  return hasDocuments && hasReviewWork && !(emptyLanguage && !issues.length && !checkbox.length && !tieOut.length && !hasBalance && !verified.length && !missing.length && !open.length);
+}
+
+function normalizeSeniorReviewServer(structured, payload = {}) {
+  if (!structured || typeof structured !== "object") return structured;
+  const normalized = { ...structured };
+  if (!Array.isArray(normalized.documentsRead) || !normalized.documentsRead.length) {
+    const documentSummary = Array.isArray(normalized.documentSummary) ? normalized.documentSummary : Array.isArray(normalized.documentsReviewed) ? normalized.documentsReviewed : [];
+    normalized.documentsRead = documentSummary.length
+      ? documentSummary.map((item, index) => ({
+        filename: `Document ${index + 1}`,
+        role: "unknown",
+        summary: typeof item === "object" ? JSON.stringify(item) : String(item || ""),
+      }))
+      : buildDocumentsReadFromPayload(payload);
+  }
+  if (!Array.isArray(normalized.verifiedItems) && Array.isArray(normalized.reviewerComments)) normalized.verifiedItems = normalized.reviewerComments;
+  if (!Array.isArray(normalized.openQuestions) && Array.isArray(normalized.questions)) normalized.openQuestions = normalized.questions;
+  if (!Array.isArray(normalized.missingDocuments) && Array.isArray(normalized.missingInformation)) normalized.missingDocuments = normalized.missingInformation;
+  if (!Array.isArray(normalized.checkboxReview)) normalized.checkboxReview = [];
+  if (!Array.isArray(normalized.tieOutResults)) normalized.tieOutResults = [];
+  if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {
+    normalized.balanceSheetCheck = {
+      totalAssets: null,
+      totalLiabEquity: null,
+      balanced: false,
+      difference: null,
+      note: "Balance sheet check was required but Claude did not return a Schedule L tie-out. Treat this item as needing reviewer follow-up.",
+    };
+    normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
+    normalized.openQuestions.push("Complete and document the Schedule L balance sheet tie-out because the AI response did not return one.");
+  }
+  return normalized;
+}
+
+function buildDocumentsReadFromPayload(payload = {}) {
+  return (payload.files || []).map((file) => ({
+    filename: String(file.name || "Uploaded file"),
+    role: String(file.reviewRole || file.canonicalRole || file.role || "supporting_document"),
+    summary: `${file.encoding || file.mediaType || "Uploaded"} file included in the review package. ${file.text ? `Extracted approximately ${String(file.text).length.toLocaleString("en-US")} characters of readable content.` : "Readable text was not available; review may be limited."}`,
+  }));
+}
+
+function hasBalanceSheetRelevantFiles(payload = {}) {
+  const text = JSON.stringify((payload.files || []).map((file) => ({ name: file.name, type: file.type, role: file.reviewRole || file.canonicalRole || file.role }))).toLowerCase();
+  return /1120|1120-s|1120s|1065|1041|workpaper|balance|schedule l|taxreturn|taxreturns/.test(text);
+}
+
+function buildIncompleteReviewResult(payload = {}, raw = "") {
+  const metadata = payload.metadata || {};
+  return {
+    clientName: metadata.entityName || metadata.clientName || "",
+    returnType: metadata.returnType || "",
+    taxYear: metadata.taxYear || "",
+    reviewStage: "Senior Review",
+    generatedDate: new Date().toISOString(),
+    reviewerName: "RAG Tax AI",
+    executiveSummary: "The AI response did not contain a complete senior-review checklist. The uploaded documents were received, but the review must be rerun or completed manually before relying on the result.",
+    documentsRead: buildDocumentsReadFromPayload(payload),
+    feedbackApplied: [],
+    issues: [{
+      priority: "HIGH",
+      category: "Incomplete AI Review",
+      areaReviewed: "Review completeness",
+      formOrSchedule: metadata.returnType || "Return package",
+      issueDescription: "Claude did not return a complete senior review with findings, checkbox review, numeric tie-outs, and balance sheet review.",
+      evidence: String(raw || "").slice(0, 1200) || "No usable review body was returned.",
+      riskAnalysis: "If this output is treated as complete, material return errors could be missed before filing.",
+      proposedSolution: "Confirm that the current-year return and current-year workpaper are uploaded and rerun the review. If the package is large, split the return/workpaper into separate readable PDFs or Excel files.",
+      source: "AI response validation",
+      needsMoreInfo: "Readable current-year return and current-year workpaper.",
+    }],
+    checkboxReview: [],
+    tieOutResults: [],
+    balanceSheetCheck: {
+      totalAssets: null,
+      totalLiabEquity: null,
+      balanced: false,
+      difference: null,
+      note: "Not completed because Claude did not return a usable balance sheet check.",
+    },
+    openQuestions: ["Was the current-year return uploaded as a readable PDF?", "Was the current-year workpaper uploaded as a readable Excel/PDF file?"],
+    verifiedItems: [],
+    missingDocuments: ["Complete current-year return and current-year workpaper may be missing or unreadable."],
+    finalConclusion: "NOT READY. The senior review output is incomplete and must be rerun before relying on it.",
+    filingReadiness: "NOT READY",
+    overallRiskScore: "High - incomplete senior review",
+  };
 }
 
 function saveReviewHistoryFromResult(payload, structured, raw) {
