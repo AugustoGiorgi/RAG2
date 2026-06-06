@@ -6909,7 +6909,9 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
 }
 
 function reviewModelCandidates() {
-  const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) => !/^claude-(opus|sonnet)-4-6$/i.test(model));
+  const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) =>
+    !/^claude-opus/i.test(model) && !/^claude-sonnet-4-6$/i.test(model)
+  );
   return Array.from(new Set([
     "claude-sonnet-4-20250514",
     "claude-sonnet-4-5-20250929",
