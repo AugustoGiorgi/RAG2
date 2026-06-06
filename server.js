@@ -13,6 +13,8 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 85000);
+const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 8000);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
 const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const ROOT = __dirname;
@@ -70,8 +72,10 @@ const CLAUDE_INPUT_COST_PER_MTOK = Number(process.env.CLAUDE_INPUT_COST_PER_MTOK
 const CLAUDE_OUTPUT_COST_PER_MTOK = Number(process.env.CLAUDE_OUTPUT_COST_PER_MTOK || 15);
 const MODEL_COSTS = {
   "claude-sonnet-4-20250514": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-sonnet-4-5-20250929": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-4-5-20251001": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-3-5-sonnet-20241022": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-3-5-sonnet-latest": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-opus-4-20250514": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
   "claude-opus-4-7": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
@@ -6640,72 +6644,81 @@ async function handleHealth(_req, res) {
 }
 
 async function handleReview(req, res) {
-  const payload = await readJsonBody(req);
-  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  try {
+    const payload = await readJsonBody(req);
+    const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
 
-  if (!apiKey) {
-    sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
-    return;
-  }
-  if (!Array.isArray(payload.files) || payload.files.length === 0) {
-    sendJson(res, 400, { error: "Upload at least one document before starting the review." });
-    return;
-  }
-
-  payload.files = annotateReviewFileRoles(payload.files || [], payload);
-  const reviewRequest = buildDirectReviewRequest(payload, req);
-  const startedAt = Date.now();
-  const result = await callAnthropicDirectWithFallbacks(apiKey, {
-    max_tokens: 16000,
-    thinking: { type: "enabled", budget_tokens: 12000 },
-    system: reviewRequest.systemPrompt,
-    messages: [{ role: "user", content: reviewRequest.userContent }],
-  }, reviewModelCandidates());
-  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
-  logClaudeCost(req, result, "review", "review", payload, startedAt);
-
-  console.log("[Review] stop_reason:", result.data.stop_reason);
-  console.log("[Review] content block types:", Array.isArray(result.data.content) ? result.data.content.map((block) => block.type) : []);
-
-  const textBlocks = extractTextBlocksOnly(result.data);
-  const truncated = result.data.stop_reason === "max_tokens";
-  let review = normalizeDirectReview(parseClaudeJson(textBlocks), reviewRequest);
-  let rawFallback = null;
-  let finalResult = result;
-
-  if (!hasDirectReviewContent(review) && textBlocks.trim()) {
-    const fixStartedAt = Date.now();
-    const fixed = await structureDirectReviewJson(apiKey, textBlocks, reviewRequest);
-    if (fixed.ok) {
-      logClaudeCost(req, fixed, "review", "review_structuring", payload, fixStartedAt);
-      finalResult = fixed;
-      const fixedText = extractTextBlocksOnly(fixed.data);
-      review = normalizeDirectReview(parseClaudeJson(fixedText), reviewRequest);
+    if (!apiKey) {
+      sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." });
+      return;
     }
+    if (!Array.isArray(payload.files) || payload.files.length === 0) {
+      sendJson(res, 400, { error: "Upload at least one document before starting the review." });
+      return;
+    }
+
+    payload.files = annotateReviewFileRoles(payload.files || [], payload);
+    const reviewRequest = buildDirectReviewRequest(payload, req);
+    const startedAt = Date.now();
+    const result = await callAnthropicDirectWithFallbacks(apiKey, {
+      max_tokens: REVIEW_MAX_TOKENS,
+      system: reviewRequest.systemPrompt,
+      messages: [{ role: "user", content: reviewRequest.userContent }],
+    }, reviewModelCandidates());
+    if (!result.ok) {
+      sendJson(res, Number(result.status) || 502, { error: result.error || "Claude API request failed." });
+      return;
+    }
+    logClaudeCost(req, result, "review", "review", payload, startedAt);
+
+    console.log("[Review] stop_reason:", result.data.stop_reason);
+    console.log("[Review] content block types:", Array.isArray(result.data.content) ? result.data.content.map((block) => block.type) : []);
+
+    const textBlocks = extractTextBlocksOnly(result.data);
+    const truncated = result.data.stop_reason === "max_tokens";
+    let review = normalizeDirectReview(parseClaudeJson(textBlocks), reviewRequest);
+    let rawFallback = null;
+    let finalResult = result;
+
+    if (!hasDirectReviewContent(review) && textBlocks.trim()) {
+      const fixStartedAt = Date.now();
+      const fixed = await structureDirectReviewJson(apiKey, textBlocks, reviewRequest);
+      if (fixed.ok) {
+        logClaudeCost(req, fixed, "review", "review_structuring", payload, fixStartedAt);
+        finalResult = fixed;
+        const fixedText = extractTextBlocksOnly(fixed.data);
+        review = normalizeDirectReview(parseClaudeJson(fixedText), reviewRequest);
+      }
+    }
+
+    if (!hasDirectReviewContent(review)) {
+      rawFallback = textBlocks || "(no text returned by model)";
+      review = null;
+    }
+
+    const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
+
+    sendJson(res, 200, {
+      ok: true,
+      review,
+      structured: review,
+      rawFallback,
+      truncated,
+      meta: reviewRequest.meta,
+      documentsRead: reviewRequest.documentsRead,
+      feedbackApplied: reviewRequest.feedbackApplied,
+      model: finalResult.data.model || finalResult.model,
+      usage: finalResult.data.usage || null,
+      tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
+      costEstimate: estimateClaudeCost(finalResult.data.usage || null),
+      savedReviewHistory,
+    });
+  } catch (error) {
+    console.error("[Review] route failed:", error);
+    sendJson(res, Number(error.statusCode) || 500, {
+      error: error.expose ? error.message : `Review route failed: ${error.message || "Unexpected server error."}`,
+    });
   }
-
-  if (!hasDirectReviewContent(review)) {
-    rawFallback = textBlocks || "(no text returned by model)";
-    review = null;
-  }
-
-  const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
-
-  sendJson(res, 200, {
-    ok: true,
-    review,
-    structured: review,
-    rawFallback,
-    truncated,
-    meta: reviewRequest.meta,
-    documentsRead: reviewRequest.documentsRead,
-    feedbackApplied: reviewRequest.feedbackApplied,
-    model: finalResult.data.model || finalResult.model,
-    usage: finalResult.data.usage || null,
-    tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
-    costEstimate: estimateClaudeCost(finalResult.data.usage || null),
-    savedReviewHistory,
-  });
 }
 
 function buildDirectReviewRequest(payload = {}, req) {
@@ -6808,20 +6821,45 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) 
 }
 
 async function callAnthropicDirect(apiKey, requestBody) {
-  const res = await fetch(ANTHROPIC_URL, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
-    body: JSON.stringify(requestBody),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok) return { ok: true, data, model: data.model || requestBody.model };
-  return { ok: false, status: res.status, error: data.error?.message || data.message || JSON.stringify(data).slice(0, 500) || "Claude API request failed." };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ANTHROPIC_REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(ANTHROPIC_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      signal: controller.signal,
+      body: JSON.stringify(requestBody),
+    });
+    const raw = await res.text().catch(() => "");
+    let data = {};
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      data = { raw: raw.slice(0, 1000) };
+    }
+    if (res.ok) return { ok: true, data, model: data.model || requestBody.model };
+    const errorMessage = data.error?.message || data.message || data.raw || `Claude API returned HTTP ${res.status}.`;
+    return { ok: false, status: Number(res.status) || 502, error: errorMessage };
+  } catch (error) {
+    console.error("[Review] Anthropic request failed:", error);
+    const timedOut = error?.name === "AbortError";
+    return {
+      ok: false,
+      status: timedOut ? 504 : 502,
+      error: timedOut
+        ? `Claude request timed out after ${Math.round(ANTHROPIC_REQUEST_TIMEOUT_MS / 1000)} seconds. Try fewer/lighter files or rerun the review.`
+        : `Claude request failed before a response was received: ${error.message || "network/request error"}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MODEL_FALLBACKS) {
   const candidates = Array.from(new Set((models || []).filter(Boolean)));
   let lastError = "Claude API request failed.";
   let lastStatus = 500;
+  const attempts = [];
   for (const model of candidates) {
     const body = { ...requestBody, model };
     if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
@@ -6829,17 +6867,20 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
     if (result.ok) return result;
     lastError = `Model ${model}: ${result.error}`;
     lastStatus = result.status || 500;
+    attempts.push(lastError);
     if (isRateLimitError(lastStatus, result.error)) break;
     if (!shouldTryNextModel(lastStatus, result.error)) break;
   }
-  return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}.` };
+  return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
 }
 
 function reviewModelCandidates() {
+  const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) => !/^claude-sonnet-4-6$/i.test(model));
   return Array.from(new Set([
-    ...MODEL_FALLBACKS,
-    "claude-sonnet-4-6",
+    "claude-sonnet-4-5-20250929",
     "claude-sonnet-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    ...reviewSafeFallbacks,
     "claude-haiku-4-5-20251001",
   ].filter(Boolean)));
 }
