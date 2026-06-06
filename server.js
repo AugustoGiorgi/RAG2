@@ -6655,13 +6655,12 @@ async function handleReview(req, res) {
   payload.files = annotateReviewFileRoles(payload.files || [], payload);
   const reviewRequest = buildDirectReviewRequest(payload, req);
   const startedAt = Date.now();
-  const result = await callAnthropicDirect(apiKey, {
-    model: "claude-sonnet-4-5-20251001",
+  const result = await callAnthropicDirectWithFallbacks(apiKey, {
     max_tokens: 16000,
     thinking: { type: "enabled", budget_tokens: 12000 },
     system: reviewRequest.systemPrompt,
     messages: [{ role: "user", content: reviewRequest.userContent }],
-  });
+  }, reviewModelCandidates());
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
   logClaudeCost(req, result, "review", "review", payload, startedAt);
 
@@ -6816,7 +6815,37 @@ async function callAnthropicDirect(apiKey, requestBody) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.ok) return { ok: true, data, model: data.model || requestBody.model };
-  return { ok: false, status: res.status, error: data.error?.message || data.message || "Claude API request failed." };
+  return { ok: false, status: res.status, error: data.error?.message || data.message || JSON.stringify(data).slice(0, 500) || "Claude API request failed." };
+}
+
+async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MODEL_FALLBACKS) {
+  const candidates = Array.from(new Set((models || []).filter(Boolean)));
+  let lastError = "Claude API request failed.";
+  let lastStatus = 500;
+  for (const model of candidates) {
+    const body = { ...requestBody, model };
+    if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
+    const result = await callAnthropicDirect(apiKey, body);
+    if (result.ok) return result;
+    lastError = `Model ${model}: ${result.error}`;
+    lastStatus = result.status || 500;
+    if (isRateLimitError(lastStatus, result.error)) break;
+    if (!shouldTryNextModel(lastStatus, result.error)) break;
+  }
+  return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}.` };
+}
+
+function reviewModelCandidates() {
+  return Array.from(new Set([
+    ...MODEL_FALLBACKS,
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-20250514",
+    "claude-haiku-4-5-20251001",
+  ].filter(Boolean)));
+}
+
+function supportsClaudeThinking(model) {
+  return /^claude-(opus|sonnet)-4/i.test(String(model || "")) || /^claude-haiku-4-5/i.test(String(model || ""));
 }
 
 function extractTextBlocksOnly(data) {
@@ -6830,12 +6859,11 @@ function extractTextBlocksOnly(data) {
 }
 
 async function structureDirectReviewJson(apiKey, textBlocks, reviewRequest) {
-  return callAnthropicDirect(apiKey, {
-    model: "claude-sonnet-4-5-20251001",
+  return callAnthropicDirectWithFallbacks(apiKey, {
     max_tokens: 16000,
     system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences.",
     messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "").slice(0, 50000)}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
-  });
+  }, reviewModelCandidates());
 }
 
 function normalizeDirectReview(review, reviewRequest) {
