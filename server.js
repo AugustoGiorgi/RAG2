@@ -13,8 +13,11 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
-const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 85000);
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 180000);
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 8000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 220000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 90000);
+const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 12000);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
 const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const ROOT = __dirname;
@@ -6729,14 +6732,14 @@ function buildDirectReviewRequest(payload = {}, req) {
   const reviewStage = metadata.reviewStage || payload.reviewStage || "Initial review";
   const state = metadata.state || metadata.statesIncluded || payload.state || "";
   const feedback = getReviewFeedbackForPayload(payload);
-  const documents = (payload.files || []).map((file) => ({
+  const documents = compactReviewDocuments((payload.files || []).map((file) => ({
     name: String(file.name || "Uploaded file"),
     role: String(file.reviewRole || file.canonicalRole || file.role || "supporting_document"),
     mimeType: String(file.mediaType || file.mimeType || file.type || "application/octet-stream"),
     extractedText: String(file.extractedText || file.text || "").trim(),
     encoding: String(file.encoding || ""),
     size: Number(file.size || 0),
-  }));
+  })));
   const meta = {
     clientName,
     returnType,
@@ -6754,6 +6757,37 @@ function buildDirectReviewRequest(payload = {}, req) {
     systemPrompt: buildDirectReviewSystemPrompt(returnType, state),
     userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata),
   };
+}
+
+function compactReviewDocuments(documents = []) {
+  if (!Array.isArray(documents) || documents.length === 0) return [];
+  const weights = documents.map((file) => reviewDocumentWeight(file.role));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || documents.length;
+  const minBudget = Math.max(2000, REVIEW_MIN_CHARS_PER_FILE);
+  return documents.map((file, index) => {
+    const originalText = String(file.extractedText || "");
+    if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
+    const weightedBudget = Math.floor(REVIEW_MAX_TOTAL_CHARS * (weights[index] / totalWeight));
+    const budget = Math.max(minBudget, Math.min(REVIEW_MAX_CHARS_PER_FILE, weightedBudget));
+    const compactedText = truncateMiddle(originalText, budget);
+    const compacted = compactedText.length < originalText.length;
+    const note = compacted
+      ? `\n\n[SERVER NOTE: This document was compacted from ${originalText.length.toLocaleString("en-US")} to approximately ${compactedText.length.toLocaleString("en-US")} characters so the review can complete. The beginning and ending sections were preserved.]`
+      : "";
+    return {
+      ...file,
+      extractedText: compactedText + note,
+      originalTextLength: originalText.length,
+      compacted,
+    };
+  });
+}
+
+function reviewDocumentWeight(role) {
+  const normalized = String(role || "").toLowerCase();
+  if (normalized.includes("current_return") || normalized.includes("current_workpaper")) return 3;
+  if (normalized.includes("prior_return") || normalized.includes("prior_workpaper")) return 1.5;
+  return 1;
 }
 
 function buildDirectReviewSystemPrompt(returnType, state) {
@@ -6847,7 +6881,7 @@ async function callAnthropicDirect(apiKey, requestBody) {
       ok: false,
       status: timedOut ? 504 : 502,
       error: timedOut
-        ? `Claude request timed out after ${Math.round(ANTHROPIC_REQUEST_TIMEOUT_MS / 1000)} seconds. Try fewer/lighter files or rerun the review.`
+        ? `Claude review timed out after ${Math.round(ANTHROPIC_REQUEST_TIMEOUT_MS / 1000)} seconds. The uploaded package was received, but the model did not finish in time. Please rerun the review; the server now compacts large files automatically.`
         : `Claude request failed before a response was received: ${error.message || "network/request error"}`,
     };
   } finally {
@@ -6875,10 +6909,10 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
 }
 
 function reviewModelCandidates() {
-  const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) => !/^claude-sonnet-4-6$/i.test(model));
+  const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) => !/^claude-(opus|sonnet)-4-6$/i.test(model));
   return Array.from(new Set([
-    "claude-sonnet-4-5-20250929",
     "claude-sonnet-4-20250514",
+    "claude-sonnet-4-5-20250929",
     "claude-3-5-sonnet-20241022",
     ...reviewSafeFallbacks,
     "claude-haiku-4-5-20251001",
@@ -10781,11 +10815,23 @@ function labelForType(type) {
 }
 
 function truncate(value, maxLength) {
-  return String(value || "");
+  const text = String(value || "");
+  const limit = Number(maxLength || 0);
+  if (!Number.isFinite(limit) || limit <= 0 || text.length <= limit) return text;
+  if (limit <= 20) return text.slice(0, limit);
+  return `${text.slice(0, limit - 14)}\n[truncated]`;
 }
 
 function truncateMiddle(value, maxLength) {
-  return String(value || "");
+  const text = String(value || "");
+  const limit = Number(maxLength || 0);
+  if (!Number.isFinite(limit) || limit <= 0 || text.length <= limit) return text;
+  if (limit <= 40) return text.slice(0, limit);
+  const marker = "\n[... middle truncated ...]\n";
+  const available = Math.max(0, limit - marker.length);
+  const head = Math.ceil(available * 0.6);
+  const tail = Math.floor(available * 0.4);
+  return `${text.slice(0, head)}${marker}${text.slice(Math.max(0, text.length - tail))}`;
 }
 
 function escapeHtml(value) {

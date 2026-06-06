@@ -4230,6 +4230,7 @@ async function runReview(event) {
     showPreflightCost(els.reviewCostEstimate, estimatePayloadCost(payload, 4500), "senior review");
     renderValidation(validation);
     renderProgress(null, 2);
+    renderProgress(null, 3);
     const apiResponse = await requestClaudeReview(payload);
     renderProgress(null, 4);
     const canonical = buildCanonicalReviewFromApi(apiResponse, payload);
