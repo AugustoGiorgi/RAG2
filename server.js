@@ -6663,6 +6663,16 @@ async function handleReview(req, res) {
   let finalRaw = raw;
   let finalResult = result;
   if (!isUsableSeniorReview(structured, payload)) {
+    const repairStartedAt = Date.now();
+    const repaired = await structureReviewTextWithClaude(apiKey, payload, finalRaw);
+    if (repaired.ok) {
+      logClaudeCost(req, repaired, "review", "review_structuring", payload, repairStartedAt);
+      finalRaw = extractText(repaired.data);
+      finalResult = repaired;
+      structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
+    }
+  }
+  if (!isUsableSeniorReview(structured, payload)) {
     const retryPayload = {
       ...payload,
       metadata: {
@@ -6678,6 +6688,16 @@ async function handleReview(req, res) {
       finalResult = retryResult;
       finalRaw = extractText(retryResult.data);
       structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
+      if (!isUsableSeniorReview(structured, payload)) {
+        const repairStartedAt = Date.now();
+        const repaired = await structureReviewTextWithClaude(apiKey, payload, finalRaw);
+        if (repaired.ok) {
+          logClaudeCost(req, repaired, "review", "review_structuring", payload, repairStartedAt);
+          finalRaw = extractText(repaired.data);
+          finalResult = repaired;
+          structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
+        }
+      }
     }
   }
   if (!isUsableSeniorReview(structured, payload)) {
@@ -6800,6 +6820,8 @@ function buildIncompleteReviewResult(payload = {}, raw = "") {
     finalConclusion: "NOT READY. The senior review output is incomplete and must be rerun before relying on it.",
     filingReadiness: "NOT READY",
     overallRiskScore: "High - incomplete senior review",
+    structuringFailed: true,
+    rawReviewOutput: String(raw || ""),
   };
 }
 
@@ -8236,8 +8258,49 @@ function parseClaudeJson(raw) {
       const parsed = JSON.parse(cleaned);
       if (parsed && typeof parsed === "object") return parsed;
     } catch (_) {}
+    try {
+      const repaired = repairJsonTextForParsing(cleaned);
+      const parsed = JSON.parse(repaired);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch (error) {
+      console.error("Review JSON parse failed:", error.message);
+    }
   }
   return null;
+}
+
+function repairJsonTextForParsing(text) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of String(text || "")) {
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      output += char;
+      continue;
+    }
+    if (inString && char === "\n") {
+      output += "\\n";
+      continue;
+    }
+    if (inString && char === "\r") continue;
+    if (inString && char === "\t") {
+      output += "\\t";
+      continue;
+    }
+    output += char;
+  }
+  return output.replace(/,\s*([}\]])/g, "$1");
 }
 
 function extractBalancedJsonObjects(text) {
@@ -8286,7 +8349,54 @@ async function callClaudeWithFallbacks(apiKey, payload) {
     maxTokens: 16000,
     models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
     thinking: { type: "enabled", budget_tokens: 12000 },
+    webSearch: false,
   });
+}
+
+async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
+  const raw = String(reviewText || "").trim();
+  if (!raw || /^Claude returned no review text\./i.test(raw)) {
+    return { ok: false, status: 422, error: "No raw review text to structure." };
+  }
+  const metadata = payload.metadata || {};
+  const content = [{
+    type: "text",
+    text: [
+      "Convert the following senior tax review response into ONE complete valid JSON object.",
+      "Return only JSON. Do not include markdown fences or prose outside JSON.",
+      "Preserve every finding, amount, risk analysis, proposed solution, document name, open question, and conclusion from the raw review.",
+      "If the raw review says a document was unreadable, include a MEDIUM or HIGH issue and missingDocuments entry for that document.",
+      "If the raw text includes evidence of Schedule L imbalance, EIN mismatch, officer compensation/Form 1125-E, shareholder loans, or M-1/M-2 problems, those must appear as issues.",
+      "",
+      `Client: ${metadata.entityName || metadata.clientName || "Not specified"}`,
+      `Return Type: ${metadata.returnType || "Not specified"}`,
+      `Tax Year: ${metadata.taxYear || "Not specified"}`,
+      "",
+      "Uploaded documents and detected roles:",
+      listFiles(payload.files || []),
+      "",
+      "Required schema:",
+      reviewJsonSchemaText(),
+      "",
+      "Raw review response to convert:",
+      raw.slice(0, 45000),
+    ].join("\n"),
+  }];
+  return callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens: 12000,
+    models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+    webSearch: false,
+    system: [
+      "You are a JSON repair and tax-review structuring assistant.",
+      "You do not perform a new tax review. You only convert the supplied raw review into the required JSON schema.",
+      "Every field in the schema is required. If the raw review lacks a field, fill it with a concise explanation of what is missing rather than an empty placeholder.",
+      "Return only one parseable JSON object.",
+    ].join("\n"),
+  });
+}
+
+function reviewJsonSchemaText() {
+  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"Senior Review","generatedDate":"string","reviewerName":"string","executiveSummary":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":false,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string"}';
 }
 
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
@@ -8552,6 +8662,8 @@ function buildSystemPrompt(context = { knowledgeBase: [], reviewExamples: [] }) 
   ].join("\n");
 
   return [
+    "CRITICAL OUTPUT REQUIREMENT: You MUST return a complete senior review as valid JSON in the exact schema below. Every field is required. Do not write prose outside the JSON. Do not return an empty issues array unless every required review section contains real work and the return is genuinely clean.",
+    "",
     MASTER_REVIEW_PROMPT || "You are a Senior US Tax Reviewer at a CPA firm. Review the uploaded US tax return package and do not invent facts.",
     "",
     "APPLICATION RUNTIME RULES:",
@@ -8598,12 +8710,13 @@ function buildSystemPrompt(context = { knowledgeBase: [], reviewExamples: [] }) 
     "OUTPUT CONTRACT FOR THE APP:",
     "The browser will turn your response into a written Word-style review for the user. Return ONLY a JSON object inside ```json``` fences so the app can render and export it cleanly.",
     "Write all JSON values in English. Keep the JSON property names exactly as specified below.",
-    '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"Senior Review","generatedDate":"string","reviewerName":"string","executiveSummary":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":false,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string"}',
+    reviewJsonSchemaText(),
     "",
     "High = blocks or could materially affect filing. Medium = should resolve before filing. Low = cleanup or limited risk. Info = observation.",
     "Every issue must include evidence, riskAnalysis, proposedSolution, source, and whether more information is needed.",
     "documentsRead must list every uploaded document you received and what you extracted from it.",
     "A response with zero issues is acceptable only if you still provide detailed documentsRead, checkboxReview, tieOutResults, balanceSheetCheck, verifiedItems, filingReadiness, and finalConclusion showing what was actually checked. Never return only 'No issues identified' or 'None noted'.",
+    "Before responding, verify your JSON includes non-empty executiveSummary, documentsRead, checkboxReview, tieOutResults, balanceSheetCheck with actual numbers or an explicit unreadable/missing explanation, filingReadiness, finalConclusion, and all material findings. If any required section is empty, complete it before responding.",
     "If a current-year return or current-year workpaper is missing or unreadable, do not say the review is clean. Add a HIGH issue and missingDocuments entry explaining that the review cannot be completed.",
     "If User Review Notes ask for a specific list or final note, include that requested output in verifiedItems, openQuestions, finalConclusion, or an issue as appropriate.",
     "",
@@ -8616,6 +8729,8 @@ function buildSystemPrompt(context = { knowledgeBase: [], reviewExamples: [] }) 
     "",
     `FIRM CORRECTIONS DATABASE (${CORRECTIONS_DB.length} historical entries):`,
     dbLines,
+    "",
+    "FINAL OUTPUT REMINDER: return only the complete JSON object. No explanation, no markdown narrative, no partial checklist, no empty senior review shell.",
   ].join("\n");
 }
 
@@ -8745,7 +8860,7 @@ function buildUserPrompt(payload, context = { knowledgeBase: [], reviewExamples:
     `States included: ${metadata.statesIncluded || "Not specified"}`,
     `Review stage: ${reviewStage}`,
     `Requested checks: ${reviewTypes}`,
-    `Web research enabled: ${WEB_SEARCH_ENABLED ? "Yes" : "No"}`,
+    "Web research enabled: No for this Review call. Use uploaded documents, Knowledge Base, Database context, and firm review feedback.",
     intakeWarnings.length ? `Intake warnings: ${intakeWarnings.join(" ")}` : "Intake warnings: None.",
     "",
     "Detected document roles:",
@@ -9106,27 +9221,52 @@ function detectReviewFileRole(file = {}, payload = {}) {
   const currentYear = taxYear ? String(taxYear) : "";
   const priorYear = taxYear ? String(taxYear - 1) : "";
   const name = String(file.name || "").toLowerCase();
+  const ext = String(file.name || "").toLowerCase().split(".").pop() || "";
   const text = String(file.text || "").slice(0, 16000).toLowerCase();
   const explicitRole = String(file.role || "").toLowerCase();
   const joined = `${name}\n${text}`;
-  const isReturn = /\b(form\s*(1040|1041|1065|1120|1120s|1120-s)|u\.s\.\s*(individual|income tax|corporation|partnership)|schedule\s+[a-z0-9-]+|tax return)\b/.test(joined);
-  const isWorkpaper = /\b(workpaper|work paper|trial balance|balance sheet|profit\s*(and|&)?\s*loss|p&l|general ledger|book[-\s]?to[-\s]?tax|m-1|m-2|m-3|lead sheet|supporting schedule)\b/.test(joined) || file.type === "workpapers";
+  const canonicalRoles = new Set(["current_return", "prior_return", "current_workpaper", "prior_workpaper", "supporting_document"]);
+  if (canonicalRoles.has(explicitRole)) return roleDefinition(explicitRole);
+  if (explicitRole === "current-year") return roleDefinition("current_return");
+  if (explicitRole === "prior-year") return roleDefinition("prior_return");
+  if (explicitRole.includes("support")) return roleDefinition("supporting_document");
+
+  const isSpreadsheet = ["xlsx", "xls", "xlsm", "csv"].includes(ext) || /spreadsheet|excel/.test(String(file.mediaType || "").toLowerCase());
+  const isZip = ext === "zip" || /zip/.test(String(file.mediaType || "").toLowerCase());
+  const isWorkpaper = /\b(workpaper|workpapers|work paper|wp\b|trial balance|balance sheet|profit\s*(and|&)?\s*loss|p&l|general ledger|book[-\s]?to[-\s]?tax|m-1|m-2|m-3|lead sheet|supporting schedule)\b/.test(joined)
+    || (isSpreadsheet && /\b(book[-\s]?to[-\s]?tax|trial balance|balance sheet|p&l|profit\s*(and|&)?\s*loss|tax workpapers?)\b/.test(joined));
+  const isSupporting = /\b(w-?2|w-?3|w-?9|1099|k-?1|pir\b|05-102|franchise|depreciation|fixed asset|bank statement|brokerage|payroll|invoice|receipt|support|backup|source document)\b/.test(joined)
+    || (isZip && /\b(w-?2|w-?3|w-?9|1099|k-?1|pir|support|docs?|documents?|backup)\b/.test(joined));
+  const isReturn = /\b(form\s*(1040|1041|1065|1120|1120s|1120-s)|u\.s\.\s*(individual|income tax|corporation|partnership).*return|tax return|income tax return)\b/.test(joined)
+    && !isSupporting
+    && !isWorkpaper;
   const mentionsCurrent = currentYear && (name.includes(currentYear) || joined.includes(`tax year ${currentYear}`) || joined.includes(`ty ${currentYear}`) || joined.includes(`year ended 12/31/${currentYear}`));
   const mentionsPrior = priorYear && (name.includes(priorYear) || joined.includes(`tax year ${priorYear}`) || joined.includes(`ty ${priorYear}`) || joined.includes(`year ended 12/31/${priorYear}`));
 
-  if (file.type === "taxReturns" || isReturn) {
-    if (explicitRole.includes("prior") || mentionsPrior && !mentionsCurrent) {
-      return { id: "prior_return", description: "Prior-year tax return used for reference, beginning balances, prior positions, and consistency checks." };
-    }
-    return { id: "current_return", description: "Current-year return under senior review. Analyze this return for errors." };
-  }
   if (isWorkpaper) {
     if (mentionsPrior && !mentionsCurrent) {
-      return { id: "prior_workpaper", description: "Prior-year workpaper used for reference, recurring adjustments, and prior treatment." };
+      return roleDefinition("prior_workpaper");
     }
-    return { id: "current_workpaper", description: "Current-year workpaper. Current-year return amounts should tie to this source." };
+    return roleDefinition("current_workpaper");
   }
-  return { id: "supporting_document", description: "Supporting document. Determine whether it belongs on the current-year return and whether amounts are reflected correctly." };
+  if (isReturn) {
+    if (mentionsPrior && !mentionsCurrent) return roleDefinition("prior_return");
+    return roleDefinition("current_return");
+  }
+  if (isSupporting) return roleDefinition("supporting_document");
+  return roleDefinition("supporting_document");
+}
+
+function roleDefinition(role) {
+  const definitions = {
+    prior_return: "Prior-year tax return used for reference, beginning balances, prior positions, and consistency checks.",
+    current_return: "Current-year return under senior review. Analyze this return for errors.",
+    prior_workpaper: "Prior-year workpaper used for reference, recurring adjustments, and prior treatment.",
+    current_workpaper: "Current-year workpaper. Current-year return amounts should tie to this source.",
+    supporting_document: "Supporting document. Determine whether it belongs on the current-year return and whether amounts are reflected correctly.",
+  };
+  const id = definitions[role] ? role : "supporting_document";
+  return { id, description: definitions[id] };
 }
 
 function getReviewFeedbackForPayload(payload = {}) {
@@ -10059,10 +10199,11 @@ function normalizeRows(rows) {
 }
 
 function groupFiles(files) {
+  const roleOf = (file) => String(file.reviewRole || file.canonicalRole || file.role || "").toLowerCase();
   return {
-    taxReturns: files.filter((file) => file.type === "taxReturns"),
-    workpapers: files.filter((file) => file.type === "workpapers"),
-    documents: files.filter((file) => file.type === "documents"),
+    taxReturns: files.filter((file) => roleOf(file).includes("return") || file.type === "taxReturns" && !roleOf(file)),
+    workpapers: files.filter((file) => roleOf(file).includes("workpaper") || file.type === "workpapers"),
+    documents: files.filter((file) => roleOf(file) === "supporting_document" || file.type === "documents"),
   };
 }
 

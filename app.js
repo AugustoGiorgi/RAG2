@@ -7085,10 +7085,11 @@ function safeSheetName(name) {
 }
 
 async function prepareFileForReview({ file, type }) {
+  const guessedRole = guessReviewFileRole(file);
   const base = {
     name: displayFileName(file),
     type,
-    role: type === "taxReturns" ? taxReturnRoles.get(fileKey(file)) || "current-year" : "",
+    role: type === "taxReturns" ? normalizeReviewRoleValue(taxReturnRoles.get(fileKey(file)) || guessedRole) : "",
     size: file.size,
     mediaType: file.type || guessMediaType(file.name),
   };
@@ -7280,9 +7281,10 @@ function renderFiles() {
   const totalBytes = getAllFiles().reduce((sum, item) => sum + item.file.size, 0);
   els.totalSize.textContent = formatBytes(totalBytes);
   const allReviewFiles = filesByType.taxReturns;
+  assignDefaultTaxReturnRoles();
   counters.taxReturns.textContent = allReviewFiles.length;
-  counters.workpapers.textContent = allReviewFiles.filter((file) => fileExtension(file.name).toLowerCase() === "zip").length;
-  counters.documents.textContent = allReviewFiles.filter((file) => fileExtension(file.name).toLowerCase() !== "zip").length;
+  counters.workpapers.textContent = allReviewFiles.filter((file) => normalizeReviewRoleValue(taxReturnRoles.get(fileKey(file)) || "").includes("workpaper")).length;
+  counters.documents.textContent = allReviewFiles.filter((file) => normalizeReviewRoleValue(taxReturnRoles.get(fileKey(file)) || "supporting_document") === "supporting_document").length;
 
   Object.keys(filesByType).forEach((type) => {
     inlineCounters[type].textContent = filesByType[type].length;
@@ -7299,10 +7301,19 @@ function renderFiles() {
           <div>
             <div class="file-name">${escapeHtml(displayFileName(file))}</div>
             <div class="file-meta">${formatBytes(file.size)} Â· ${escapeHtml(ext)} Â· ${readabilityLabel(ext)}</div>
+            ${type === "taxReturns" ? renderTaxReturnRole(file) : ""}
           </div>
           <button class="remove-file" type="button" data-type="${type}" data-index="${index}">Remove</button>
         </li>`;
     }).join("");
+  });
+
+  document.querySelectorAll(".return-role").forEach((select) => {
+    select.addEventListener("change", () => {
+      taxReturnRoles.set(select.dataset.key, select.value);
+      renderFiles();
+      renderValidation(validateBeforeReview({ showWarnings: true }));
+    });
   });
 
   document.querySelectorAll(".remove-file").forEach((button) => {
@@ -7341,11 +7352,11 @@ function validateBeforeReview({ showWarnings }) {
     messages.push({ blocks: false, text: "No ZIP package uploaded. The review can continue with individual files, but a ZIP is usually better for complete client packages." });
   }
 
-  if (showWarnings && filesByType.taxReturns.length && !filesByType.taxReturns.some((file) => (taxReturnRoles.get(fileKey(file)) || "current-year") === "current-year")) {
+  if (showWarnings && filesByType.taxReturns.length && !filesByType.taxReturns.some((file) => normalizeReviewRoleValue(taxReturnRoles.get(fileKey(file)) || guessReviewFileRole(file)) === "current_return")) {
     messages.push({ blocks: false, text: "No current year return is marked. The review may be incomplete without the return being reviewed." });
   }
 
-  if (showWarnings && getAllFiles().length && !filesByType.workpapers.length) {
+  if (showWarnings && getAllFiles().length && !filesByType.taxReturns.some((file) => normalizeReviewRoleValue(taxReturnRoles.get(fileKey(file)) || guessReviewFileRole(file)) === "current_workpaper")) {
     messages.push({ blocks: false, text: "No current year workpaper detected. Numeric tie-out checks may be incomplete." });
   }
 
@@ -7525,6 +7536,8 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
     filingReadiness: normalizeFilingReadiness(source.filingReadiness),
     overallRiskScore: safeText(source.overallRiskScore),
     finalConclusion: safeText(source.finalConclusion || source.conclusion || source.executiveSummary || source.summary),
+    structuringFailed: Boolean(source.structuringFailed),
+    rawReviewOutput: safeText(source.rawReviewOutput),
   };
 }
 
@@ -8285,6 +8298,11 @@ function toCleanWrittenReview(response, metadata = {}) {
   addCleanPlainList(lines, structured.missingDocuments || structured.missingInformation, "MISSING");
   lines.push("", "FINAL CONCLUSION", "----------------");
   lines.push(safeText(structured.finalConclusion || structured.executiveSummary) || "Review complete.");
+  if (structured.structuringFailed && structured.rawReviewOutput) {
+    lines.push("", "RAW MODEL OUTPUT SAVED", "----------------------");
+    lines.push("Automatic structuring failed. The raw Claude output is included below so the review content is not lost.");
+    lines.push(safeText(structured.rawReviewOutput));
+  }
   return lines.filter((line) => line !== null && line !== undefined).map(safeText).join("\n");
 }
 
@@ -8845,22 +8863,55 @@ function mergeFiles(existing, incoming) {
 function assignDefaultTaxReturnRoles() {
   filesByType.taxReturns.forEach((file, index) => {
     const key = fileKey(file);
-    if (!taxReturnRoles.has(key)) taxReturnRoles.set(key, index === 0 ? "current-year" : "prior-year");
+    if (!taxReturnRoles.has(key)) {
+      taxReturnRoles.set(key, guessReviewFileRole(file, index));
+    } else {
+      taxReturnRoles.set(key, normalizeReviewRoleValue(taxReturnRoles.get(key)) || guessReviewFileRole(file, index));
+    }
   });
 }
 
 function renderTaxReturnRole(file) {
   const key = fileKey(file);
-  const value = taxReturnRoles.get(key) || "current-year";
+  const value = normalizeReviewRoleValue(taxReturnRoles.get(key) || guessReviewFileRole(file));
   return `
     <label class="role-picker">
-      <span>Return role</span>
+      <span>Detected role</span>
       <select class="return-role" data-key="${escapeHtml(key)}">
-        <option value="current-year"${value === "current-year" ? " selected" : ""}>Current-year return</option>
-        <option value="prior-year"${value === "prior-year" ? " selected" : ""}>Prior-year return</option>
-        <option value="other-return"${value === "other-return" ? " selected" : ""}>Other tax return</option>
+        <option value="current_return"${value === "current_return" ? " selected" : ""}>Current-year return</option>
+        <option value="prior_return"${value === "prior_return" ? " selected" : ""}>Prior-year return</option>
+        <option value="current_workpaper"${value === "current_workpaper" ? " selected" : ""}>Current-year workpaper</option>
+        <option value="prior_workpaper"${value === "prior_workpaper" ? " selected" : ""}>Prior-year workpaper</option>
+        <option value="supporting_document"${value === "supporting_document" ? " selected" : ""}>Supporting document</option>
       </select>
     </label>`;
+}
+
+function normalizeReviewRoleValue(value) {
+  const role = String(value || "").toLowerCase();
+  if (role === "current-year") return "current_return";
+  if (role === "prior-year") return "prior_return";
+  if (role === "other-return") return "supporting_document";
+  if (["current_return", "prior_return", "current_workpaper", "prior_workpaper", "supporting_document"].includes(role)) return role;
+  return "";
+}
+
+function guessReviewFileRole(file, index = 0) {
+  const name = displayFileName(file).toLowerCase();
+  const ext = fileExtension(name).toLowerCase();
+  const taxYear = String(document.getElementById("taxYear")?.value || "").match(/\d{4}/)?.[0] || "";
+  const priorYear = taxYear ? String(Number(taxYear) - 1) : "";
+  const mentionsCurrent = taxYear && name.includes(taxYear);
+  const mentionsPrior = priorYear && name.includes(priorYear);
+  const isWorkpaper = /\b(workpaper|workpapers|work paper|wp\b|trial balance|balance sheet|p&l|profit|loss|book[-\s]?to[-\s]?tax|m-1|m-2|m-3)\b/i.test(name)
+    || ["xlsx", "xls", "xlsm", "csv"].includes(ext);
+  const isSupport = /\b(w-?2|w-?3|w-?9|1099|k-?1|pir\b|05-102|franchise|depreciation|bank statement|support|backup|docs?|documents?)\b/i.test(name)
+    || ext === "zip" && !/\b(return|tax return|workpaper|workpapers)\b/i.test(name);
+  const isReturn = /\b(return|tax return|form\s*(1040|1041|1065|1120|1120s|1120-s))\b/i.test(name) && !isWorkpaper && !isSupport;
+  if (isWorkpaper) return mentionsPrior && !mentionsCurrent ? "prior_workpaper" : "current_workpaper";
+  if (isReturn) return mentionsPrior && !mentionsCurrent ? "prior_return" : "current_return";
+  if (isSupport) return "supporting_document";
+  return "supporting_document";
 }
 
 function fileKey(file) {
