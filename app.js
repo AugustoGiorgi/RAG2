@@ -4230,11 +4230,17 @@ async function runReview(event) {
     showPreflightCost(els.reviewCostEstimate, estimatePayloadCost(payload, 4500), "senior review");
     renderValidation(validation);
     renderProgress(null, 2);
-    const response = await requestClaudeReview(payload);
+    const apiResponse = await requestClaudeReview(payload);
     renderProgress(null, 4);
-    response.structured = normalizeReviewForExport(response, payload.metadata);
+    const canonical = buildCanonicalReviewFromApi(apiResponse, payload);
+    const response = {
+      ...apiResponse,
+      review: apiResponse.rawFallback || JSON.stringify(canonical || {}, null, 2),
+      structured: canonical,
+      issueResponses: apiResponse.issueResponses || {},
+    };
     issueResolutionState = response.issueResponses || {};
-    lastReview = { response, payload };
+    lastReview = { ...(canonical || {}), response, payload };
     invalidateEntryGuideCache();
     renderReviewResult(response, payload.metadata);
     refreshDeliverableStatus();
@@ -4303,6 +4309,50 @@ async function requestClaudeReview(payload) {
   const responsePayload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
   return responsePayload;
+}
+
+function buildCanonicalReviewFromApi(res = {}, payload = {}) {
+  const metadata = payload.metadata || {};
+  const structured = res.review || res.structured || null;
+  if (!structured && res.rawFallback) {
+    return {
+      clientName: res.meta?.clientName || metadata.entityName || metadata.clientName || "",
+      returnType: res.meta?.returnType || metadata.returnType || "",
+      taxYear: res.meta?.taxYear || metadata.taxYear || "",
+      reviewStage: normalizeReviewStage(res.meta?.reviewStage || metadata.reviewStage || "Initial review"),
+      generatedDate: res.meta?.generatedDate || new Date().toLocaleDateString(),
+      reviewerName: res.meta?.reviewerName || "",
+      executiveSummary: "Automatic structuring failed. The raw senior review output is shown below for manual review.",
+      filingReadiness: "NOT READY",
+      overallRiskScore: "High - automatic structuring failed",
+      documentsRead: normalizeDocumentsRead(res.documentsRead),
+      feedbackApplied: normalizeReviewStringArray(res.feedbackApplied),
+      issues: [],
+      checkboxReview: [],
+      tieOutResults: [],
+      balanceSheetCheck: null,
+      openQuestions: [],
+      verifiedItems: [],
+      missingDocuments: [],
+      finalConclusion: "Review requires manual inspection because the AI response could not be structured automatically.",
+      rawFallback: res.rawFallback,
+      structuringFailed: true,
+      rawReviewOutput: res.rawFallback,
+      truncated: Boolean(res.truncated),
+    };
+  }
+  const normalized = normalizeReviewForExport({ structured }, metadata) || {};
+  normalized.clientName = normalized.clientName || res.meta?.clientName || metadata.entityName || metadata.clientName || "";
+  normalized.returnType = normalized.returnType || res.meta?.returnType || metadata.returnType || "";
+  normalized.taxYear = normalized.taxYear || res.meta?.taxYear || metadata.taxYear || "";
+  normalized.reviewStage = normalizeReviewStage(normalized.reviewStage || res.meta?.reviewStage || metadata.reviewStage || "Initial review");
+  normalized.generatedDate = normalized.generatedDate || res.meta?.generatedDate || new Date().toLocaleDateString();
+  normalized.reviewerName = normalized.reviewerName || res.meta?.reviewerName || "";
+  if (!normalized.documentsRead?.length) normalized.documentsRead = normalizeDocumentsRead(res.documentsRead);
+  if (!normalized.feedbackApplied?.length) normalized.feedbackApplied = normalizeReviewStringArray(res.feedbackApplied);
+  normalized.rawFallback = res.rawFallback || null;
+  normalized.truncated = Boolean(res.truncated);
+  return normalized;
 }
 
 async function runNoticeAnalysis() {
@@ -6079,6 +6129,7 @@ function sanitizeIssue(issue = {}) {
     proposedSolution: safeText(issue.proposedSolution),
     recommendedAction: safeText(issue.recommendedAction || issue.recommendation),
     reviewerComment: safeText(issue.reviewerComment || issue.comment),
+    authority: safeText(issue.authority || issue.citation || issue.taxAuthority),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
     needsMoreInfo: safeText(issue.needsMoreInfo),
   };
@@ -7426,7 +7477,7 @@ function renderReviewResult(payload, metadata) {
     els.results.innerHTML = `
       <article>
         <span class="tag ${readinessTagClass(structured.filingReadiness)}">${escapeHtml(structured.filingReadiness || "Complete")}</span>
-        <h3>${escapeHtml(client)} ? Tax year ${escapeHtml(taxYear)}</h3>
+        <h3>${escapeHtml(client)} - Tax year ${escapeHtml(taxYear)}</h3>
         <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}</p>
         ${structured.overallRiskScore ? `<p><strong>Overall risk score:</strong> ${escapeHtml(structured.overallRiskScore)}</p>` : ""}
         ${renderCostSummary(payload)}
@@ -7456,7 +7507,7 @@ function renderReviewResult(payload, metadata) {
   els.results.innerHTML = `
     <article>
       <span class="tag danger">Incomplete</span>
-      <h3>${escapeHtml(client)} ? Tax year ${escapeHtml(taxYear)}</h3>
+      <h3>${escapeHtml(client)} - Tax year ${escapeHtml(taxYear)}</h3>
       <p>The backend did not return a complete senior review. Rerun after confirming the current-year return and current-year workpaper are uploaded.</p>
       ${model ? `<p>${escapeHtml(model)}</p>` : ""}
       ${renderCostSummary(payload)}
@@ -7505,7 +7556,8 @@ function hasSeniorReviewSubstance(structured) {
     structured.balanceSheetCheck ||
     (Array.isArray(structured.reviewerComments) && structured.reviewerComments.length) ||
     (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) ||
-    (Array.isArray(structured.questions) && structured.questions.length)
+    (Array.isArray(structured.questions) && structured.questions.length) ||
+    (safeText(structured.executiveSummary) && !/no executive summary provided/i.test(safeText(structured.executiveSummary)))
   );
   return hasDocs && hasReviewWork;
 }
@@ -7554,6 +7606,7 @@ function normalizeReviewIssueForExport(issue = {}) {
     proposedSolution: safeText(issue.proposedSolution || issue.recommendedAction || issue.recommendation || issue.action),
     recommendedAction: safeText(issue.recommendedAction || issue.proposedSolution || issue.recommendation || issue.action),
     reviewerComment: safeText(issue.reviewerComment || issue.comment),
+    authority: safeText(issue.authority || issue.citation || issue.taxAuthority),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
     needsMoreInfo: safeText(issue.needsMoreInfo || issue.needsClientInfo || issue.missingInformation),
   };
@@ -8282,12 +8335,18 @@ function toCleanWrittenReview(response, metadata = {}) {
       if (issue.riskAnalysis || issue.whyItMatters) lines.push(`Risk analysis: ${issue.riskAnalysis || issue.whyItMatters}`);
       if (issue.proposedSolution || issue.recommendedAction) lines.push(`Proposed solution: ${issue.proposedSolution || issue.recommendedAction}`);
       if (issue.reviewerComment) lines.push(`Reviewer comment: ${issue.reviewerComment}`);
+      if (issue.authority) lines.push(`Authority: ${issue.authority}`);
       if (issue.source) lines.push(`Source: ${issue.source}`);
       if (issue.needsMoreInfo) lines.push(`Needs more info: ${issue.needsMoreInfo}`);
       lines.push("");
     });
   } else {
-    lines.push("- No issue list was returned. Treat this review as incomplete unless the checklist, tie-outs, balance sheet check, and verified items above support a clean conclusion.", "");
+    if (structured.rawFallback) {
+      lines.push("Automatic structuring failed. Raw review output follows:", "");
+      lines.push(safeText(structured.rawFallback), "");
+    } else {
+      lines.push("- No issues identified in the structured review.", "");
+    }
   }
 
   addCheckboxReviewText(lines, structured.checkboxReview);

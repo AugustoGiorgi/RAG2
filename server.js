@@ -6651,69 +6651,214 @@ async function handleReview(req, res) {
     sendJson(res, 400, { error: "Upload at least one document before starting the review." });
     return;
   }
+
   payload.files = annotateReviewFileRoles(payload.files || [], payload);
+  const reviewRequest = buildDirectReviewRequest(payload, req);
   const startedAt = Date.now();
-  const result = await callClaudeWithFallbacks(apiKey, payload);
+  const result = await callAnthropicDirect(apiKey, {
+    model: "claude-sonnet-4-5-20251001",
+    max_tokens: 16000,
+    thinking: { type: "enabled", budget_tokens: 12000 },
+    system: reviewRequest.systemPrompt,
+    messages: [{ role: "user", content: reviewRequest.userContent }],
+  });
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
   logClaudeCost(req, result, "review", "review", payload, startedAt);
 
-  const raw = extractText(result.data);
+  console.log("[Review] stop_reason:", result.data.stop_reason);
+  console.log("[Review] content block types:", Array.isArray(result.data.content) ? result.data.content.map((block) => block.type) : []);
 
-  let structured = normalizeSeniorReviewServer(parseClaudeJson(raw), payload);
-  let finalRaw = raw;
+  const textBlocks = extractTextBlocksOnly(result.data);
+  const truncated = result.data.stop_reason === "max_tokens";
+  let review = normalizeDirectReview(parseClaudeJson(textBlocks), reviewRequest);
+  let rawFallback = null;
   let finalResult = result;
-  if (!isUsableSeniorReview(structured, payload)) {
-    const repairStartedAt = Date.now();
-    const repaired = await structureReviewTextWithClaude(apiKey, payload, finalRaw);
-    if (repaired.ok) {
-      logClaudeCost(req, repaired, "review", "review_structuring", payload, repairStartedAt);
-      finalRaw = extractText(repaired.data);
-      finalResult = repaired;
-      structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
+
+  if (!hasDirectReviewContent(review) && textBlocks.trim()) {
+    const fixStartedAt = Date.now();
+    const fixed = await structureDirectReviewJson(apiKey, textBlocks, reviewRequest);
+    if (fixed.ok) {
+      logClaudeCost(req, fixed, "review", "review_structuring", payload, fixStartedAt);
+      finalResult = fixed;
+      const fixedText = extractTextBlocksOnly(fixed.data);
+      review = normalizeDirectReview(parseClaudeJson(fixedText), reviewRequest);
     }
   }
-  if (!isUsableSeniorReview(structured, payload)) {
-    const retryPayload = {
-      ...payload,
-      metadata: {
-        ...(payload.metadata || {}),
-        userNotes: [
-          payload.metadata?.userNotes || "",
-          "SYSTEM RETRY REQUIREMENT: The previous response was not a usable senior review. You must read the uploaded current-year return and workpapers, list every document in documentsRead, perform checkbox review, numeric tie-out, balance sheet check, M-1/M-2 review, supporting document review, and return the full JSON schema. Do not return an empty review. If you cannot read a document, add an issue and missingDocuments entry instead of saying no issues were identified.",
-        ].filter(Boolean).join("\n\n"),
-      },
-    };
-    const retryResult = await callClaudeWithFallbacks(apiKey, retryPayload);
-    if (retryResult.ok) {
-      finalResult = retryResult;
-      finalRaw = extractText(retryResult.data);
-      structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
-      if (!isUsableSeniorReview(structured, payload)) {
-        const repairStartedAt = Date.now();
-        const repaired = await structureReviewTextWithClaude(apiKey, payload, finalRaw);
-        if (repaired.ok) {
-          logClaudeCost(req, repaired, "review", "review_structuring", payload, repairStartedAt);
-          finalRaw = extractText(repaired.data);
-          finalResult = repaired;
-          structured = normalizeSeniorReviewServer(parseClaudeJson(finalRaw), payload);
-        }
-      }
-    }
+
+  if (!hasDirectReviewContent(review)) {
+    rawFallback = textBlocks || "(no text returned by model)";
+    review = null;
   }
-  if (!isUsableSeniorReview(structured, payload)) {
-    structured = buildIncompleteReviewResult(payload, finalRaw);
-  }
-  const savedReviewHistory = saveReviewHistoryFromResult(payload, structured, finalRaw);
+
+  const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
 
   sendJson(res, 200, {
-    review: finalRaw,
-    structured,
+    ok: true,
+    review,
+    structured: review,
+    rawFallback,
+    truncated,
+    meta: reviewRequest.meta,
+    documentsRead: reviewRequest.documentsRead,
+    feedbackApplied: reviewRequest.feedbackApplied,
     model: finalResult.data.model || finalResult.model,
     usage: finalResult.data.usage || null,
+    tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
     costEstimate: estimateClaudeCost(finalResult.data.usage || null),
-    context: finalResult.context || null,
     savedReviewHistory,
   });
+}
+
+function buildDirectReviewRequest(payload = {}, req) {
+  const metadata = payload.metadata || {};
+  const clientName = metadata.entityName || metadata.clientName || payload.clientName || "Unnamed client";
+  const returnType = metadata.returnType || payload.returnType || "Not specified";
+  const taxYear = metadata.taxYear || payload.taxYear || "Not specified";
+  const reviewStage = metadata.reviewStage || payload.reviewStage || "Initial review";
+  const state = metadata.state || metadata.statesIncluded || payload.state || "";
+  const feedback = getReviewFeedbackForPayload(payload);
+  const documents = (payload.files || []).map((file) => ({
+    name: String(file.name || "Uploaded file"),
+    role: String(file.reviewRole || file.canonicalRole || file.role || "supporting_document"),
+    mimeType: String(file.mediaType || file.mimeType || file.type || "application/octet-stream"),
+    extractedText: String(file.extractedText || file.text || "").trim(),
+    encoding: String(file.encoding || ""),
+    size: Number(file.size || 0),
+  }));
+  const meta = {
+    clientName,
+    returnType,
+    taxYear,
+    reviewStage,
+    state,
+    generatedDate: new Date().toLocaleDateString("en-US"),
+    reviewerName: req?.user?.displayName || getSession(req)?.displayName || "",
+  };
+  return {
+    meta,
+    documents,
+    documentsRead: documents.map((file) => ({ name: file.name, filename: file.name, role: file.role })),
+    feedbackApplied: feedback.map((entry) => entry.text).filter(Boolean),
+    systemPrompt: buildDirectReviewSystemPrompt(returnType, state),
+    userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata),
+  };
+}
+
+function buildDirectReviewSystemPrompt(returnType, state) {
+  return `You are a senior tax return reviewer at a CPA firm with 20+ years of experience reviewing ${returnType || "US tax"} returns. You review with meticulous attention to detail - you catch errors a partner would catch and the ones they would miss.
+
+PRIMARY AUTHORITY: Base every judgment on official IRS guidance (IRS.gov publications, instructions, IRC sections, Treasury regulations) and, where relevant, the official state tax authority for ${state || "the applicable state"}. Cite the specific authority for material findings.
+
+You will be given multiple documents, each labeled with its role:
+- current_return: the return you are reviewing.
+- prior_return: last year's return for reference.
+- current_workpaper: the numbers the current return must tie to.
+- prior_workpaper: how amounts were derived last year.
+- supporting_document: W-2, W-3, W-9, 1099, K-1, PIR, depreciation schedules, notices, and other support.
+
+Read and understand EVERY document before writing anything.
+
+REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
+1. Cross-document consistency: entity name, EIN/SSN, addresses, ownership percentages, tax year dates.
+2. Every checkbox and election.
+3. Numeric tie-out from the return to the current_workpaper.
+4. Balance Sheet / Schedule L: assets must equal liabilities plus equity and beginning balances must tie to prior year.
+5. M-1, M-2, and M-3 footings and requirements.
+6. Supporting documents: decide whether each belongs on the return and whether it is reflected correctly.
+7. Form-specific checks for ${returnType || "the return type"}.
+8. Every firm feedback item provided.
+
+For each error, provide risk analysis and a specific proposed solution.
+
+CRITICAL OUTPUT RULE: Return your COMPLETE review as a single valid JSON object matching the schema in the user message. Every field is required. The issues array must list every finding. Do not return an empty issues array for a return that has problems. Write every string in clear, complete English. Do not write prose outside the JSON. Return ONLY the JSON object.`;
+}
+
+function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) {
+  const feedbackBlock = feedback.length ? feedback.map((entry, index) => `${index + 1}. ${entry.text}`).join("\n") : "None on file";
+  const userNotes = String(metadata.userNotes || "").trim();
+  const clientFacts = String(metadata.clientFacts || "").trim();
+  const docsBlock = documents.map((file, index) => {
+    const body = file.extractedText
+      ? file.extractedText
+      : `[No readable extracted text was available. Encoding: ${file.encoding || "unknown"}; MIME: ${file.mimeType}; Size: ${file.size} bytes. If this document is material, flag it for manual review.]`;
+    return [
+      `=== DOCUMENT ${index + 1}: ${file.name} (role: ${file.role}) ===`,
+      `MIME: ${file.mimeType}`,
+      body,
+    ].join("\n");
+  }).join("\n\n");
+  return [
+    "REVIEW REQUEST",
+    `Client: ${meta.clientName}`,
+    `Return Type: ${meta.returnType}`,
+    `Tax Year: ${meta.taxYear}`,
+    `Review Stage: ${meta.reviewStage}`,
+    `State: ${meta.state || "Not specified"}`,
+    "",
+    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
+    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
+    "FIRM REVIEW FEEDBACK TO APPLY:",
+    feedbackBlock,
+    "",
+    "DOCUMENTS:",
+    docsBlock,
+    "",
+    "Return the complete senior review as JSON in exactly this schema:",
+    reviewJsonSchemaText(),
+  ].filter(Boolean).join("\n");
+}
+
+async function callAnthropicDirect(apiKey, requestBody) {
+  const res = await fetch(ANTHROPIC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+    body: JSON.stringify(requestBody),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) return { ok: true, data, model: data.model || requestBody.model };
+  return { ok: false, status: res.status, error: data.error?.message || data.message || "Claude API request failed." };
+}
+
+function extractTextBlocksOnly(data) {
+  if (!Array.isArray(data?.content)) {
+    console.error("[Review] Response had no content array:", JSON.stringify(data || {}).slice(0, 2000));
+    return "";
+  }
+  const text = data.content.filter((block) => block.type === "text" && block.text).map((block) => block.text).join("\n");
+  if (!text.trim()) console.error("[Review] NO TEXT BLOCKS. Full content:", JSON.stringify(data.content).slice(0, 2000));
+  return text.trim();
+}
+
+async function structureDirectReviewJson(apiKey, textBlocks, reviewRequest) {
+  return callAnthropicDirect(apiKey, {
+    model: "claude-sonnet-4-5-20251001",
+    max_tokens: 16000,
+    system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences.",
+    messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "").slice(0, 50000)}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
+  });
+}
+
+function normalizeDirectReview(review, reviewRequest) {
+  if (!review || typeof review !== "object") return null;
+  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size })) }) || {};
+  normalized.clientName = normalized.clientName || reviewRequest.meta.clientName;
+  normalized.returnType = normalized.returnType || reviewRequest.meta.returnType;
+  normalized.taxYear = normalized.taxYear || reviewRequest.meta.taxYear;
+  normalized.reviewStage = normalized.reviewStage || reviewRequest.meta.reviewStage;
+  normalized.generatedDate = normalized.generatedDate || reviewRequest.meta.generatedDate;
+  normalized.reviewerName = normalized.reviewerName || reviewRequest.meta.reviewerName || "RAG Tax AI";
+  if (!Array.isArray(normalized.documentsRead) || !normalized.documentsRead.length) {
+    normalized.documentsRead = reviewRequest.documentsRead.map((doc) => ({ filename: doc.name, role: doc.role, summary: "Included in the review package." }));
+  }
+  if (!Array.isArray(normalized.feedbackApplied)) normalized.feedbackApplied = reviewRequest.feedbackApplied;
+  return normalized;
+}
+
+function hasDirectReviewContent(review) {
+  if (!review || typeof review !== "object") return false;
+  const text = [review.executiveSummary, review.finalConclusion, review.overallRiskScore].filter(Boolean).join(" ");
+  const hasText = /\S/.test(text) && !/no executive summary provided|no issue list was returned/i.test(text);
+  return hasText || (Array.isArray(review.issues) && review.issues.length > 0);
 }
 
 function isUsableSeniorReview(structured, payload = {}) {
@@ -8396,7 +8541,7 @@ async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
 }
 
 function reviewJsonSchemaText() {
-  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"Senior Review","generatedDate":"string","reviewerName":"string","executiveSummary":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":false,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string"}';
+  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
 }
 
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
