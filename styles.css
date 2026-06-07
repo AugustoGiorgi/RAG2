@@ -1763,6 +1763,20 @@ h1 {
   gap: 12px;
 }
 
+.issue-summary-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.issue-summary-list li {
+  padding-left: 4px;
+}
+
 .issue-card {
   border: 1px solid var(--line);
   border-left: 4px solid #98a2b3;

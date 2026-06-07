@@ -6136,6 +6136,27 @@ function sanitizeIssue(issue = {}) {
   };
 }
 
+function compactOneLine(value, maxLength = 180) {
+  const text = safeText(value).replace(/\s+/g, " ").trim();
+  if (!text || text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function issueSummaryLine(issue, index = 0) {
+  const item = sanitizeIssue(issue);
+  const area = compactOneLine(item.area || "Review item", 34);
+  const description = compactOneLine(item.description || "Issue noted.", 86);
+  return compactOneLine(`${index + 1}. [${item.priority}] ${area}: ${description}`, 140);
+}
+
+function buildIssueSummaryLines(issues = []) {
+  return [...(Array.isArray(issues) ? issues : [])]
+    .map(sanitizeIssue)
+    .filter((issue) => issue.description || issue.area)
+    .sort((a, b) => priorityRank(a) - priorityRank(b))
+    .map((issue, index) => issueSummaryLine(issue, index));
+}
+
 function sanitizeExcelCell(value) {
   const text = safeText(value);
   return text || "";
@@ -7486,6 +7507,7 @@ function renderReviewResult(payload, metadata) {
       ${renderDocumentsReadSection(structured.documentsRead)}
       ${renderFeedbackAppliedSection(structured.feedbackApplied)}
       ${renderResolutionSummary(structured, metadata)}
+      ${renderIssueSummarySection(structured.issues)}
       ${renderIssueSection("Issues and response tracking", structured.issues)}
       ${renderCheckboxReviewSection(structured.checkboxReview)}
       ${renderTieOutSection(structured.tieOutResults)}
@@ -7990,6 +8012,19 @@ function renderIssueSection(title, issues) {
     </article>`;
 }
 
+function renderIssueSummarySection(issues = []) {
+  const summaryLines = buildIssueSummaryLines(issues);
+  if (!summaryLines.length) return "";
+  return `
+    <article>
+      <span class="tag warning">Summary</span>
+      <h3>Issues & Items to Review Summary</h3>
+      <ul class="issue-summary-list">
+        ${summaryLines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+      </ul>
+    </article>`;
+}
+
 function renderResolutionSummary(structured, metadata) {
   const issues = Array.isArray(structured.issues) ? structured.issues : [];
   const resolved = issues.filter((_, index) => issueResolutionState[index]?.status === "resolved").length;
@@ -8322,6 +8357,13 @@ function toCleanWrittenReview(response, metadata = {}) {
     "FIRM REVIEW FEEDBACK APPLIED",
     "----------------------------",
     ...(structured.feedbackApplied?.length ? structured.feedbackApplied.map((item) => `- ${safeText(item)}`) : ["- None noted."]),
+    "",
+    "ISSUES & ITEMS TO REVIEW SUMMARY",
+    "--------------------------------",
+    ...(() => {
+      const summaryLines = buildIssueSummaryLines(structured.issues);
+      return summaryLines.length ? summaryLines.map((line) => `- ${line}`) : ["- No issues identified in the structured review."];
+    })(),
     "",
     "ISSUES & ITEMS TO REVIEW",
     "------------------------",
