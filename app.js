@@ -6142,11 +6142,53 @@ function compactOneLine(value, maxLength = 180) {
   return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
 }
 
-function issueSummaryLine(issue, index = 0) {
+function issueSummaryLine(issue) {
   const item = sanitizeIssue(issue);
-  const area = compactOneLine(item.area || "Review item", 34);
-  const description = compactOneLine(item.description || "Issue noted.", 86);
-  return compactOneLine(`${index + 1}. [${item.priority}] ${area}: ${description}`, 140);
+  return issueProblemPhrase(item);
+}
+
+function issueProblemPhrase(issue) {
+  const text = [
+    issue.area,
+    issue.description,
+    issue.evidence,
+    issue.riskAnalysis,
+    issue.proposedSolution,
+    issue.recommendedAction,
+  ].filter(Boolean).join(" ").toLowerCase();
+
+  if (/(schedule\s*l|balance\s*sheet|assets|liabilities|equity)/.test(text) && /(not balance|out[- ]of[- ]balance|does not equal|do not equal|mismatch|difference|variance|tie)/.test(text)) {
+    return "Schedule L not balanced";
+  }
+  if (/(w-?2|wage statement|payroll)/.test(text) && /(salary|salaries|wage|wages|compensation)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
+    return "W-2 does not match salary information";
+  }
+  if (/(k-?1|schedule\s*k)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
+    return "Schedule K-1 does not match return information";
+  }
+  if (/(depreciation|fixed asset|asset schedule)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
+    return "Depreciation schedule does not match return";
+  }
+  if (/(checkbox|box|election)/.test(text) && /(incorrect|missing|not selected|selected|wrong|review)/.test(text)) {
+    return "Checkbox or election needs review";
+  }
+  if (/(missing|not provided|unavailable|not included|absent)/.test(text)) {
+    return `${issueSummarySubject(issue)} support missing`;
+  }
+  if (/(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
+    return `${issueSummarySubject(issue)} does not match support`;
+  }
+  return compactProblemPhrase(issue.description || issue.area || "Review item needs follow-up");
+}
+
+function issueSummarySubject(issue) {
+  return compactOneLine(safeText(issue.area || issue.category || "Review item").replace(/\s+/g, " "), 48) || "Review item";
+}
+
+function compactProblemPhrase(value) {
+  const text = safeText(value).replace(/\s+/g, " ").trim();
+  const firstClause = text.split(/[.;]/)[0] || text;
+  return compactOneLine(firstClause.replace(/^(issue|finding|problem)\s*[:.-]\s*/i, ""), 120);
 }
 
 function buildIssueSummaryLines(issues = []) {
@@ -6154,7 +6196,7 @@ function buildIssueSummaryLines(issues = []) {
     .map(sanitizeIssue)
     .filter((issue) => issue.description || issue.area)
     .sort((a, b) => priorityRank(a) - priorityRank(b))
-    .map((issue, index) => issueSummaryLine(issue, index));
+    .map((issue) => issueSummaryLine(issue));
 }
 
 function sanitizeExcelCell(value) {
