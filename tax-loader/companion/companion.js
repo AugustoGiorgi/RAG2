@@ -101,6 +101,31 @@ try {
   }
 }
 
+function writeArtifact(payload, softwareDir) {
+  const software = String(payload.software || "drake");
+  const dir = softwareDir || CONFIG.paths[software];
+  if (!dir) throw new Error(`unknown software: ${software}`);
+
+  fs.mkdirSync(dir, { recursive: true });
+  const outputPath = path.join(dir, safeFilename(payload.filename));
+  let result = { ok: true, written: outputPath };
+  if (payload.kind === "drake_trial_balance_template") {
+    result = writeTrialBalanceTemplate(payload, outputPath);
+  } else if (payload.contentBase64) {
+    fs.writeFileSync(outputPath, Buffer.from(payload.contentBase64, "base64"));
+  } else {
+    fs.writeFileSync(outputPath, String(payload.content || ""), "utf8");
+  }
+
+  return {
+    ok: true,
+    written: outputPath,
+    message: "File written for Drake import. Import it using the official Drake import workflow.",
+    companionResult: result,
+    meta: payload.meta || {},
+  };
+}
+
 const server = http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Companion-Token");
@@ -143,31 +168,18 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      fs.mkdirSync(dir, { recursive: true });
-      const outputPath = path.join(dir, safeFilename(payload.filename));
-      let result = { ok: true, written: outputPath };
-      if (payload.kind === "drake_trial_balance_template") {
-        result = writeTrialBalanceTemplate(payload, outputPath);
-      } else if (payload.contentBase64) {
-        fs.writeFileSync(outputPath, Buffer.from(payload.contentBase64, "base64"));
-      } else {
-        fs.writeFileSync(outputPath, String(payload.content || ""), "utf8");
-      }
-
-      sendJson(res, 200, {
-        ok: true,
-        written: outputPath,
-        message: "File written for Drake import. Import it using the official Drake import workflow.",
-        companionResult: result,
-        meta: payload.meta || {},
-      });
+      sendJson(res, 200, writeArtifact(payload, dir));
     } catch (error) {
       sendJson(res, 500, { error: error.message });
     }
   });
 });
 
-server.listen(CONFIG.port, "127.0.0.1", () => {
-  console.log(`[tax-loader companion] listening on http://127.0.0.1:${CONFIG.port}`);
-  console.log(`[tax-loader companion] Drake import folder: ${CONFIG.paths.drake}`);
-});
+if (require.main === module) {
+  server.listen(CONFIG.port, "127.0.0.1", () => {
+    console.log(`[tax-loader companion] listening on http://127.0.0.1:${CONFIG.port}`);
+    console.log(`[tax-loader companion] Drake import folder: ${CONFIG.paths.drake}`);
+  });
+}
+
+module.exports = { writeArtifact, writeTrialBalanceTemplate };

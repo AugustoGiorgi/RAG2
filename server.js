@@ -668,6 +668,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/review/respond") { await handleReviewResponse(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/api/irs-instructions") { await handleIrsInstructions(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/prepare-workpaper") { await handlePrepareWorkpaper(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/preparation/export-drake") { await handlePreparationExportDrake(req, res); return; }
     if (req.method === "POST" && req.url === "/api/preparation/data-entry-guide") { await handlePreparationDataEntryGuide(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/api/estimated-taxes/templates/")) { await handleEstimatedTaxesTemplateDownload(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/estimated-taxes/detect-period") { await handleEstimatedTaxesDetectPeriod(req, res); return; }
@@ -7883,6 +7884,221 @@ async function handlePrepareWorkpaper(req, res) {
       raw,
     });
     return;
+  }
+}
+
+const DRAKE_EXPORT_PATTERNS = [
+  { key: "tax.total_tax", pattern: /\b(total\s+tax|tax\s+liability)\b/i },
+  { key: "tax.taxable_income", pattern: /\b(taxable\s+income|income\s+subject\s+to\s+tax)\b/i },
+  { key: "m1.net_income_book", pattern: /\b(net\s+income\s+per\s+books?|book\s+income|income\s+per\s+books?)\b/i },
+  { key: "income.returns_allowances", pattern: /\b(returns?\s+and\s+allowances?|allowances?\s+and\s+returns?)\b/i },
+  { key: "income.cogs", pattern: /\b(cost\s+of\s+goods\s+sold|cogs|cost\s+of\s+sales|total\s+purchases)\b/i },
+  { key: "income.dividends", pattern: /\b(dividend\s+(income|revenue)|dividends\s+received)\b/i },
+  { key: "income.interest", pattern: /\b(interest\s+(income|revenue)|taxable\s+interest)\b/i },
+  { key: "income.capital_gain", pattern: /\b(capital\s+gain|schedule\s+d|gain\s+on\s+sale|loss\s+on\s+sale)\b/i },
+  { key: "income.other_income", pattern: /\b(other\s+income|miscellaneous\s+income|nonoperating\s+income)\b/i },
+  { key: "income.gross_receipts", pattern: /\b(gross\s+(receipts|sales)|receipts?\s+or\s+sales|sales\s+revenue|total\s+revenue|gross\s+revenue)\b/i },
+  { key: "deductions.officer_comp", pattern: /\b(officer\s+compensation|compensation\s+of\s+officers?|shareholder\s+wages?)\b/i },
+  { key: "deductions.salaries_wages", pattern: /\b(salaries?\s+and\s+wages?|wages?|payroll\s+expense|salary\s+expense)\b/i },
+  { key: "deductions.repairs", pattern: /\b(repairs?\s+and\s+maintenance|repairs?|maintenance)\b/i },
+  { key: "deductions.rents", pattern: /\b(rent|rental\s+expense|lease\s+expense)\b/i },
+  { key: "deductions.taxes_licenses", pattern: /\b(taxes?\s+and\s+licenses?|licenses?|payroll\s+tax|property\s+tax|state\s+tax)\b/i },
+  { key: "deductions.interest", pattern: /\b(interest\s+expense|loan\s+interest|bank\s+interest)\b/i },
+  { key: "deductions.depreciation", pattern: /\b(depreciation|amortization|section\s+179|4562)\b/i },
+  { key: "deductions.advertising", pattern: /\b(advertising|marketing|promotion)\b/i },
+  { key: "deductions.pension", pattern: /\b(pension|profit.?sharing|retirement\s+plan|401k)\b/i },
+  { key: "deductions.employee_benefits", pattern: /\b(employee\s+benefits?|health\s+insurance|benefit\s+program)\b/i },
+  { key: "deductions.meals_50", pattern: /\b(meals?|entertainment|travel\s+meals?)\b/i },
+  { key: "deductions.charitable", pattern: /\b(charitable|contribution|donation)\b/i },
+  { key: "deductions.other", pattern: /\b(other\s+(deductions?|expenses?)|miscellaneous\s+expense|office\s+expense|professional\s+fees?)\b/i },
+  { key: "balance.cash", pattern: /\b(cash|checking|savings|bank\s+account)\b/i },
+  { key: "balance.ar", pattern: /\b(accounts?\s+receivable|trade\s+receivables?|a\/r)\b/i },
+  { key: "balance.inventory", pattern: /\b(inventor(y|ies)|ending\s+inventory)\b/i },
+  { key: "balance.fixed_assets", pattern: /\b(fixed\s+assets?|depreciable\s+assets?|buildings?|equipment|furniture|vehicles?)\b/i },
+  { key: "balance.accum_depr", pattern: /\b(accumulated\s+depreciation|accum\s+depr|contra\s+asset)\b/i },
+  { key: "balance.ap", pattern: /\b(accounts?\s+payable|trade\s+payables?|a\/p)\b/i },
+  { key: "balance.retained_earnings", pattern: /\b(retained\s+earnings|partners?'?\s+capital|capital\s+account|equity)\b/i },
+  { key: "m1.meals_disallowed", pattern: /\b(meals?\s+disallowed|50%\s+meals?|nondeductible\s+meals?)\b/i },
+  { key: "m1.depreciation_diff", pattern: /\b(depreciation\s+(difference|adjustment)|book\s+depr|tax\s+depr)\b/i },
+  { key: "m1.tax_exempt_interest", pattern: /\b(tax.?exempt\s+interest|municipal\s+interest)\b/i },
+  { key: "schK.ordinary_income", pattern: /\b(schedule\s+k.*ordinary|ordinary\s+business\s+income)\b/i },
+  { key: "schK.guaranteed_payments", pattern: /\b(guaranteed\s+payments?)\b/i },
+  { key: "schK.interest_income", pattern: /\b(schedule\s+k.*interest|k-1.*interest)\b/i },
+  { key: "schK.net_rental", pattern: /\b(net\s+rental|rental\s+real\s+estate)\b/i },
+  { key: "schK.section179", pattern: /\b(schedule\s+k.*179|section\s+179)\b/i },
+  { key: "schK.distributions", pattern: /\b(distributions?|draws?)\b/i },
+  { key: "capital.beginning", pattern: /\b(beginning\s+capital|capital\s+beginning)\b/i },
+  { key: "capital.ending", pattern: /\b(ending\s+capital|capital\s+ending)\b/i },
+  { key: "m2.retained_beginning", pattern: /\b(beginning\s+retained|retained\s+earnings\s+beginning)\b/i },
+  { key: "m2.retained_ending", pattern: /\b(ending\s+retained|retained\s+earnings\s+ending)\b/i },
+  { key: "m2.aaa_beginning", pattern: /\b(aaa\s+beginning|beginning\s+aaa)\b/i },
+  { key: "m2.aaa_ending", pattern: /\b(aaa\s+ending|ending\s+aaa)\b/i },
+];
+
+function normalizeDrakeEntityType(value) {
+  const text = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (text.includes("1120S")) return "1120S";
+  if (text.includes("1065")) return "1065";
+  if (text.includes("1120")) return "1120";
+  if (text.includes("1040")) return "1040";
+  return "";
+}
+
+function parseDrakeAmount(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value ?? "").trim();
+  if (!raw || /%$/.test(raw)) return null;
+  if (/^\d{4}$/.test(raw) && Number(raw) >= 1900 && Number(raw) <= 2035) return null;
+  const negative = /^\(.*\)$/.test(raw) || /^-/.test(raw);
+  const cleaned = raw.replace(/[()$,]/g, "").replace(/[^\d.-]/g, "");
+  if (!cleaned || cleaned === "-" || cleaned === ".") return null;
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) return null;
+  return negative ? -Math.abs(parsed) : parsed;
+}
+
+function drakeTextFromValue(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") return [value.label, value.name, value.title, value.description, value.value, value.amount].filter(Boolean).join(" ");
+  return String(value);
+}
+
+function identifyDrakeCanonicalKey(text) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  if (!value || value.length > 500) return "";
+  const match = DRAKE_EXPORT_PATTERNS.find((item) => item.pattern.test(value));
+  return match?.key || "";
+}
+
+function addDrakeField(fieldMap, canonicalKey, amount, source, note = "") {
+  if (!canonicalKey || amount === null || amount === undefined || !Number.isFinite(Number(amount))) return;
+  const value = Number(amount);
+  const existing = fieldMap.get(canonicalKey);
+  if (!existing || source === "entryGuide") {
+    fieldMap.set(canonicalKey, {
+      canonicalKey,
+      value,
+      flag: "ok",
+      note: [source, note].filter(Boolean).join(": "),
+    });
+  }
+}
+
+function extractDrakeFieldsFromEntryGuide(entryGuide, fieldMap) {
+  for (const screen of entryGuide?.screens || []) {
+    for (const field of screen.fields || []) {
+      const status = String(field.status || "").toLowerCase();
+      if (status === "not_applicable") continue;
+      const text = [
+        screen.screenPath,
+        screen.screenDescription,
+        field.fieldName,
+        field.fieldDescription,
+        field.lineReference,
+        field.valueSource,
+      ].map(drakeTextFromValue).filter(Boolean).join(" ");
+      const key = identifyDrakeCanonicalKey(text);
+      const amount = parseDrakeAmount(field.amount ?? field.value);
+      addDrakeField(fieldMap, key, amount, "entryGuide", field.lineReference || field.fieldName || "");
+    }
+  }
+}
+
+function shouldSkipDrakeWorkbookSheet(sheetName) {
+  return /\b(prior|template|source|raw|input|ai notes|data entry guide|entry guide|instructions?)\b/i.test(String(sheetName || ""));
+}
+
+function extractDrakeFieldsFromWorkbook(workbook, fieldMap) {
+  const sheets = Array.isArray(workbook?.sheets) ? workbook.sheets : [];
+  for (const sheet of sheets) {
+    const sheetName = String(sheet?.name || "Workpaper");
+    if (shouldSkipDrakeWorkbookSheet(sheetName)) continue;
+    const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+    for (const row of rows) {
+      if (!Array.isArray(row)) continue;
+      const cells = row.map((cell) => drakeTextFromValue(cell).trim()).filter(Boolean);
+      if (!cells.length) continue;
+      const labelText = cells.filter((cell) => parseDrakeAmount(cell) === null).join(" ");
+      const key = identifyDrakeCanonicalKey(`${sheetName} ${labelText}`);
+      if (!key) continue;
+      const amounts = row.map(parseDrakeAmount).filter((amount) => amount !== null);
+      const amount = amounts.length ? amounts[amounts.length - 1] : null;
+      addDrakeField(fieldMap, key, amount, "workbook", sheetName);
+    }
+  }
+}
+
+function buildDrakeExportData(payload) {
+  const workbook = payload.workbook || payload.response?.workbook || {};
+  const entryGuide = payload.entryGuide || payload.response?.entryGuide || {};
+  const metadata = payload.metadata || payload.payload?.metadata || {};
+  const db = readDb();
+  const clientId = payload.clientId || metadata.clientId || payload.client?.id || "";
+  const dbClient = clientId ? db.clients?.[clientId] : null;
+  const client = {
+    name: String(payload.client?.name || metadata.clientName || dbClient?.name || "Client").trim(),
+    ein: String(payload.client?.ein || metadata.ein || dbClient?.ein || "").trim(),
+    entityType: normalizeDrakeEntityType(payload.client?.entityType || metadata.returnType || dbClient?.returnType || dbClient?.entityType || payload.returnType),
+  };
+  const taxYear = String(metadata.taxYear || payload.taxYear || entryGuide.taxYear || "").trim();
+  const fieldMap = new Map();
+  extractDrakeFieldsFromEntryGuide(entryGuide, fieldMap);
+  extractDrakeFieldsFromWorkbook(workbook, fieldMap);
+  return {
+    client,
+    taxYear,
+    fields: [...fieldMap.values()],
+  };
+}
+
+async function handlePreparationExportDrake(req, res) {
+  const payload = await readJsonBody(req);
+  const taxSoftware = String(payload.taxSoftware || payload.metadata?.taxSoftware || "").toLowerCase();
+  if (taxSoftware && taxSoftware !== "drake") {
+    sendJson(res, 400, { error: "Select Drake Tax as the tax software before exporting to Drake." });
+    return;
+  }
+
+  const data = buildDrakeExportData(payload);
+  if (!data.client.entityType) {
+    sendJson(res, 400, { error: "Could not identify a Drake-supported return type. Use 1040, 1065, 1120, or 1120S." });
+    return;
+  }
+  if (!data.taxYear) {
+    sendJson(res, 400, { error: "Tax year is required before exporting to Drake." });
+    return;
+  }
+  if (!data.fields.length) {
+    sendJson(res, 400, { error: "No Drake-loadable fields were found in the generated workbook. Review the Data Entry Guide and rerun with Drake selected as the tax software." });
+    return;
+  }
+
+  try {
+    const { DrakeAdapter } = require("./tax-loader/adapters/drakeAdapter");
+    const { writeArtifact } = require("./tax-loader/companion/companion");
+    const adapter = new DrakeAdapter({});
+    const artifact = await adapter.prepare(data);
+    const written = writeArtifact({
+      software: "drake",
+      kind: artifact.kind,
+      filename: artifact.filename,
+      content: artifact.content,
+      contentBase64: artifact.contentBase64,
+      meta: artifact.meta,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      ...written,
+      filename: artifact.filename,
+      fieldsLoaded: artifact.meta?.fieldCount || data.fields.length,
+      skipped: artifact.meta?.skipped || [],
+      extractedFields: data.fields.map((field) => ({ canonicalKey: field.canonicalKey, value: field.value })),
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      error: error.message || "Drake export failed.",
+      hint: "Run this from the local Windows app with Drake/Excel installed and confirm the Drake trial balance template exists in C:\\DRAKE25\\TB\\.",
+    });
   }
 }
 

@@ -146,6 +146,7 @@ const els = {
   prepResults: document.getElementById("prepResults"),
   prepExportActions: document.getElementById("prepExportActions"),
   downloadPrepWord: document.getElementById("downloadPrepWord"),
+  exportPrepDrake: document.getElementById("exportPrepDrake"),
   prepSoftwareSelector: document.getElementById("prepSoftwareSelector"),
   prepSoftwareButton: document.getElementById("prepSoftwareButton"),
   prepSoftwareDropdown: document.getElementById("prepSoftwareDropdown"),
@@ -623,6 +624,7 @@ function init() {
   setupSoftwareSelectorEvents();
   els.runPreparer.addEventListener("click", runPreparerWorkflow);
   els.downloadPrepWord.addEventListener("click", downloadPreparerWord);
+  els.exportPrepDrake?.addEventListener("click", exportPreparerToDrake);
   els.entryGuideClose?.addEventListener("click", closeEntryGuide);
   els.entryGuideDownload?.addEventListener("click", () => downloadPreparerWord());
   els.noticeFile.addEventListener("change", () => {
@@ -5771,6 +5773,7 @@ function renderSimpleFileList(list, files, type) {
 function renderPreparerResult(response) {
   const summary = workbookSummary(response.workbook);
   const guide = response.entryGuide ? validateEntryGuide(response.entryGuide) : null;
+  const isDrakeResult = isDrakeSelectedOrGeneratedGuide(guide);
   els.prepResults.innerHTML = `
     <article>
       <span class="tag success">Excel</span>
@@ -5791,6 +5794,9 @@ function renderPreparerResult(response) {
         : "The workbook includes the Data Entry Guide sheet generated from the selected tax software context."}</p>
       <div class="export-actions">
         <button id="previewEntryGuide" class="ghost-button small-button" type="button"${guide ? "" : " hidden"}>Preview Entry Guide</button>
+        ${isDrakeResult
+          ? `<button id="exportPrepDrakeInline" class="primary-button small-button" type="button">Export to Drake</button>`
+          : ""}
       </div>
       <p class="muted-note">Sheet name: <strong>Data Entry Guide</strong>. Software-specific instructions are generated during the first workbook run.</p>
     </article>
@@ -5804,6 +5810,16 @@ function renderPreparerResult(response) {
       document.body.style.overflow = "hidden";
     }
   });
+  document.getElementById("exportPrepDrakeInline")?.addEventListener("click", exportPreparerToDrake);
+}
+
+function isDrakeSelectedOrGeneratedGuide(guide) {
+  return [
+    prepState.taxSoftware,
+    prepState.taxSoftwareLabel,
+    guide?.software,
+    guide?.softwareName,
+  ].some((value) => String(value || "").toLowerCase().includes("drake"));
 }
 
 function workbookSummary(workbook) {
@@ -5822,6 +5838,77 @@ async function downloadPreparerWord() {
   if (!lastPreparerOutput) return;
   const baseName = "preparation-workpaper";
   downloadWorkbook(`${baseName}.xlsx`, lastPreparerOutput.response.workbook);
+}
+
+async function exportPreparerToDrake() {
+  if (!lastPreparerOutput) {
+    showToast("Generate the preparation workpaper before exporting to Drake.", "error");
+    return;
+  }
+  if (!isDrakeSelectedOrGeneratedGuide(lastPreparerOutput.response?.entryGuide)) {
+    showToast("Select Drake Tax as the tax software, then rerun the workpaper before exporting.", "error");
+    return;
+  }
+
+  const button = els.exportPrepDrake;
+  const originalText = button?.textContent || "Export to Drake";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Exporting...";
+  }
+
+  try {
+    const metadata = lastPreparerOutput.payload?.metadata || {};
+    const client = activePreparationClient();
+    const response = await fetch(`${API_BASE_URL}/api/preparation/export-drake`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        taxSoftware: prepState.taxSoftware,
+        metadata,
+        clientId: lastPreparerOutput.payload?.clientId || metadata.clientId || client?.id || "",
+        client: {
+          id: client?.id || metadata.clientId || "",
+          name: client?.name || metadata.clientName || "",
+          ein: client?.ein || metadata.ein || "",
+          entityType: client?.returnType || client?.entityType || metadata.returnType || "",
+        },
+        workbook: lastPreparerOutput.response?.workbook,
+        entryGuide: lastPreparerOutput.response?.entryGuide,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `Backend returned ${response.status}`);
+
+    const skipped = Array.isArray(data.skipped) && data.skipped.length
+      ? `<p class="muted-note">Skipped fields: ${escapeHtml(data.skipped.join(", "))}</p>`
+      : "";
+    els.prepResults.insertAdjacentHTML("beforeend", `
+      <article class="entry-guide-card">
+        <span class="tag success">Drake</span>
+        <h3>Drake import file written</h3>
+        <p>${escapeHtml(data.message || "The Drake import file was created successfully.")}</p>
+        <p class="muted-note"><strong>File:</strong> ${escapeHtml(data.written || data.filename || "")}</p>
+        <p class="muted-note"><strong>Fields loaded:</strong> ${Number(data.fieldsLoaded || 0)}</p>
+        ${skipped}
+      </article>
+    `);
+    showToast("Drake export file created.", "success");
+  } catch (error) {
+    els.prepResults.insertAdjacentHTML("beforeend", `
+      <article>
+        <span class="tag warning">Drake</span>
+        <h3>Drake export failed</h3>
+        <p>${escapeHtml(error.message || "The Drake import file could not be created.")}</p>
+      </article>
+    `);
+    showToast(error.message || "Drake export failed.", "error");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 function setupEntryGuideControls() {
