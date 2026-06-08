@@ -22,15 +22,19 @@ Each CCH field map currently contains the canonical keys and placeholder `form`,
 
 Get these from official Drake documentation or downloadable Drake import templates from `kb.drakesoftware.com`:
 
-- Official Trial Balance import template: exact column names and order for `config/drakeFormat.js`.
 - Official Schedule C / applicable individual import template for 1040.
-- Whether Drake expects a specific file name pattern or watched-folder location.
-- Real screen codes and field codes for each return type:
-  - `fieldMaps/drake_1040.json`
-  - `fieldMaps/drake_1065.json`
-  - `fieldMaps/drake_1120.json`
-  - `fieldMaps/drake_1120S.json`
-- Actual import folder path on the CPA workstation for `DRAKE_IMPORT_DIR`.
+- Additional row mappings for any Drake Trial Balance template lines not yet covered by the canonical map.
+- Review whether 1120-S officer compensation should map to shareholder or non-shareholder officer rows on a per-client basis.
+- Confirm whether 1065 guaranteed payments should map to services or capital on a per-client basis.
+- Complete any optional Drake detail sheets that should be populated beyond the main Trial Balance sheet.
+- Confirm production install folder if the client is not using Drake 2025 at `C:\DRAKE25`.
+
+Detected and implemented for local Drake 2025 trial:
+
+- `1120`: `C:\DRAKE25\TB\CRPTEMP.TBI`, sheet `Corp TB`
+- `1120-S`: `C:\DRAKE25\TB\SBSTEMP.TBI`, sheet `SBS TB`
+- `1065`: `C:\DRAKE25\TB\PTRTEMP.TBI`, sheet `PTR TB`
+- Companion writes completed workbooks to `C:\DRAKE25\TB`
 
 ## RAG Tax AI Workpaper Generator
 

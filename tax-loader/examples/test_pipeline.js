@@ -92,16 +92,19 @@ async function testEntity(entityType) {
   assert(cch.meta.skipped.includes(parsed.fields[5].canonicalKey));
 
   const drake = await loader.generateFileOnly("drake", parsed);
-  assert.strictEqual(drake.kind, "csv");
   assert.strictEqual(drake.software, "drake");
   assert.strictEqual(drake.meta.fieldCount, 5, "manual field should be skipped");
-  assert(drake.content.includes("REQUIERE-DOC-OFICIAL"));
-  assert(!drake.content.includes("Account 6"));
 
   if (entityType === "1040") {
+    assert.strictEqual(drake.kind, "csv");
     assert(drake.filename.startsWith("schedule_c_"));
+    assert(drake.content.includes("REQUIERE-DOC-OFICIAL"));
+    assert(!drake.content.includes("Account 6"));
   } else {
-    assert(drake.filename.startsWith("trial_balance_"));
+    assert.strictEqual(drake.kind, "drake_trial_balance_template");
+    assert(drake.filename.endsWith(".xls"));
+    assert(drake.content.rows.length === 5);
+    assert(drake.meta.templatePath.includes("DRAKE25"));
   }
 
   assertMapCoverage(entityType, "cch_axcess");
