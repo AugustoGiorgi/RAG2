@@ -9368,12 +9368,15 @@ function buildPreparerContent(payload) {
       "Never invent a current-year amount. Never reuse a prior-year amount as a current-year amount unless a current-year source explicitly supports it. If a current-year P&L account is absent, the current-year amount is zero or blank and the issue belongs in AI Notes/flags, not silently copied from prior year.",
       "Return ONLY a JSON object inside ```json``` fences. No prose outside JSON.",
       "The JSON must be complete and parseable. If the full workbook would be too long, prioritize the main workpaper tabs and summarize lower-priority detail in AI Notes rather than truncating the JSON.",
+      "The top-level JSON object MUST include a non-empty sheets array. Do not return only entryGuide, only aiNotes, only tables, only markdown, or a narrative answer.",
+      "Each top-level sheets item MUST include a name and a non-empty rows array. Each rows item MUST be an array of primitive cell values.",
       "",
       "Required JSON schema:",
       '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
+      "At least one sheet must be a real workpaper sheet with calculated/updated values, not a placeholder and not a JSON/text dump.",
       "When a workbookTemplate is provided for an uploaded Excel file, mirror that template's sheets, headers, labels, row order, and column order as closely as possible.",
       "Keep the same workpaper-style layout from the prior-year workbook, updating year labels and values for the current-year request. Preserve columns widths, merged cells, underlined words, boxed sections, and obvious title/header formatting by returning cols, merges, and styles entries where available.",
       "Every sheet.rows value must be an array of rows, and every row must be an array of primitive cell values.",
@@ -10585,12 +10588,116 @@ function normalizeFilingReadiness(value) {
   return "READY_WITH_CONDITIONS";
 }
 
+function workbookCandidateFromParsed(parsed) {
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  const candidates = [
+    source,
+    source.workbook,
+    source.excelWorkbook,
+    source.workpaper,
+    source.workpaperWorkbook,
+    source.outputWorkbook,
+    source.result,
+    source.data,
+  ].filter((candidate) => candidate && typeof candidate === "object");
+
+  for (const candidate of candidates) {
+    const sheets = workbookSheetsFromCandidate(candidate);
+    if (sheets.some((sheet) => normalizeSheetRows(sheet).length)) return { ...candidate, sheets };
+  }
+
+  const directRows = normalizeSheetRows(source);
+  if (directRows.length) {
+    return {
+      ...source,
+      sheets: [{ name: source.sheetName || source.name || "Workpaper", rows: directRows }],
+    };
+  }
+
+  return source;
+}
+
+function workbookSheetsFromCandidate(candidate) {
+  const directKeys = ["sheets", "worksheets", "tabs", "workbookSheets", "excelSheets"];
+  for (const key of directKeys) {
+    if (Array.isArray(candidate?.[key]) && candidate[key].length) return candidate[key];
+  }
+
+  if (Array.isArray(candidate?.tables) && candidate.tables.length) {
+    return candidate.tables.map((table, index) => ({
+      ...table,
+      name: table.name || table.title || table.sheetName || `Table ${index + 1}`,
+      rows: normalizeSheetRows(table),
+    }));
+  }
+
+  const sectionKeys = ["sections", "workpaperSections", "workbookSections"];
+  for (const key of sectionKeys) {
+    if (Array.isArray(candidate?.[key]) && candidate[key].length) {
+      return candidate[key].map((section, index) => ({
+        name: section.name || section.title || section.sectionName || `Section ${index + 1}`,
+        rows: normalizeSectionRows(section),
+      })).filter((sheet) => normalizeRows(sheet.rows).length);
+    }
+  }
+
+  return [];
+}
+
+function normalizeSheetRows(sheet) {
+  const rowKeys = ["rows", "data", "values", "tableRows", "lines", "items"];
+  let rows = [];
+  for (const key of rowKeys) {
+    if (Array.isArray(sheet?.[key]) && sheet[key].length) {
+      rows = normalizeRows(sheet[key]);
+      break;
+    }
+  }
+
+  if (!rows.length && Array.isArray(sheet?.sections)) {
+    rows = normalizeSectionRows(sheet);
+  }
+
+  const columns = normalizeColumnHeaders(sheet?.columns || sheet?.headers || sheet?.fields);
+  if (columns.length && rows.length && !rowLooksLikeHeader(rows[0], columns)) {
+    rows = [columns, ...rows];
+  }
+  return rows;
+}
+
+function normalizeSectionRows(section) {
+  const rows = [];
+  for (const item of section.sections || section.subsections || []) {
+    const title = item.name || item.title || item.sectionName;
+    if (title) rows.push([String(title)]);
+    rows.push(...normalizeSheetRows(item));
+    rows.push([""]);
+  }
+  const ownRows = normalizeRows(section.rows || section.data || section.items || []);
+  return rows.length ? [...ownRows, ...rows].filter((row) => row.some((cell) => String(cell ?? "").trim())) : ownRows;
+}
+
+function normalizeColumnHeaders(columns) {
+  if (!Array.isArray(columns)) return [];
+  return columns.map((column) => {
+    if (column === null || column === undefined) return "";
+    if (typeof column === "object") return String(column.header || column.name || column.label || column.title || column.key || "");
+    return String(column);
+  }).filter((column) => column.trim());
+}
+
+function rowLooksLikeHeader(row, columns) {
+  const rowText = (Array.isArray(row) ? row : [row]).map((cell) => String(cell || "").trim().toLowerCase()).join("|");
+  const matches = columns.filter((column) => rowText.includes(String(column || "").trim().toLowerCase())).length;
+  return matches >= Math.min(columns.length, 2);
+}
+
 function normalizeWorkbook(parsed, raw, payload = {}) {
-  const workbook = parsed && typeof parsed === "object" ? parsed : {};
+  const workbook = workbookCandidateFromParsed(parsed);
   const sheets = Array.isArray(workbook.sheets) ? workbook.sheets : [];
   const normalizedSheets = sheets.map((sheet, index) => ({
     name: String(sheet.name || `Sheet ${index + 1}`).slice(0, 31),
-    rows: normalizeRows(sheet.rows),
+    rows: normalizeSheetRows(sheet),
     merges: Array.isArray(sheet.merges) ? sheet.merges : [],
     cols: Array.isArray(sheet.cols) ? sheet.cols : [],
     styles: normalizeSheetStyles(sheet.styles),
@@ -10662,13 +10769,25 @@ function shiftYearText(value, targetYear) {
 function normalizeRows(rows) {
   if (!Array.isArray(rows)) return [];
   return rows.map((row) => {
-    const cells = Array.isArray(row) ? row : [row];
+    let cells;
+    if (Array.isArray(row)) {
+      cells = row;
+    } else if (row && typeof row === "object") {
+      if (Array.isArray(row.cells)) cells = row.cells;
+      else if (Array.isArray(row.values)) cells = row.values;
+      else cells = Object.values(row);
+    } else {
+      cells = [row];
+    }
     return cells.map((cell) => {
       if (cell === null || cell === undefined) return "";
-      if (typeof cell === "object") return String(cell.label || cell.name || cell.title || cell.value || cell.description || "");
+      if (typeof cell === "object") {
+        if (cell.formula) return String(cell.formula).startsWith("=") ? String(cell.formula) : `=${cell.formula}`;
+        return String(cell.value ?? cell.text ?? cell.amount ?? cell.label ?? cell.name ?? cell.title ?? cell.description ?? "");
+      }
       return cell;
     });
-  });
+  }).filter((row) => row.some((cell) => String(cell ?? "").trim()));
 }
 
 function groupFiles(files) {
