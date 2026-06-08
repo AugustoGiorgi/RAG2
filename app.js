@@ -147,6 +147,7 @@ const els = {
   prepExportActions: document.getElementById("prepExportActions"),
   downloadPrepWord: document.getElementById("downloadPrepWord"),
   exportPrepDrake: document.getElementById("exportPrepDrake"),
+  exportPrepDrakeScript: document.getElementById("exportPrepDrakeScript"),
   prepSoftwareSelector: document.getElementById("prepSoftwareSelector"),
   prepSoftwareButton: document.getElementById("prepSoftwareButton"),
   prepSoftwareDropdown: document.getElementById("prepSoftwareDropdown"),
@@ -625,6 +626,7 @@ function init() {
   els.runPreparer.addEventListener("click", runPreparerWorkflow);
   els.downloadPrepWord.addEventListener("click", downloadPreparerWord);
   els.exportPrepDrake?.addEventListener("click", exportPreparerToDrake);
+  els.exportPrepDrakeScript?.addEventListener("click", downloadDrakeAutoEntryScript);
   els.entryGuideClose?.addEventListener("click", closeEntryGuide);
   els.entryGuideDownload?.addEventListener("click", () => downloadPreparerWord());
   els.noticeFile.addEventListener("change", () => {
@@ -5774,6 +5776,8 @@ function renderPreparerResult(response) {
   const summary = workbookSummary(response.workbook);
   const guide = response.entryGuide ? validateEntryGuide(response.entryGuide) : null;
   const isDrakeResult = isDrakeSelectedOrGeneratedGuide(guide);
+  if (els.exportPrepDrake) els.exportPrepDrake.hidden = !isDrakeResult;
+  if (els.exportPrepDrakeScript) els.exportPrepDrakeScript.hidden = !isDrakeResult;
   els.prepResults.innerHTML = `
     <article>
       <span class="tag success">Excel</span>
@@ -5795,7 +5799,8 @@ function renderPreparerResult(response) {
       <div class="export-actions">
         <button id="previewEntryGuide" class="ghost-button small-button" type="button"${guide ? "" : " hidden"}>Preview Entry Guide</button>
         ${isDrakeResult
-          ? `<button id="exportPrepDrakeInline" class="primary-button small-button" type="button">Export to Drake</button>`
+          ? `<button id="exportPrepDrakeInline" class="primary-button small-button" type="button">Export to Drake</button>
+             <button id="exportPrepDrakeScriptInline" class="ghost-button small-button" type="button">Drake Auto-Entry Script</button>`
           : ""}
       </div>
       <p class="muted-note">Sheet name: <strong>Data Entry Guide</strong>. Software-specific instructions are generated during the first workbook run.</p>
@@ -5811,6 +5816,7 @@ function renderPreparerResult(response) {
     }
   });
   document.getElementById("exportPrepDrakeInline")?.addEventListener("click", exportPreparerToDrake);
+  document.getElementById("exportPrepDrakeScriptInline")?.addEventListener("click", downloadDrakeAutoEntryScript);
 }
 
 function isDrakeSelectedOrGeneratedGuide(guide) {
@@ -5909,6 +5915,228 @@ async function exportPreparerToDrake() {
       button.textContent = originalText;
     }
   }
+}
+
+function downloadDrakeAutoEntryScript() {
+  if (!lastPreparerOutput) {
+    showToast("Generate the preparation workpaper before creating a Drake auto-entry script.", "error");
+    return;
+  }
+  const guide = lastPreparerOutput.response?.entryGuide ? validateEntryGuide(lastPreparerOutput.response.entryGuide) : null;
+  if (!guide || !isDrakeSelectedOrGeneratedGuide(guide)) {
+    showToast("Select Drake Tax and rerun the workpaper before creating the auto-entry script.", "error");
+    return;
+  }
+
+  const steps = buildDrakeAutoEntrySteps(guide);
+  if (!steps.length) {
+    showToast("No Drake-ready fields were found in the Data Entry Guide.", "error");
+    return;
+  }
+
+  const metadata = lastPreparerOutput.payload?.metadata || {};
+  const clientName = safeText(guide.clientName || metadata.clientName || "client");
+  const taxYear = safeText(guide.taxYear || metadata.taxYear || "");
+  const script = buildDrakeAutoEntryPowerShell({
+    clientName,
+    taxYear,
+    returnType: safeText(guide.returnType || metadata.returnType || ""),
+    steps,
+  });
+  const suffix = [taxYear, clientName].filter(Boolean).join("-").replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  downloadBlob(`drake-auto-entry${suffix ? `-${suffix}` : ""}.ps1`, script, "text/plain;charset=utf-8");
+  showToast("Drake auto-entry script downloaded. Run it only with the correct Drake return open.", "success");
+}
+
+function buildDrakeAutoEntrySteps(guide) {
+  const steps = [];
+  for (const screen of guide.screens || []) {
+    const screenCode = extractDrakeScreenCode(screen);
+    for (const field of screen.fields || []) {
+      const status = safeText(field.status).toLowerCase();
+      if (status === "not_applicable") continue;
+      const value = drakeAutoEntryValue(field);
+      if (!value) continue;
+      steps.push({
+        screenPath: safeText(screen.screenPath),
+        screenCode,
+        fieldName: safeText(field.fieldName),
+        fieldDescription: safeText(field.fieldDescription),
+        value,
+        source: safeText(field.valueSource || field.amountSource),
+        status: safeText(field.status || "ready"),
+        notes: safeText(field.statusNote || field.reviewIssueRef || screen.screenNotes),
+        tabOrder: drakeFieldTabOrder(field),
+      });
+    }
+  }
+  return steps;
+}
+
+function drakeAutoEntryValue(field) {
+  const value = field.value ?? field.amount;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  if (typeof value === "boolean") return value ? "X" : "";
+  const text = safeText(value).trim();
+  if (!text || /^n\/?a$/i.test(text) || /^not applicable$/i.test(text)) return "";
+  return text;
+}
+
+function drakeFieldTabOrder(field) {
+  const value = field.tabOrder ?? field.drakeTabOrder ?? field.fieldTabOrder;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed < 300 ? parsed : null;
+}
+
+function extractDrakeScreenCode(screen) {
+  const text = [
+    screen?.screenCode,
+    screen?.drakeScreenCode,
+    screen?.screenPath,
+    screen?.screenDescription,
+    screen?.softwareNavigation,
+  ].map(safeText).join(" ");
+  const explicit = text.match(/\b(?:screen|code|type)\s+([A-Z0-9]{1,6})\b/i);
+  if (explicit) return explicit[1].toUpperCase();
+  const leading = safeText(screen?.screenPath).match(/^\s*([A-Z0-9]{1,6})(?:\s*[-:|]|\s{2,})/i);
+  if (leading) return leading[1].toUpperCase();
+
+  const lower = text.toLowerCase();
+  const mappings = [
+    [/w-?2|wage|salary|salaries/, "W2"],
+    [/1099-?r|retirement|pension/, "1099"],
+    [/interest|1099-?int/, "INT"],
+    [/dividend|1099-?div/, "DIV"],
+    [/government payment|1099-?g|refund/, "99G"],
+    [/estimated tax|estimate payment|voucher/, "ES"],
+    [/itemized|schedule a|medical|charitable|mortgage interest|real estate tax|state income tax/, "A"],
+    [/schedule c|business income|sole propriet/i, "C"],
+    [/schedule e|rental|royalt/i, "E"],
+    [/schedule f|farm/i, "F"],
+    [/k-?1|partnership|s corporation shareholder|fiduciary k/, "K1"],
+    [/depreciation|4562|asset/, "4562"],
+    [/bank|direct deposit|withdrawal/, "BANK"],
+    [/electronic filing|e-?file|ef selections/, "EF"],
+    [/pdf attachment|attachment/, "PDF"],
+    [/notes?|preparer notepad/, "PAD"],
+  ];
+  const match = mappings.find(([pattern]) => pattern.test(lower));
+  return match ? match[1] : "";
+}
+
+function buildDrakeAutoEntryPowerShell({ clientName, taxYear, returnType, steps }) {
+  const stepsJson = JSON.stringify(steps);
+  const encodedSteps = btoa(unescape(encodeURIComponent(stepsJson)));
+  const header = [
+    "Drake Auto-Entry Script",
+    `Client: ${clientName || "Client"}`,
+    `Tax year: ${taxYear || "Not provided"}`,
+    `Return type: ${returnType || "Not provided"}`,
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "This script is supervised keyboard automation for Drake Tax.",
+    "It does not modify Drake database files directly.",
+    "Open the correct Drake return before running it.",
+    "Review every field before moving to the next item.",
+  ].join("\n");
+  return `# ${header.replace(/\n/g, "\n# ")}
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Windows.Forms
+$wshell = New-Object -ComObject WScript.Shell
+$stepsJson = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${encodedSteps}"))
+$steps = $stepsJson | ConvertFrom-Json
+
+function Activate-Drake {
+  $titles = @("Drake 2025", "Drake 2026", "Drake", "Data Entry")
+  foreach ($title in $titles) {
+    try {
+      if ($wshell.AppActivate($title)) {
+        Start-Sleep -Milliseconds 350
+        return $true
+      }
+    } catch {}
+  }
+  return $false
+}
+
+function Paste-Text([string]$text) {
+  [System.Windows.Forms.Clipboard]::SetText($text)
+  Start-Sleep -Milliseconds 120
+  [System.Windows.Forms.SendKeys]::SendWait("^v")
+}
+
+function Send-DrakeScreen([string]$screenCode) {
+  if ([string]::IsNullOrWhiteSpace($screenCode)) { return }
+  Paste-Text $screenCode
+  [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+  Start-Sleep -Milliseconds 850
+}
+
+Write-Host ""
+Write-Host "Drake Auto-Entry Script"
+Write-Host "Client: ${escapePowerShellDoubleQuoted(clientName || "Client")}"
+Write-Host "Tax year: ${escapePowerShellDoubleQuoted(taxYear || "Not provided")}"
+Write-Host "Steps: $($steps.Count)"
+Write-Host ""
+Write-Host "Before continuing:"
+Write-Host "1. Open Drake Tax."
+Write-Host "2. Open the exact client return."
+Write-Host "3. Click the 'Enter Screen, State or Search Phrase' box in Data Entry."
+Write-Host ""
+Read-Host "Press Enter to begin"
+
+$index = 0
+foreach ($step in $steps) {
+  $index++
+  Clear-Host
+  Write-Host "Step $index of $($steps.Count)"
+  Write-Host "Screen: $($step.screenPath)"
+  Write-Host "Screen code: $($step.screenCode)"
+  Write-Host "Field: $($step.fieldName)"
+  if ($step.fieldDescription) { Write-Host "Description: $($step.fieldDescription)" }
+  Write-Host "Value: $($step.value)"
+  if ($step.source) { Write-Host "Source: $($step.source)" }
+  if ($step.notes) { Write-Host "Notes: $($step.notes)" }
+  Write-Host ""
+
+  if (-not (Activate-Drake)) {
+    Write-Host "Could not activate Drake automatically. Click Drake now."
+    Read-Host "Press Enter after Drake is active"
+  }
+
+  if ($step.screenCode) {
+    Write-Host "Navigating to screen $($step.screenCode)..."
+    Send-DrakeScreen $step.screenCode
+  } else {
+    Write-Host "No reliable Drake screen code was provided for this step."
+    Read-Host "Navigate to the correct Drake screen, then press Enter"
+  }
+
+  if ($step.tabOrder) {
+    Write-Host "Using tab order $($step.tabOrder) before pasting the value."
+    for ($i = 1; $i -le [int]$step.tabOrder; $i++) {
+      [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+      Start-Sleep -Milliseconds 45
+    }
+  } else {
+    Write-Host "Click the exact Drake field for '$($step.fieldName)'."
+    Read-Host "Press Enter to paste the value"
+  }
+
+  Paste-Text ([string]$step.value)
+  Write-Host ""
+  Read-Host "Verify the value in Drake, then press Enter for the next step"
+}
+
+Write-Host ""
+Write-Host "Done. Review the full Drake return, calculate, and run diagnostics before filing."
+Read-Host "Press Enter to close"
+`;
+}
+
+function escapePowerShellDoubleQuoted(value) {
+  return safeText(value).replace(/`/g, "``").replace(/\$/g, "`$").replace(/"/g, '`"');
 }
 
 function setupEntryGuideControls() {
