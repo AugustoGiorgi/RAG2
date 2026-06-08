@@ -1,0 +1,15 @@
+{
+  "name": "tax-loader",
+  "version": "1.0.0",
+  "description": "Canonical tax workpaper loader for CCH Axcess and Drake import artifacts.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "%npm_node_execpath:Program Files=Progra~1% examples/test_pipeline.js"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
+  }
+}

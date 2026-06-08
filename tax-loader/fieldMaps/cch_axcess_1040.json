@@ -1,0 +1,33 @@
+{
+  "_README": "REQUIERE-DOC-OFICIAL: form/field/line values must be completed from the CCH Axcess Developer Portal.",
+  "_entityType": "1040",
+  "_software": "cch_axcess",
+  "_verified": false,
+  "map": {
+    "schC.gross_receipts": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.returns": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.cogs": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.advertising": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.car_truck": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.commissions": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.contract_labor": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.depreciation": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.insurance": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.interest_mortgage": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.legal_professional": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.office_expense": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.rent": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.repairs": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.supplies": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.taxes_licenses": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.travel": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.meals": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.utilities": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.wages": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.other_expenses": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.wages_w2": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.interest_1099int": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.dividends_1099div": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.cap_gains_sch_d": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" }
+  }
+}
