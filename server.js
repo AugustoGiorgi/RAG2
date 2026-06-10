@@ -8331,7 +8331,10 @@ async function handleDrakeGenerate(req, res) {
       //               EmployeeSSN   → CL_W_2.EmployeeSSN + CL_W_2.TSJ
       // Drake compares the SSN to the return's taxpayer/spouse SSNs and sets TSJ = T / S accordingly.
       // Only inject when SSN is available; records with tsj="S" (spouse) would need spouse SSN — left empty for now.
-      const taxpayerSsn = (data.client.ein || "").trim();
+      // Normalize SSN: strip dashes/spaces so it matches Drake's internal format
+      // (Drake stores SSNs as 9 raw digits: "117527660", not "117-52-7660").
+      // IMPORTGW.DLL does a raw string comparison — mismatched format = TSJ fails = all records skipped.
+      const taxpayerSsn = (data.client.ein || "").trim().replace(/[^0-9]/g, '');
       if (taxpayerSsn) {
         const injectSsn = (arr) => arr.map((r) => ({
           ...r,
