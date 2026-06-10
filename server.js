@@ -8331,8 +8331,11 @@ async function handleDrakeGenerate(req, res) {
         return;
       }
       const { buildArtifact: buildGwXml } = require("./tax-loader/generators/gruntWorxGenerator");
-      const taxYear = data.taxYear || String(new Date().getFullYear() - 1);
-      const artifact = buildGwXml(gwPayload, data.client.name || "client", taxYear);
+      // GruntWorx taxYear = Drake SOFTWARE year (not the return's income year).
+      // Drake 2025 → taxYear="2025", Drake 2026 → taxYear="2026", etc.
+      // Drake software year = calendar year − 1 (in 2026, Drake 2025 is current).
+      const drakeSoftwareYear = String(new Date().getFullYear() - 1);
+      const artifact = buildGwXml(gwPayload, data.client.name || "client", drakeSoftwareYear);
       if (!artifact) {
         sendJson(res, 400, { error: "Could not generate GruntWorx XML — no income data available." });
         return;
