@@ -5202,7 +5202,21 @@ function renderDatabaseClientDetail() {
 
 function renderClientProfileContext(client) {
   const software = softwareById(client.taxSoftware?.primary || readFirmDefaults().defaultTaxSoftware || "proconnect");
+  const is1040Client = (client.returnType || client.entityType || "").includes("1040");
   return `
+    <div class="database-section-block">
+      <h4>${is1040Client ? "SSN / EIN" : "EIN"}</h4>
+      <p>${is1040Client
+        ? "SSN del contribuyente principal (usado como RecipientIdNo en el XML de GruntWorx para que Drake asigne TSJ automáticamente)."
+        : "Employer Identification Number para este cliente."}</p>
+      <div class="database-inline-form" style="align-items:center;">
+        <input id="databaseClientEin" type="text"
+          placeholder="${is1040Client ? "Ex. 123-45-6789" : "Ex. 12-3456789"}"
+          value="${escapeHtml(client.ein || "")}"
+          style="max-width:200px;" />
+        <button id="databaseSaveClientEin" class="primary-button small-button" type="button">Guardar</button>
+      </div>
+    </div>
     <div class="database-section-block">
       <h4>Tax Software</h4>
       <p>Saved software preference used by Preparation guidance for this client.</p>
@@ -5264,6 +5278,18 @@ function renderClientActivity(client) {
 }
 
 function bindDatabaseClientActions(client) {
+  document.getElementById("databaseSaveClientEin")?.addEventListener("click", async () => {
+    const ein = (document.getElementById("databaseClientEin")?.value || "").trim();
+    // Spread full client to avoid pickClientFields zeroing out other fields
+    await fetch(`${API_BASE_URL}/api/clients/${client.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...client, ein }),
+    });
+    await loadDatabaseClients();
+    renderDatabaseClientDetail();
+    showToast("SSN/EIN guardado.", "success");
+  });
   document.getElementById("databaseUseCurrentSoftware")?.addEventListener("click", async () => {
     const software = softwareById(prepState.taxSoftware || "proconnect");
     await fetch(`${API_BASE_URL}/api/clients/${client.id}/tax-software`, {
@@ -5925,6 +5951,8 @@ function renderDrakeInputsPanel() {
     </div>`;
 
   // GruntWorx XML — available when there is at least one W-2 or 1099 (1040 only)
+  // Pre-populate SSN from the active client record (stored as 'ein' for 1040 individuals)
+  const savedSsn = activePreparationClient()?.ein || lastPreparerOutput?.payload?.metadata?.ein || "";
   const gruntWorxRow = `
     <div class="drake-input-row ${(is1040 && totalIncomeForms > 0) ? "available" : "dimmed"}">
       <div class="drake-input-icon" style="font-size:10px;letter-spacing:-0.5px;">GW</div>
@@ -5935,7 +5963,15 @@ function renderDrakeInputsPanel() {
               ? `<strong>${totalIncomeForms} forms ready:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake auto-populates all W-2/1099 screens`
               : "W-2 · 1099-INT · 1099-DIV · 1099-NEC · 1099-MISC · SSA &nbsp;·&nbsp; no income documents found in upload")
           : "not applicable for " + escapeHtml(etLabel)}</span>
-        ${(is1040 && totalIncomeForms > 0) ? `<span class="muted-note" style="font-size:11px;">Drake: Import ▸ GruntWorx Populate Job ▸ select file</span>` : ""}
+        ${(is1040 && totalIncomeForms > 0) ? `
+          <span class="muted-note" style="font-size:11px;">Drake: Import ▸ GruntWorx Populate Job ▸ select file</span>
+          <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;">
+            <span style="white-space:nowrap;color:#666;">Taxpayer SSN:</span>
+            <input type="text" id="drakeInputGruntWorxSsn"
+              placeholder="123-45-6789  (requerido para auto-asignar TSJ)"
+              value="${escapeHtml(savedSsn)}"
+              style="font-size:12px;padding:4px 8px;border:1px solid #d0d5dd;border-radius:6px;width:240px;" />
+          </label>` : ""}
         ${(is1040 && totalIncomeForms === 0) ? `<span class="muted-note" style="font-size:11px;">Para activar: subí los PDFs/imágenes de los W-2 y 1099 junto con los demás documentos y regenerá el workpaper.</span>` : ""}
       </div>
       ${(is1040 && totalIncomeForms > 0)
@@ -6015,7 +6051,7 @@ async function downloadPreparerWord() {
 }
 
 /** Shared helper — call /api/preparation/drake-generate and trigger browser download. */
-async function callDrakeGenerate(fileType, buttonEl) {
+async function callDrakeGenerate(fileType, buttonEl, options = {}) {
   if (!lastPreparerOutput) {
     showToast("Generate the preparation workpaper first.", "error");
     return;
@@ -6037,7 +6073,9 @@ async function callDrakeGenerate(fileType, buttonEl) {
         client: {
           id:         client?.id         || metadata.clientId    || "",
           name:       client?.name       || metadata.clientName  || "",
-          ein:        client?.ein        || metadata.ein         || "",
+          // options.ein (caller override) > client DB > workpaper metadata
+          // For 1040 returns, 'ein' stores the taxpayer's SSN — used as RecipientIdNo in GruntWorx XML
+          ein:        options.ein        || client?.ein          || metadata.ein || "",
           // Fallback chain: database client → metadata → AI-generated entryGuide returnType
           entityType: client?.returnType || client?.entityType   || metadata.returnType ||
                       lastPreparerOutput?.response?.entryGuide?.returnType || "",
@@ -6100,7 +6138,10 @@ async function downloadDrakeScheduleC() {
 }
 
 async function downloadDrakeGruntWorx() {
-  await callDrakeGenerate("gruntworx_xml", document.getElementById("drakeInputGruntWorx"));
+  // Read SSN from the inline input (required for Drake to derive TSJ via RecipientIdNo)
+  const ssnInput = document.getElementById("drakeInputGruntWorxSsn");
+  const ssn = (ssnInput?.value || "").trim();
+  await callDrakeGenerate("gruntworx_xml", document.getElementById("drakeInputGruntWorx"), { ein: ssn });
 }
 
 async function downloadDrakeManualGuide() {

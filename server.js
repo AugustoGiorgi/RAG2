@@ -8325,6 +8325,25 @@ async function handleDrakeGenerate(req, res) {
         misc_1099s: normalize1099s(payload.misc_1099s, ["tsj","payer","ein","box1","box2","box3","box4","box6","box9","box10","box12","box14","state","state_id_number","state_income","state_wh"]),
         ssa_1099s:  normalize1099s(payload.ssa_1099s,  ["tsj","box3","box4","box5","box6","ssn","medicare_a","medicare_b","medicare_d"]),
       };
+      // Inject taxpayer SSN into all records so Drake can derive TSJ via RecipientIdNo / EmployeeSSN.
+      // For 1040 returns, data.client.ein stores the taxpayer's SSN (not a business EIN).
+      // GRUNTWORX.KEY: RecipientIdNo → CL_1099_INT.RecipientIdNo + CL_1099_INT.TSJ (and same for DIV/NEC/MISC).
+      //               EmployeeSSN   → CL_W_2.EmployeeSSN + CL_W_2.TSJ
+      // Drake compares the SSN to the return's taxpayer/spouse SSNs and sets TSJ = T / S accordingly.
+      // Only inject when SSN is available; records with tsj="S" (spouse) would need spouse SSN — left empty for now.
+      const taxpayerSsn = (data.client.ein || "").trim();
+      if (taxpayerSsn) {
+        const injectSsn = (arr) => arr.map((r) => ({
+          ...r,
+          ssn: r.ssn || (r.tsj === "S" ? "" : taxpayerSsn),
+        }));
+        gwPayload.w2s        = injectSsn(gwPayload.w2s);
+        gwPayload.int_1099s  = injectSsn(gwPayload.int_1099s);
+        gwPayload.div_1099s  = injectSsn(gwPayload.div_1099s);
+        gwPayload.nec_1099s  = injectSsn(gwPayload.nec_1099s);
+        gwPayload.misc_1099s = injectSsn(gwPayload.misc_1099s);
+        gwPayload.ssa_1099s  = injectSsn(gwPayload.ssa_1099s);
+      }
       const totalForms = Object.values(gwPayload).reduce((s, arr) => s + arr.length, 0);
       if (totalForms === 0) {
         sendJson(res, 400, { error: "No W-2 or 1099 data found. Upload income documents and regenerate the workpaper." });

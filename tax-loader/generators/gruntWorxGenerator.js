@@ -118,9 +118,10 @@ function classData(classType, records) {
 
 /** CL_W_2 — W-2 Wage and Tax Statement */
 function buildW2Record(w) {
-  const tsj = String(w.tsj || w.TSJ || 'T').toUpperCase();
+  // NOTE: 'TSJ' is NOT a standalone canonicalName in GRUNTWORX.KEY.
+  // TSJ is derived by Drake from EmployeeSSN (GRUNTWORX.KEY: EmployeeSSN → CL_W_2.EmployeeSSN + CL_W_2.TSJ).
+  // Drake compares the SSN against the return's taxpayer/spouse SSNs and sets TSJ accordingly.
   return record([
-    field('TSJ',            'Formatted String',       tsj),
     field('EmployeeSSN',    'Social Security Number',  w.ssn || w.employee_ssn || w.box_a || ''),
     field('EmployerFedId',  'Federal ID',              w.ein || w.employer_ein || w.box_b || ''),
     field('EmployerName',   'CompanyName',             w.employer || w.employer_name || w.EmployerName || ''),
@@ -157,9 +158,9 @@ function buildW2Record(w) {
 
 /** CL_1099_INT — 1099-INT Interest Income */
 function buildIntRecord(r) {
-  const tsj = String(r.tsj || r.TSJ || 'T').toUpperCase();
+  // NOTE: 'TSJ' is NOT a standalone canonicalName in GRUNTWORX.KEY.
+  // TSJ is derived by Drake from RecipientIdNo (GRUNTWORX.KEY: RecipientIdNo → CL_1099_INT.RecipientIdNo + CL_1099_INT.TSJ).
   return record([
-    field('TSJ',             'Formatted String',      tsj),
     field('RecipientIdNo',   'Social Security Number', r.ssn || r.recipient_ssn || ''),
     field('PayerFedID',      'Federal ID',             r.ein || r.payer_ein     || ''),
     field('PayerName',       'CompanyName',            r.payer || r.payer_name  || ''),
@@ -183,9 +184,8 @@ function buildIntRecord(r) {
 
 /** CL_1099_DIV — 1099-DIV Dividends and Distributions */
 function buildDivRecord(r) {
-  const tsj = String(r.tsj || r.TSJ || 'T').toUpperCase();
+  // NOTE: TSJ derived by Drake from RecipientIdNo → CL_1099_DIV.RecipientIdNo + CL_1099_DIV.TSJ
   return record([
-    field('TSJ',           'Formatted String',      tsj),
     field('RecipientIdNo', 'Social Security Number', r.ssn || r.recipient_ssn || ''),
     field('PayerFedID',    'Federal ID',             r.ein || r.payer_ein     || ''),
     field('PayerName',     'CompanyName',            r.payer || r.payer_name  || ''),
@@ -211,9 +211,8 @@ function buildDivRecord(r) {
 
 /** CL_1099_NEC — Form 1099-NEC Nonemployee Compensation */
 function buildNecRecord(r) {
-  const tsj = String(r.tsj || r.TSJ || 'T').toUpperCase();
+  // NOTE: TSJ derived by Drake from RecipientIdNo → CL_1099_NEC.RecipientIdNo + CL_1099_NEC.TSJ
   return record([
-    field('TSJ',           'Formatted String',      tsj),
     field('RecipientIdNo', 'Social Security Number', r.ssn || r.recipient_ssn || ''),
     field('PayerFedID',    'Federal ID',             r.ein || r.payer_ein     || ''),
     field('PayerName',     'CompanyName',            r.payer || r.payer_name  || ''),
@@ -232,9 +231,8 @@ function buildNecRecord(r) {
 
 /** CL_1099_MISC — Form 1099-MISC Miscellaneous Income */
 function buildMiscRecord(r) {
-  const tsj = String(r.tsj || r.TSJ || 'T').toUpperCase();
+  // NOTE: TSJ derived by Drake from RecipientIdNo → CL_1099_MISC.RecipientIdNo + CL_1099_MISC.TSJ
   return record([
-    field('TSJ',           'Formatted String',      tsj),
     field('RecipientIdNo', 'Social Security Number', r.ssn || r.recipient_ssn || ''),
     field('PayerFedID',    'Federal ID',             r.ein || r.payer_ein     || ''),
     field('PayerName',     'CompanyName',            r.payer || r.payer_name  || ''),
@@ -263,9 +261,8 @@ function buildMiscRecord(r) {
  * Note: field name is FederalIncTaxWH (not FedIncTaxWH) — confirmed from KEY file.
  */
 function buildSsaRecord(r) {
-  const tsj = String(r.tsj || r.TSJ || 'T').toUpperCase();
+  // NOTE: TSJ derived by Drake from BeneficiarySSNo → CL_1099_SSA.BeneficiarySSNo + CL_1099_SSA.TSJ
   return record([
-    field('TSJ',              'Formatted String',      tsj),
     field('BeneficiarySSNo',  'Social Security Number', r.ssn || r.beneficiary_ssn || ''),
     // Box 5 = Net benefits (total received minus repaid); Box 3 = gross on older forms
     amtField('NetBenefits',      r.box5 || r.box3 || r.net_benefits),
