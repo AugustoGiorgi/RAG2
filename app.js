@@ -5706,7 +5706,12 @@ async function runPreparerWorkflow() {
     }));
     const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
-    lastPreparerOutput = { response: responsePayload, payload };
+    lastPreparerOutput = {
+      response: responsePayload,
+      payload,
+      transactions8949: Array.isArray(responsePayload.transactions8949) ? responsePayload.transactions8949 : [],
+      assets4562:       Array.isArray(responsePayload.assets4562)       ? responsePayload.assets4562       : [],
+    };
     lastEntryGuideOutput = responsePayload.entryGuide ? { guide: validateEntryGuide(responsePayload.entryGuide) } : null;
     entryGuideGeneratedAt = responsePayload.entryGuide?.generatedAt || (lastEntryGuideOutput ? new Date().toISOString() : "");
     renderPreparerResult(responsePayload);
@@ -5822,6 +5827,8 @@ function renderPreparerResult(response) {
   document.getElementById("drakeInputTrialBalance")?.addEventListener("click", exportPreparerToDrake);
   document.getElementById("drakeInputScheduleC")?.addEventListener("click", downloadDrakeScheduleC);
   document.getElementById("drakeInputManualGuide")?.addEventListener("click", downloadDrakeManualGuide);
+  document.getElementById("drakeInputForm8949")?.addEventListener("click", downloadDrakeForm8949);
+  document.getElementById("drakeInputForm4562")?.addEventListener("click", downloadDrakeForm4562);
 }
 
 /** Return the entity type (1040 / 1120S / 1065 / 1120 / '') from the last preparer run. */
@@ -5840,10 +5847,15 @@ function drakeEntityTypeFromLastOutput() {
 
 /** Render the Drake Import Files card HTML. */
 function renderDrakeInputsPanel() {
-  const et = drakeEntityTypeFromLastOutput();
+  const et   = drakeEntityTypeFromLastOutput();
   const is1040     = et === "1040";
   const isBusiness = ["1120S", "1065", "1120"].includes(et);
   const etLabel    = et || "return";
+
+  const tx8949  = lastPreparerOutput?.transactions8949 || [];
+  const assets  = lastPreparerOutput?.assets4562       || [];
+  const has8949 = tx8949.length > 0;
+  const has4562 = assets.length > 0;
 
   const trialBalanceRow = `
     <div class="drake-input-row ${isBusiness ? "available" : "dimmed"}">
@@ -5882,23 +5894,31 @@ function renderDrakeInputsPanel() {
     </div>`;
 
   const form8949Row = `
-    <div class="drake-input-row dimmed">
+    <div class="drake-input-row ${has8949 ? "available" : "dimmed"}">
       <div class="drake-input-icon">89</div>
       <div class="drake-input-info">
         <strong>Form 8949</strong>
-        <span>Capital gain transactions · .csv → C:\\DRAKE25\\IMPORT\\ — requires transaction data upload</span>
+        <span>Capital gains &nbsp;·&nbsp; .csv → C:\\DRAKE25\\IMPORT\\${has8949
+          ? ` &nbsp;·&nbsp; <strong>${tx8949.length} transaction${tx8949.length === 1 ? "" : "s"} found</strong>`
+          : " — upload a 1099-B or brokerage statement and regenerate"}</span>
       </div>
-      <span class="tag neutral">Próximamente</span>
+      ${has8949
+        ? `<button class="ghost-button small-button" id="drakeInputForm8949" type="button">Download CSV</button>`
+        : `<span class="tag neutral">No data</span>`}
     </div>`;
 
   const form4562Row = `
-    <div class="drake-input-row dimmed">
+    <div class="drake-input-row ${has4562 ? "available" : "dimmed"}">
       <div class="drake-input-icon">45</div>
       <div class="drake-input-info">
         <strong>Form 4562</strong>
-        <span>Depreciation assets · .xlsx → C:\\DRAKE25\\IMPORT\\ — requires asset data upload</span>
+        <span>Depreciation &nbsp;·&nbsp; .xlsx → C:\\DRAKE25\\IMPORT\\${has4562
+          ? ` &nbsp;·&nbsp; <strong>${assets.length} asset${assets.length === 1 ? "" : "s"} found</strong>`
+          : " — upload a depreciation schedule or prior-year 4562 and regenerate"}</span>
       </div>
-      <span class="tag neutral">Próximamente</span>
+      ${has4562
+        ? `<button class="ghost-button small-button" id="drakeInputForm4562" type="button">Download Excel</button>`
+        : `<span class="tag neutral">No data</span>`}
     </div>`;
 
   return `
@@ -5969,8 +5989,10 @@ async function callDrakeGenerate(fileType, buttonEl) {
           ein:        client?.ein        || metadata.ein         || "",
           entityType: client?.returnType || client?.entityType   || metadata.returnType || "",
         },
-        workbook:   lastPreparerOutput.response?.workbook,
-        entryGuide: lastPreparerOutput.response?.entryGuide,
+        workbook:        lastPreparerOutput.response?.workbook,
+        entryGuide:      lastPreparerOutput.response?.entryGuide,
+        transactions8949: lastPreparerOutput.transactions8949 || [],
+        assets4562:       lastPreparerOutput.assets4562       || [],
       }),
     });
     const data = await response.json().catch(() => ({}));
@@ -6019,6 +6041,14 @@ async function downloadDrakeScheduleC() {
 
 async function downloadDrakeManualGuide() {
   await callDrakeGenerate("manual_entry_guide", document.getElementById("drakeInputManualGuide"));
+}
+
+async function downloadDrakeForm8949() {
+  await callDrakeGenerate("form_8949", document.getElementById("drakeInputForm8949"));
+}
+
+async function downloadDrakeForm4562() {
+  await callDrakeGenerate("form_4562", document.getElementById("drakeInputForm4562"));
 }
 
 async function exportPreparerToDrake() {

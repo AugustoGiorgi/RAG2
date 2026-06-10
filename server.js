@@ -7872,9 +7872,16 @@ async function handlePrepareWorkpaper(req, res) {
     workbook = normalizeWorkbook(parsed, raw, payload);
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
     appendEntryGuideSheetToWorkbook(workbook, entryGuide);
+
+    // Pass through Drake-specific extraction arrays (optional, omitted when empty)
+    const transactions8949 = normalizeTransactions8949(parsed.transactions8949);
+    const assets4562        = normalizeAssets4562(parsed.assets4562);
+
     sendJson(res, 200, {
       workbook,
       entryGuide,
+      ...(transactions8949.length ? { transactions8949 } : {}),
+      ...(assets4562.length        ? { assets4562 }        : {}),
       raw,
       model: result.data.model || result.model,
       usage: result.data.usage || null,
@@ -7887,6 +7894,37 @@ async function handlePrepareWorkpaper(req, res) {
     });
     return;
   }
+}
+
+function normalizeTransactions8949(raw) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  return raw.map((tx) => ({
+    description:  String(tx.description  || ""),
+    dateAcquired: String(tx.dateAcquired || ""),
+    dateSold:     String(tx.dateSold     || ""),
+    proceeds:     Number(tx.proceeds)    || 0,
+    basis:        Number(tx.basis)       || 0,
+    form8949Box:  String(tx.form8949Box  || "A").toUpperCase(),
+    adjCode:      String(tx.adjCode      || ""),
+    adjAmount:    tx.adjAmount != null ? Number(tx.adjAmount) : null,
+    washSaleLoss: tx.washSaleLoss != null ? Number(tx.washSaleLoss) : null,
+    tsj:          String(tx.tsj || "T").toUpperCase(),
+  })).filter((tx) => tx.description || tx.proceeds || tx.basis);
+}
+
+function normalizeAssets4562(raw) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  return raw.map((a) => ({
+    description:       String(a.description       || ""),
+    dateInService:     String(a.dateInService      || a.dateInservice || ""),
+    cost:              Number(a.cost)              || 0,
+    method:            String(a.method             || "SL").toUpperCase(),
+    life:              Number(a.life)              || 5,
+    priorDepreciation: Number(a.priorDepreciation) || 0,
+    section179:        a.section179       != null ? Number(a.section179)       : null,
+    bonusDepreciation: a.bonusDepreciation != null ? Number(a.bonusDepreciation): null,
+    businessUsePct:    a.businessUsePct   != null ? Number(a.businessUsePct)   : 100,
+  })).filter((a) => a.description || a.cost);
 }
 
 const DRAKE_EXPORT_PATTERNS = [
@@ -8171,7 +8209,47 @@ async function handleDrakeGenerate(req, res) {
       return;
     }
 
-    sendJson(res, 400, { error: `Unknown fileType: ${fileType}. Use schedule_c or manual_entry_guide.` });
+    if (fileType === "form_8949") {
+      const txRaw = payload.transactions8949;
+      if (!Array.isArray(txRaw) || !txRaw.length) {
+        sendJson(res, 400, { error: "No capital gain transactions found. Upload a 1099-B or brokerage statement and regenerate the workpaper." });
+        return;
+      }
+      const transactions = normalizeTransactions8949(txRaw);
+      const { buildArtifact: build8949 } = require("./tax-loader/generators/form8949Generator");
+      const artifact = build8949(transactions, data.client.name || "client");
+      const contentBase64 = Buffer.from(artifact.content, "utf8").toString("base64");
+      sendJson(res, 200, {
+        ok: true,
+        filename: artifact.filename,
+        contentBase64,
+        mimeType: "text/csv",
+        meta: artifact.meta || {},
+      });
+      return;
+    }
+
+    if (fileType === "form_4562") {
+      const assetsRaw = payload.assets4562;
+      if (!Array.isArray(assetsRaw) || !assetsRaw.length) {
+        sendJson(res, 400, { error: "No depreciable assets found. Upload a depreciation schedule or prior-year Form 4562 and regenerate the workpaper." });
+        return;
+      }
+      const assets = normalizeAssets4562(assetsRaw);
+      const { buildArtifact: build4562 } = require("./tax-loader/generators/form4562Generator");
+      const artifact = await build4562(assets, data.client.name || "client");
+      const contentBase64 = artifact.buffer.toString("base64");
+      sendJson(res, 200, {
+        ok: true,
+        filename: artifact.filename,
+        contentBase64,
+        mimeType: artifact.mimetype,
+        meta: artifact.meta || {},
+      });
+      return;
+    }
+
+    sendJson(res, 400, { error: `Unknown fileType: ${fileType}. Use schedule_c, manual_entry_guide, form_8949, or form_4562.` });
   } catch (error) {
     sendJson(res, 500, { error: error.message || "Drake generate failed." });
   }
@@ -9607,7 +9685,12 @@ function buildPreparerContent(payload) {
       "Each top-level sheets item MUST include a name and a non-empty rows array. Each rows item MUST be an array of primitive cell values.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
+      "",
+      "DRAKE IMPORT ARRAYS (include only when the relevant source documents are present in the uploads):",
+      "transactions8949: Extract every capital gain/loss transaction you can find in uploaded 1099-B forms, brokerage statements, or Schedule D source documents. Each element: { description, dateAcquired, dateSold, proceeds, basis, form8949Box, adjCode, adjAmount, washSaleLoss, tsj }. Dates must be in MM/DD/YYYY format. form8949Box: 'A' (short-term, basis reported), 'B' (short-term, basis NOT reported), 'C' (short-term, other), 'D' (long-term, basis reported), 'E' (long-term, basis NOT reported), 'F' (long-term, other). If no capital gain documents are uploaded, omit this key or return an empty array.",
+      "assets4562: Extract every depreciable asset you can find in uploaded depreciation schedules, fixed asset lists, or Form 4562 from prior-year returns. Each element: { description, dateInService, cost, method, life, priorDepreciation, section179, bonusDepreciation, businessUsePct }. dateInService must be in MM/DD/YYYY format. method: 'SL', '200DB', '150DB', 'HY', or blank. If no asset documents are uploaded, omit this key or return an empty array.",
+      "IMPORTANT: Only include data you can actually read from the uploaded files. Do not invent transactions or assets. If you find partial data (e.g. description and amount but no date), include what you can and set missing fields to null.",
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
