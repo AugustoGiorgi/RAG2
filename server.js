@@ -8131,7 +8131,15 @@ function buildDrakeExportData(payload) {
   const client = {
     name: String(payload.client?.name || metadata.clientName || dbClient?.name || "Client").trim(),
     ein: String(payload.client?.ein || metadata.ein || dbClient?.ein || "").trim(),
-    entityType: normalizeDrakeEntityType(payload.client?.entityType || metadata.returnType || dbClient?.returnType || dbClient?.entityType || payload.returnType),
+    // Fallback chain: explicit client field → metadata → entryGuide (AI-set) → database client → top-level payload
+    entityType: normalizeDrakeEntityType(
+      payload.client?.entityType ||
+      metadata.returnType ||
+      entryGuide?.returnType ||
+      dbClient?.returnType ||
+      dbClient?.entityType ||
+      payload.returnType
+    ),
   };
   const taxYear = String(metadata.taxYear || payload.taxYear || entryGuide.taxYear || "").trim();
   const fieldMap = new Map();

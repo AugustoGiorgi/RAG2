@@ -5916,7 +5916,7 @@ function renderDrakeInputsPanel() {
         <span>${is1040
           ? (totalIncomeForms > 0
               ? `<strong>${totalIncomeForms} forms found:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake screen codes &amp; values`
-              : "W2 · 1099-INT · 1099-DIV · 1099-R · SSA · NEC &nbsp;·&nbsp; no income documents found in upload")
+              : "No se encontraron W-2 ni 1099 en los documentos subidos &nbsp;·&nbsp; subí los PDFs de los formularios para activar")
           : "not applicable for " + escapeHtml(etLabel)}</span>
       </div>
       ${is1040
@@ -5936,6 +5936,7 @@ function renderDrakeInputsPanel() {
               : "W-2 · 1099-INT · 1099-DIV · 1099-NEC · 1099-MISC · SSA &nbsp;·&nbsp; no income documents found in upload")
           : "not applicable for " + escapeHtml(etLabel)}</span>
         ${(is1040 && totalIncomeForms > 0) ? `<span class="muted-note" style="font-size:11px;">Drake: Import ▸ GruntWorx Populate Job ▸ select file</span>` : ""}
+        ${(is1040 && totalIncomeForms === 0) ? `<span class="muted-note" style="font-size:11px;">Para activar: subí los PDFs/imágenes de los W-2 y 1099 junto con los demás documentos y regenerá el workpaper.</span>` : ""}
       </div>
       ${(is1040 && totalIncomeForms > 0)
         ? `<button class="primary-button small-button" id="drakeInputGruntWorx" type="button">Download XML</button>`
@@ -6037,7 +6038,9 @@ async function callDrakeGenerate(fileType, buttonEl) {
           id:         client?.id         || metadata.clientId    || "",
           name:       client?.name       || metadata.clientName  || "",
           ein:        client?.ein        || metadata.ein         || "",
-          entityType: client?.returnType || client?.entityType   || metadata.returnType || "",
+          // Fallback chain: database client → metadata → AI-generated entryGuide returnType
+          entityType: client?.returnType || client?.entityType   || metadata.returnType ||
+                      lastPreparerOutput?.response?.entryGuide?.returnType || "",
         },
         workbook:         lastPreparerOutput.response?.workbook,
         entryGuide:       lastPreparerOutput.response?.entryGuide,
