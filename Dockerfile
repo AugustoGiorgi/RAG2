@@ -15,6 +15,7 @@ COPY --chown=node:node scripts ./scripts
 COPY --chown=node:node knowledge_base ./knowledge_base
 COPY --chown=node:node review_examples ./review_examples
 COPY --chown=node:node templates ./templates
+COPY --chown=node:node tax-loader ./tax-loader
 
 RUN chown -R node:node /app
 
