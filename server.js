@@ -8331,9 +8331,10 @@ async function handleDrakeGenerate(req, res) {
       //               EmployeeSSN   → CL_W_2.EmployeeSSN + CL_W_2.TSJ
       // Drake compares the SSN to the return's taxpayer/spouse SSNs and sets TSJ = T / S accordingly.
       // Only inject when SSN is available; records with tsj="S" (spouse) would need spouse SSN — left empty for now.
-      // Normalize SSN: strip dashes/spaces so it matches Drake's internal format
-      // (Drake stores SSNs as 9 raw digits: "117527660", not "117-52-7660").
-      // IMPORTGW.DLL does a raw string comparison — mismatched format = TSJ fails = all records skipped.
+      // Strip dashes to get raw 9 digits for the injection step.
+      // formatSsn() in gruntWorxGenerator.js will re-add dashes (XXX-XX-XXXX) when writing
+      // the XML, because Drake stores SSNs WITH dashes on the TP screen and IMPORTGW.DLL
+      // does a direct string comparison — "117527660" ≠ "117-52-7660" → TSJ fails → records skipped.
       const taxpayerSsn = (data.client.ein || "").trim().replace(/[^0-9]/g, '');
       if (taxpayerSsn) {
         const injectSsn = (arr) => arr.map((r) => ({
