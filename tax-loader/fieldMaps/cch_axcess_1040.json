@@ -14,9 +14,12 @@
     "schC.depreciation": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.insurance": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.interest_mortgage": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.interest_other": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.legal_professional": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.office_expense": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.rent": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.rent_lease_vehicle": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "schC.rent_lease_other": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.repairs": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.supplies": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.taxes_licenses": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
@@ -26,8 +29,11 @@
     "schC.wages": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "schC.other_expenses": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "income.wages_w2": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.interest_taxable": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "income.interest_1099int": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.dividends_ordinary": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "income.dividends_1099div": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
+    "income.dividends_qualified": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" },
     "income.cap_gains_sch_d": { "form": "REQUIERE-DOC-OFICIAL", "field": "REQUIERE-DOC-OFICIAL", "line": "REQUIERE-DOC-OFICIAL" }
   }
 }

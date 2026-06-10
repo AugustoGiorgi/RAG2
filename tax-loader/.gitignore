@@ -1,2 +1,5 @@
 node_modules/
 examples/.tmp/
+# Drake TB templates — contain Drake license metadata; do not commit
+templates/*.xls
+templates/*.xlsx

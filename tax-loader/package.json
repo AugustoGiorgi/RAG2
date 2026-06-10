@@ -1,15 +1,15 @@
 {
-  "name": "tax-loader",
-  "version": "1.0.0",
-  "description": "Canonical tax workpaper loader for CCH Axcess and Drake import artifacts.",
+  "name": "rag-tax-drake-loader",
+  "version": "2.1.0",
+  "description": "Workpaper → Drake Tax import files pipeline (Trial Balance, 8949, 4562, Schedule C).",
   "main": "index.js",
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=18" },
   "scripts": {
-    "test": "%npm_node_execpath:Program Files=Progra~1% examples/test_pipeline.js"
+    "test":      "node examples/test_pipeline.js",
+    "companion": "node companion/companion.js"
   },
   "dependencies": {
-    "exceljs": "^4.4.0"
+    "exceljs":          "^4.4.0",
+    "@nut-tree/nut-js": "^4.2.0"
   }
 }

@@ -4,10 +4,22 @@ const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
 
+const DRAKE_UI_SCRIPT = path.join(__dirname, "drake_ui.py");
+
+const { locateDrake }            = require("./drakeLocator");
+const { handleSetupStatus, handleExtractTemplates } = require("./drakeSetup");
+
 const CONFIG = {
   port: Number(process.env.COMPANION_PORT || 7777),
   paths: {
-    drake: process.env.DRAKE_IMPORT_DIR || "C:\\DRAKE25\\TB\\",
+    // Trial Balance — Drake reads from this folder at import time
+    trialBalance: process.env.DRAKE_TB_DIR      || "C:\\DRAKE25\\TB\\",
+    // Form 8949 and Form 4562 — both use DRAKE_ROOT\IMPORT\ (verified from IMPORTD.DLL + IMPORT4562.DLL)
+    form8949:     process.env.DRAKE_IMPORT_DIR  || "C:\\DRAKE25\\IMPORT\\",
+    form4562:     process.env.DRAKE_IMPORT_DIR  || "C:\\DRAKE25\\IMPORT\\",
+    scheduleC:    process.env.DRAKE_IMPORT_DIR  || "C:\\DRAKE25\\IMPORT\\",
+    // Legacy alias kept for backward-compat
+    get drake() { return this.trialBalance; },
   },
   sharedToken: process.env.COMPANION_TOKEN || "cambiar-este-token",
 };
@@ -126,6 +138,29 @@ function writeArtifact(payload, softwareDir) {
   };
 }
 
+function runDrakeUiLoad(payload) {
+  if (!fs.existsSync(DRAKE_UI_SCRIPT)) {
+    throw new Error(`drake_ui.py not found at ${DRAKE_UI_SCRIPT}`);
+  }
+  const input = JSON.stringify(payload);
+  try {
+    const stdout = execFileSync("python", [DRAKE_UI_SCRIPT], {
+      input,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 300_000, // 5 min — UI automation can be slow
+    });
+    return JSON.parse(stdout.trim());
+  } catch (err) {
+    const stderr = err.stderr ? String(err.stderr).slice(0, 2000) : "";
+    const stdout = err.stdout ? String(err.stdout).trim() : "";
+    if (stdout) {
+      try { return JSON.parse(stdout); } catch (_) {}
+    }
+    throw new Error(`drake_ui.py failed: ${err.message}\nstderr: ${stderr}`);
+  }
+}
+
 const server = http.createServer((req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Companion-Token");
@@ -138,11 +173,31 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && req.url === "/health") {
-    sendJson(res, 200, { status: "ok", software: ["drake"] });
+    const drake = locateDrake();
+    sendJson(res, 200, {
+      status: "ok",
+      software: ["drake"],
+      drakeInstalled: drake.found,
+      drakePath: drake.path,
+      drakeVersion: drake.version,
+    });
     return;
   }
 
-  if (req.method !== "POST" || req.url !== "/import") {
+  if (req.method === "GET" && req.url === "/locate") {
+    sendJson(res, 200, locateDrake());
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/setup/status") {
+    return handleSetupStatus(req, res);
+  }
+
+  if (req.method === "POST" && req.url === "/setup/extract-templates") {
+    return handleExtractTemplates(req, res);
+  }
+
+  if (req.method !== "POST" || (req.url !== "/import" && req.url !== "/ui-load")) {
     sendJson(res, 404, { error: "not found" });
     return;
   }
@@ -161,6 +216,13 @@ const server = http.createServer((req, res) => {
       }
 
       const payload = JSON.parse(body || "{}");
+
+      if (req.url === "/ui-load") {
+        const result = runDrakeUiLoad(payload);
+        sendJson(res, result.ok ? 200 : 500, result);
+        return;
+      }
+
       const software = String(payload.software || "");
       const dir = CONFIG.paths[software];
       if (!dir) {
@@ -168,6 +230,31 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Multi-file format: { software, files: [{type, filename, content, contentBase64}] }
+      if (Array.isArray(payload.files)) {
+        const paths = [];
+        const errors = [];
+        for (const file of payload.files) {
+          try {
+            const filePayload = {
+              software,
+              kind:          file.kind  || "raw",
+              filename:      file.filename,
+              content:       file.content || null,
+              contentBase64: file.contentBase64 || null,
+              meta:          file.meta || {},
+            };
+            const result = writeArtifact(filePayload, dir);
+            paths.push(result.written);
+          } catch (e) {
+            errors.push(`${file.filename}: ${e.message}`);
+          }
+        }
+        sendJson(res, errors.length ? 207 : 200, { ok: errors.length === 0, paths, errors });
+        return;
+      }
+
+      // Single-file format (backward compat with TaxLoader/DrakeAdapter)
       sendJson(res, 200, writeArtifact(payload, dir));
     } catch (error) {
       sendJson(res, 500, { error: error.message });
@@ -182,4 +269,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { writeArtifact, writeTrialBalanceTemplate };
+module.exports = { writeArtifact, writeTrialBalanceTemplate, runDrakeUiLoad };

@@ -1,47 +1,57 @@
-# Tax Loader Companion
+# RAG Tax — Companion Service
 
-The companion is only needed for Drake. CCH Axcess uses the cloud API path and does not require this local process.
+Servidor HTTP local en la PC del CPA. Recibe archivos desde el server remoto y los deposita en las carpetas de Drake para import con 3 clicks.
 
-## What It Does
-
-The companion receives a prepared artifact from `tax-loader` and writes it to a local Drake import folder. For 1065, 1120, and 1120-S, it opens Drake's own `.TBI` trial balance template through Microsoft Excel COM automation, fills the mapped rows, and saves the completed workbook as `.xls` in `C:\DRAKE25\TB`.
-
-It does not automate the Drake user interface and it does not scrape anything. The CPA still imports the generated file using Drake's official import workflow.
-
-## Start
+## Instalación
 
 ```bash
-set COMPANION_TOKEN=replace-with-a-long-secret
-set DRAKE_IMPORT_DIR=C:\DRAKE25\TB
+cd companion/
+npm install
 node companion.js
 ```
 
-The default URL is:
+Escucha en `http://127.0.0.1:7777` (solo localhost).
 
-```text
-http://127.0.0.1:7777
+## Variables de entorno
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `COMPANION_PORT` | 7777 | Puerto HTTP |
+| `COMPANION_TOKEN` | `cambiar-este-token` | Token de autenticación (cambiar en producción) |
+| `DRAKE_IMPORT_DIR` | `C:\DRAKE25\TB\` | Carpeta Trial Balance de Drake |
+| `DRAKE_INSTALL_PATH` | auto-detect | Override path de instalación de Drake |
+
+## Endpoints
+
+| Método | URL | Descripción |
+|---|---|---|
+| GET | `/health` | Estado del companion + Drake instalado |
+| GET | `/locate` | Detecta instalación de Drake |
+| GET | `/setup/status` | Estado del setup (templates extraídos?) |
+| POST | `/setup/extract-templates` | Extrae templates de Drake automáticamente |
+| POST | `/import` | Recibe archivos y los deposita en Drake |
+
+## Flujo de setup (una sola vez)
+
+```
+App server → POST /setup/extract-templates
+Companion → abre Drake, navega Import > TB Import > Create New
+Companion → guarda templates en templates/
+Responde: { ok: true }
 ```
 
-Health check:
+Si la extracción automática falla, el endpoint retorna instrucciones manuales.
 
-```bash
-curl http://127.0.0.1:7777/health
+## Flujo de producción
+
+```
+App server → POST /import  { software: "drake", files: [...] }
+Companion → deposita archivos en C:\Drake26\TB\
+CPA → Import > Trial Balance Import → Next → Finish  (3 clicks)
 ```
 
-## Required Drake Information
+## Seguridad
 
-`DRAKE_IMPORT_DIR` must be updated with the actual folder used by the CPA's Drake installation. For the local Drake 2025 trial installation, the detected folder is:
-
-```text
-C:\DRAKE25\TB
-```
-
-The companion expects Microsoft Excel to be installed locally because Drake's Trial Balance Import also requires Excel.
-
-After a workbook is generated, open Drake, open the target business return, and select:
-
-```text
-Import > Trial Balance Import
-```
-
-Then browse to the generated `*_TB_*.xls` file.
+- Solo escucha en `127.0.0.1`
+- Header `X-Companion-Token` requerido en todos los POST
+- Las credenciales de Drake nunca salen de la PC del CPA
