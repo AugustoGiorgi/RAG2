@@ -7269,3 +7269,75 @@ h1 {
   background: #fef2f2;
   color: #7f1d1d;
 }
+
+/* ── Drake Import Files Panel ───────────────────────────────────────────────── */
+.drake-inputs-card {
+  border-color: #c3d4f0;
+  background: #f7faff;
+}
+
+.drake-inputs-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.drake-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 14px;
+  background: #fff;
+}
+
+.drake-input-row.available {
+  border-color: #c3d4f0;
+  background: #f7faff;
+}
+
+.drake-input-row.dimmed {
+  opacity: 0.55;
+  background: #fafafa;
+}
+
+.drake-input-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: #e8eef8;
+  font-size: 0.9rem;
+  flex-shrink: 0;
+  color: #2e5bbd;
+  font-weight: 900;
+}
+
+.drake-input-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.drake-input-info strong {
+  display: block;
+  font-size: 0.875rem;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.drake-input-info span {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.drake-input-row .ghost-button,
+.drake-input-row .primary-button {
+  flex-shrink: 0;
+}

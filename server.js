@@ -669,7 +669,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname === "/api/irs-instructions") { await handleIrsInstructions(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/prepare-workpaper") { await handlePrepareWorkpaper(req, res); return; }
     if (req.method === "POST" && req.url === "/api/preparation/export-drake") { await handlePreparationExportDrake(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/preparation/drake-generate") { await handleDrakeGenerate(req, res); return; }
     if (req.method === "POST" && req.url === "/api/preparation/data-entry-guide") { await handlePreparationDataEntryGuide(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/preparation/drake-ui-load") { await handleDrakeUiLoad(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/api/estimated-taxes/templates/")) { await handleEstimatedTaxesTemplateDownload(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/estimated-taxes/detect-period") { await handleEstimatedTaxesDetectPeriod(req, res); return; }
     if (req.method === "POST" && req.url === "/api/estimated-taxes/calculate") { await handleEstimatedTaxesCalculate(req, res); return; }
@@ -8102,6 +8104,79 @@ async function handlePreparationExportDrake(req, res) {
   }
 }
 
+// ── Drake Generate — download Schedule C CSV or Manual Entry Guide XLSX ───────
+// POST /api/preparation/drake-generate
+// { fileType: "schedule_c" | "manual_entry_guide", workbook, entryGuide, metadata, client }
+// → { ok, filename, contentBase64, mimeType, meta }
+async function handleDrakeGenerate(req, res) {
+  const payload = await readJsonBody(req);
+  const fileType = String(payload.fileType || "").trim();
+  if (!fileType) {
+    sendJson(res, 400, { error: "fileType is required (schedule_c | manual_entry_guide)." });
+    return;
+  }
+
+  const data = buildDrakeExportData(payload);
+  if (!data.client.entityType) {
+    sendJson(res, 400, { error: "Could not identify a Drake-supported return type. Use 1040, 1065, 1120, or 1120S." });
+    return;
+  }
+
+  try {
+    if (fileType === "schedule_c") {
+      if (data.client.entityType !== "1040") {
+        sendJson(res, 400, { error: "Schedule C is only available for 1040 returns." });
+        return;
+      }
+      const { buildArtifact: buildSchC } = require("./tax-loader/generators/scheduleCGenerator");
+      const artifact = buildSchC(data);
+      const contentBase64 = Buffer.from(artifact.content, "utf8").toString("base64");
+      sendJson(res, 200, {
+        ok: true,
+        filename: artifact.filename,
+        contentBase64,
+        mimeType: "text/csv",
+        meta: artifact.meta || {},
+      });
+      return;
+    }
+
+    if (fileType === "manual_entry_guide") {
+      if (data.client.entityType !== "1040") {
+        sendJson(res, 400, { error: "The Manual Entry Guide is only available for 1040 returns." });
+        return;
+      }
+      const { buildArtifact: buildManualGuide } = require("./tax-loader/generators/manualEntryGuideGenerator");
+      const guidePayload = {
+        client:     { ssn: data.client.ein, first_name: data.client.name, last_name: "", filing_status: "" },
+        spouse:     {},
+        w2s:        [],
+        int_1099s:  [],
+        div_1099s:  [],
+        ret_1099rs: [],
+        ssa_1099s:  [],
+        nec_1099s:  [],
+        misc_1099s: [],
+      };
+      const taxYear = data.taxYear || String(new Date().getFullYear() - 1);
+      const artifact = await buildManualGuide(guidePayload, data.client.name || "client", taxYear);
+      const contentBase64 = artifact.buffer.toString("base64");
+      sendJson(res, 200, {
+        ok: true,
+        filename: artifact.filename,
+        contentBase64,
+        mimeType: artifact.mimetype,
+        meta: artifact.meta || {},
+      });
+      return;
+    }
+
+    sendJson(res, 400, { error: `Unknown fileType: ${fileType}. Use schedule_c or manual_entry_guide.` });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message || "Drake generate failed." });
+  }
+}
+
 async function handlePreparationDataEntryGuide(req, res) {
   const payload = await readJsonBody(req);
   const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
@@ -8149,6 +8224,166 @@ async function handlePreparationDataEntryGuide(req, res) {
     usage: result.data.usage || null,
     costEstimate: estimateClaudeCost(result.data.usage || null),
   });
+}
+
+// ── Drake 1040 UI Load ────────────────────────────────────────────────────────
+// POST /api/preparation/drake-ui-load
+//
+// Accepts either:
+//   A) Pre-extracted uiPayload { client, spouse, w2s, int_1099s, ... }
+//   B) Raw workpaper context { workbook, entryGuide, metadata } → Claude extracts
+//
+// Then POSTs the structured JSON to companion /ui-load which spawns drake_ui.py.
+
+const DRAKE_UI_SYSTEM_PROMPT = `You are a U.S. tax-data extraction assistant.
+Your only job is to read the provided 1040 workpaper / data-entry-guide content and
+return a single JSON object that exactly matches the schema below.
+Return ONLY the JSON object — no markdown, no explanation.
+
+Schema:
+{
+  "client": {
+    "ssn": "XXX-XX-XXXX",
+    "first_name": "",
+    "last_name": "",
+    "middle_initial": "",
+    "dob": "YYYY-MM-DD",
+    "filing_status": "1",
+    "address_street": "",
+    "address_city": "",
+    "address_state": "XX",
+    "address_zip": ""
+  },
+  "spouse": {
+    "ssn": "",
+    "first_name": "",
+    "last_name": "",
+    "dob": "YYYY-MM-DD"
+  },
+  "w2s": [{
+    "ts": "T",
+    "employer_ein": "",
+    "employer_name": "",
+    "employer_street": "",
+    "employer_city": "",
+    "employer_state": "",
+    "employer_zip": "",
+    "box1_wages": 0,
+    "box2_federal_wh": 0,
+    "box3_ss_wages": 0,
+    "box4_ss_wh": 0,
+    "box5_medicare_wages": 0,
+    "box6_medicare_wh": 0,
+    "box16_state_wages": 0,
+    "box17_state_tax": 0,
+    "box15_state": ""
+  }],
+  "int_1099s":  [{ "payer_name": "", "payer_ein": "", "box1_interest": 0, "box4_federal_wh": 0 }],
+  "div_1099s":  [{ "payer_name": "", "payer_ein": "", "box1a_total_dividends": 0, "box1b_qualified_dividends": 0, "box4_federal_wh": 0 }],
+  "nec_1099s":  [{ "payer_name": "", "payer_ein": "", "box1_nec": 0, "box4_federal_wh": 0 }],
+  "misc_1099s": [{ "payer_name": "", "payer_ein": "", "box3_other_income": 0, "box4_federal_wh": 0 }],
+  "ssa_1099s":  [{ "ts": "T", "box5_net_benefits": 0 }]
+}
+
+Rules:
+- Use empty string "" for unknown text fields.
+- Use 0 for unknown numeric fields.
+- "ts" must be "T" (taxpayer) or "S" (spouse).
+- "filing_status": 1=Single, 2=MFJ, 3=MFS, 4=HOH, 5=QW.
+- Omit any top-level array entirely if there are no records for it.
+- "spouse" object is required even if empty.`;
+
+async function handleDrakeUiLoad(req, res) {
+  const payload = await readJsonBody(req);
+  const apiKey  = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  const companionUrl   = String(payload.companionUrl   || process.env.COMPANION_URL   || "http://127.0.0.1:7777").trim();
+  const companionToken = String(payload.companionToken || process.env.COMPANION_TOKEN || "cambiar-este-token").trim();
+  const taxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
+
+  // ── A) Payload already has pre-extracted uiPayload (skip Claude) ──
+  if (payload.uiPayload?.client) {
+    return _dispatchUiLoad(res, payload.uiPayload, companionUrl, companionToken, taxYear);
+  }
+
+  // ── B) Extract structured data from workpaper via Claude ──
+  if (!apiKey) {
+    sendJson(res, 400, { error: "Missing Claude API key (ANTHROPIC_API_KEY). Required to extract 1040 data from workpapers." });
+    return;
+  }
+
+  const workbook    = payload.workbook    || payload.response?.workbook    || {};
+  const entryGuide  = payload.entryGuide  || payload.response?.entryGuide  || {};
+  const metadata    = payload.metadata    || payload.payload?.metadata     || {};
+  const clientName  = payload.client?.name || metadata.clientName || "";
+  const clientSSN   = payload.client?.ssn  || metadata.ssn        || payload.client?.ein || metadata.ein || "";
+
+  const workpaperText = typeof workbook === "string"
+    ? workbook
+    : JSON.stringify(workbook, null, 2);
+  const guideText = typeof entryGuide === "string"
+    ? entryGuide
+    : JSON.stringify(entryGuide, null, 2);
+
+  const userContent = `Client: ${clientName || "(unknown)"}  SSN/EIN: ${clientSSN || "(unknown)"}  Tax Year: ${taxYear || "(unknown)"}
+
+ENTRY GUIDE:
+${guideText.slice(0, 12000)}
+
+WORKPAPER DATA:
+${workpaperText.slice(0, 8000)}
+
+Extract all 1040 taxpayer data and return the JSON object.`;
+
+  const content = [{ type: "text", text: userContent }];
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(
+    apiKey,
+    content,
+    { knowledgeBase: [], reviewExamples: [] },
+    { maxTokens: 4000, webSearch: false, system: [{ type: "text", text: DRAKE_UI_SYSTEM_PROMPT }] },
+  );
+
+  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  logClaudeCost(req, result, "drake_ui_extract", "preparation", payload, startedAt);
+
+  const raw = extractText(result.data);
+  const uiPayload = parseClaudeJson(raw);
+  if (!uiPayload || !uiPayload.client) {
+    sendJson(res, 502, { error: "Claude did not return a valid 1040 UI payload.", raw });
+    return;
+  }
+
+  // Overlay SSN if Claude missed it but we had it in metadata
+  if (!uiPayload.client.ssn && clientSSN) uiPayload.client.ssn = clientSSN;
+
+  return _dispatchUiLoad(res, uiPayload, companionUrl, companionToken, taxYear, {
+    model: result.data.model || result.model,
+    usage: result.data.usage || null,
+    costEstimate: estimateClaudeCost(result.data.usage || null),
+  });
+}
+
+async function _dispatchUiLoad(res, uiPayload, companionUrl, companionToken, taxYear, claudeMeta) {
+  try {
+    const response = await fetch(`${companionUrl}/ui-load`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Companion-Token": companionToken },
+      body: JSON.stringify(uiPayload),
+    });
+    const companionResult = await response.json().catch(() => ({}));
+    sendJson(res, response.ok ? 200 : 500, {
+      ok:            companionResult.ok ?? response.ok,
+      clientCreated: companionResult.client_created ?? false,
+      identifier:    companionResult.identifier || uiPayload.client?.ssn || "",
+      screensFilled: companionResult.screens_filled || [],
+      warnings:      companionResult.warnings || [],
+      errors:        companionResult.errors   || [],
+      taxYear,
+      ...claudeMeta,
+    });
+  } catch (err) {
+    sendJson(res, 502, { error: `Companion /ui-load unreachable: ${err.message}. Make sure companion.js is running on the local CPA workstation.` });
+  }
 }
 
 async function handleNotices(req, res) {

@@ -5805,6 +5805,7 @@ function renderPreparerResult(response) {
       </div>
       <p class="muted-note">Sheet name: <strong>Data Entry Guide</strong>. Software-specific instructions are generated during the first workbook run.</p>
     </article>
+    ${isDrakeResult ? renderDrakeInputsPanel() : ""}
     ${renderCostSummary(response)}
   `;
   document.getElementById("previewEntryGuide")?.addEventListener("click", () => {
@@ -5817,6 +5818,102 @@ function renderPreparerResult(response) {
   });
   document.getElementById("exportPrepDrakeInline")?.addEventListener("click", exportPreparerToDrake);
   document.getElementById("exportPrepDrakeScriptInline")?.addEventListener("click", downloadDrakeAutoEntryScript);
+  // Drake import file buttons
+  document.getElementById("drakeInputTrialBalance")?.addEventListener("click", exportPreparerToDrake);
+  document.getElementById("drakeInputScheduleC")?.addEventListener("click", downloadDrakeScheduleC);
+  document.getElementById("drakeInputManualGuide")?.addEventListener("click", downloadDrakeManualGuide);
+}
+
+/** Return the entity type (1040 / 1120S / 1065 / 1120 / '') from the last preparer run. */
+function drakeEntityTypeFromLastOutput() {
+  if (!lastPreparerOutput) return "";
+  const raw = lastPreparerOutput.response?.entryGuide?.returnType
+    || lastPreparerOutput.payload?.metadata?.returnType
+    || "";
+  const up = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (up.includes("1120S")) return "1120S";
+  if (up.includes("1065"))  return "1065";
+  if (up.includes("1120"))  return "1120";
+  if (up.includes("1040"))  return "1040";
+  return "";
+}
+
+/** Render the Drake Import Files card HTML. */
+function renderDrakeInputsPanel() {
+  const et = drakeEntityTypeFromLastOutput();
+  const is1040     = et === "1040";
+  const isBusiness = ["1120S", "1065", "1120"].includes(et);
+  const etLabel    = et || "return";
+
+  const trialBalanceRow = `
+    <div class="drake-input-row ${isBusiness ? "available" : "dimmed"}">
+      <div class="drake-input-icon">TB</div>
+      <div class="drake-input-info">
+        <strong>Trial Balance</strong>
+        <span>1120S · 1065 · 1120 &nbsp;·&nbsp; .xls → C:\\DRAKE25\\TB\\${isBusiness ? "" : " — not applicable for 1040"}</span>
+      </div>
+      ${isBusiness
+        ? `<button class="primary-button small-button" id="drakeInputTrialBalance" type="button">Write to Drake →</button>`
+        : `<span class="tag neutral">N/A</span>`}
+    </div>`;
+
+  const scheduleCRow = `
+    <div class="drake-input-row ${is1040 ? "available" : "dimmed"}">
+      <div class="drake-input-icon">SC</div>
+      <div class="drake-input-info">
+        <strong>Schedule C</strong>
+        <span>1040 · Self-employment income &amp; expenses &nbsp;·&nbsp; .csv → C:\\DRAKE25\\IMPORT\\${is1040 ? "" : " — not applicable for " + escapeHtml(etLabel)}</span>
+      </div>
+      ${is1040
+        ? `<button class="ghost-button small-button" id="drakeInputScheduleC" type="button">Download CSV</button>`
+        : `<span class="tag neutral">N/A</span>`}
+    </div>`;
+
+  const manualGuideRow = `
+    <div class="drake-input-row ${is1040 ? "available" : "dimmed"}">
+      <div class="drake-input-icon">W2</div>
+      <div class="drake-input-info">
+        <strong>Manual Entry Guide</strong>
+        <span>1040 · W2 · 1099-INT · 1099-DIV · 1099-R · SSA · NEC &nbsp;·&nbsp; Drake screen codes &amp; values${is1040 ? "" : " — not applicable for " + escapeHtml(etLabel)}</span>
+      </div>
+      ${is1040
+        ? `<button class="ghost-button small-button" id="drakeInputManualGuide" type="button">Download Excel</button>`
+        : `<span class="tag neutral">N/A</span>`}
+    </div>`;
+
+  const form8949Row = `
+    <div class="drake-input-row dimmed">
+      <div class="drake-input-icon">89</div>
+      <div class="drake-input-info">
+        <strong>Form 8949</strong>
+        <span>Capital gain transactions · .csv → C:\\DRAKE25\\IMPORT\\ — requires transaction data upload</span>
+      </div>
+      <span class="tag neutral">Próximamente</span>
+    </div>`;
+
+  const form4562Row = `
+    <div class="drake-input-row dimmed">
+      <div class="drake-input-icon">45</div>
+      <div class="drake-input-info">
+        <strong>Form 4562</strong>
+        <span>Depreciation assets · .xlsx → C:\\DRAKE25\\IMPORT\\ — requires asset data upload</span>
+      </div>
+      <span class="tag neutral">Próximamente</span>
+    </div>`;
+
+  return `
+    <article class="entry-guide-card drake-inputs-card">
+      <span class="tag success">Drake</span>
+      <h3>Drake Import Files</h3>
+      <p>Generate the structured files Drake Tax needs to load this ${escapeHtml(etLabel)} return. Open the client return in Drake before importing.</p>
+      <div class="drake-inputs-list">
+        ${trialBalanceRow}
+        ${scheduleCRow}
+        ${manualGuideRow}
+        ${form8949Row}
+        ${form4562Row}
+      </div>
+    </article>`;
 }
 
 function isDrakeSelectedOrGeneratedGuide(guide) {
@@ -5844,6 +5941,84 @@ async function downloadPreparerWord() {
   if (!lastPreparerOutput) return;
   const baseName = "preparation-workpaper";
   downloadWorkbook(`${baseName}.xlsx`, lastPreparerOutput.response.workbook);
+}
+
+/** Shared helper — call /api/preparation/drake-generate and trigger browser download. */
+async function callDrakeGenerate(fileType, buttonEl) {
+  if (!lastPreparerOutput) {
+    showToast("Generate the preparation workpaper first.", "error");
+    return;
+  }
+  const origText = buttonEl?.textContent || "";
+  if (buttonEl) { buttonEl.disabled = true; buttonEl.textContent = "Generating…"; }
+
+  try {
+    const metadata = lastPreparerOutput.payload?.metadata || {};
+    const client   = activePreparationClient();
+    const response = await fetch(`${API_BASE_URL}/api/preparation/drake-generate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fileType,
+        taxSoftware: prepState.taxSoftware,
+        metadata,
+        clientId: lastPreparerOutput.payload?.clientId || metadata.clientId || client?.id || "",
+        client: {
+          id:         client?.id         || metadata.clientId    || "",
+          name:       client?.name       || metadata.clientName  || "",
+          ein:        client?.ein        || metadata.ein         || "",
+          entityType: client?.returnType || client?.entityType   || metadata.returnType || "",
+        },
+        workbook:   lastPreparerOutput.response?.workbook,
+        entryGuide: lastPreparerOutput.response?.entryGuide,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `Backend returned ${response.status}`);
+
+    // Decode base64 and trigger download
+    const bytes    = Uint8Array.from(atob(data.contentBase64), c => c.charCodeAt(0));
+    const blob     = new Blob([bytes], { type: data.mimeType || "application/octet-stream" });
+    const url      = URL.createObjectURL(blob);
+    const a        = document.createElement("a");
+    a.href         = url;
+    a.download     = data.filename || `drake_${fileType}.bin`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    showToast(`${data.filename || fileType} downloaded.`, "success");
+
+    // Append success card to results
+    els.prepResults?.insertAdjacentHTML("beforeend", `
+      <article class="entry-guide-card">
+        <span class="tag success">Drake</span>
+        <h3>${escapeHtml(data.filename || fileType)} ready</h3>
+        <p>File downloaded. Place it in the correct Drake import folder before importing.</p>
+        <p class="muted-note"><code>${escapeHtml(data.filename || "")}</code></p>
+      </article>
+    `);
+  } catch (err) {
+    showToast(err.message || `${fileType} generation failed.`, "error");
+    els.prepResults?.insertAdjacentHTML("beforeend", `
+      <article>
+        <span class="tag warning">Drake</span>
+        <h3>${escapeHtml(fileType)} failed</h3>
+        <p>${escapeHtml(err.message || "Could not generate the file.")}</p>
+      </article>
+    `);
+  } finally {
+    if (buttonEl) { buttonEl.disabled = false; buttonEl.textContent = origText; }
+  }
+}
+
+async function downloadDrakeScheduleC() {
+  await callDrakeGenerate("schedule_c", document.getElementById("drakeInputScheduleC"));
+}
+
+async function downloadDrakeManualGuide() {
+  await callDrakeGenerate("manual_entry_guide", document.getElementById("drakeInputManualGuide"));
 }
 
 async function exportPreparerToDrake() {
