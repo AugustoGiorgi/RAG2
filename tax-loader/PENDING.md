@@ -142,6 +142,43 @@ Agregar estos al resultado de `parseApprovedWorkpaper()` como `data.w2s`, `data.
 
 ---
 
+## ✅ GruntWorx XML Generator — COMPLETADO
+
+`generators/gruntWorxGenerator.js` — genera XML nativo de GruntWorx Populate que Drake importa directamente sin pagar el servicio.
+
+**Schema reverse-engineered de:**
+- `C:\DRAKE25\FT\IMPORTGW.DLL` — XPaths + dispatch table de classTypes
+- `C:\DRAKE25\HELP\GRUNTWORX.KEY` — 708 entradas field-name → Drake form code
+
+**Validación de Drake confirmada (sin firma criptográfica):**
+- `taxYear` attribute debe empezar con "20"
+- XML bien formado (Msxml2.DOMDocument.6.0)
+- Atributo `Class` en `<classData>` debe ser un `CL_*` conocido
+- ✘ Sin HMAC, sin token de servidor, sin firma digital
+
+**classTypes soportados:**
+- [x] `CL_W_2` — W-2 completo (Boxes 1-17, Box 12 codes, Box 13 booleans)
+- [x] `CL_1099_INT` — 1099-INT (Boxes 1, 2, 4, 6, 8-11 + state)
+- [x] `CL_1099_DIV` — 1099-DIV (Boxes 1a, 1b, 2a, 2b, 3, 4, 5, 7, 12, 13 + state)
+- [x] `CL_1099_NEC` — 1099-NEC (Boxes 1, 4 + state)
+- [x] `CL_1099_MISC` — 1099-MISC (Boxes 1-4, 6, 9, 10, 12, 14 + state)
+- [x] `CL_1099_SSA` — SSA-1099 (Box 5/Net benefits, Box 6/WH, Medicare premiums)
+- ⚠ `CL_1099_R` — en KEY file pero NO en DLL dispatch; usar Manual Entry Guide
+
+**Wiring:**
+- [x] `server.js` `/api/preparation/drake-generate` — nuevo `fileType: "gruntworx_xml"`
+- [x] `app.js` `renderDrakeInputsPanel()` — nueva fila "GruntWorx XML" con badge "Auto-Import"
+- [x] `app.js` `downloadDrakeGruntWorx()` — handler de descarga
+- [x] Botón activo cuando hay W-2/1099 data; dimmed cuando no hay datos
+
+**Instrucciones para el usuario:**
+1. Abrir el return del cliente en Drake Tax 2025
+2. Menú: Import ▸ GruntWorx Populate Job
+3. Seleccionar el archivo XML descargado → Open
+4. Drake auto-popula todas las pantallas W-2 y 1099
+
+---
+
 ## 🟢 Mejoras opcionales
 
 - [ ] Instalar `@nut-tree/nut-js` para habilitar extracción automática de templates: `npm install @nut-tree/nut-js`
@@ -150,7 +187,8 @@ Agregar estos al resultado de `parseApprovedWorkpaper()` como `data.w2s`, `data.
 - [ ] Retry automático en companion si Drake está ocupado
 - [ ] Logs persistentes en companion (actualmente solo stdout)
 - [ ] `.gitignore` entry para `templates/*.xls` (no subir templates con metadata de licencia Drake)
-- [ ] 🤖 Script de automatización UI para W2/1099 en Drake (usar `companion/drake_ui.py` — explícitamente diferido)
+- [ ] 🤖 Script de automatización UI para W2/1099 en Drake (usar `companion/drake_ui.py` — explícitamente diferido mientras GruntWorx XML sea la opción primaria)
+- [ ] Soporte `CL_1099_R` en GruntWorx XML si Drake añade soporte en futura versión
 
 ---
 
@@ -166,6 +204,7 @@ Agregar estos al resultado de `parseApprovedWorkpaper()` como `data.w2s`, `data.
 | `form4562Generator.js` | ✅ Completo — 23 cols verificadas contra DLL |
 | `scheduleCGenerator.js` | ✅ Completo |
 | `manualEntryGuideGenerator.js` | ✅ Completo — guía Excel W2/1099 para 1040 |
+| `gruntWorxGenerator.js` | ✅ Completo — XML nativo GruntWorx Populate, 6 classTypes |
 | `DrakeLoader` class | ✅ Completo |
 | `companion.js` | ✅ Completo |
 | `drakeLocator.js` | ✅ Completo |
@@ -176,3 +215,4 @@ Agregar estos al resultado de `parseApprovedWorkpaper()` como `data.w2s`, `data.
 | Drake TB templates | ✅ Completado — 3 templates extraídos y verificados |
 | 8949 column order | ✅ Completado — 40 cols verificadas (DRAKEHLP.CHM) |
 | 4562 column order | ✅ Completado — 23 cols verificadas (IMPORT4562.DLL) |
+| GruntWorx XML schema | ✅ Completado — reverse-engineered de IMPORTGW.DLL + GRUNTWORX.KEY |

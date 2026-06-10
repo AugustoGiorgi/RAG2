@@ -5833,6 +5833,7 @@ function renderPreparerResult(response) {
   // Drake import file buttons
   document.getElementById("drakeInputTrialBalance")?.addEventListener("click", exportPreparerToDrake);
   document.getElementById("drakeInputScheduleC")?.addEventListener("click", downloadDrakeScheduleC);
+  document.getElementById("drakeInputGruntWorx")?.addEventListener("click", downloadDrakeGruntWorx);
   document.getElementById("drakeInputManualGuide")?.addEventListener("click", downloadDrakeManualGuide);
   document.getElementById("drakeInputForm8949")?.addEventListener("click", downloadDrakeForm8949);
   document.getElementById("drakeInputForm4562")?.addEventListener("click", downloadDrakeForm4562);
@@ -5923,6 +5924,24 @@ function renderDrakeInputsPanel() {
         : `<span class="tag neutral">N/A</span>`}
     </div>`;
 
+  // GruntWorx XML — available when there is at least one W-2 or 1099 (1040 only)
+  const gruntWorxRow = `
+    <div class="drake-input-row ${(is1040 && totalIncomeForms > 0) ? "available" : "dimmed"}">
+      <div class="drake-input-icon" style="font-size:10px;letter-spacing:-0.5px;">GW</div>
+      <div class="drake-input-info">
+        <strong>GruntWorx XML <span class="tag success" style="font-size:10px;padding:2px 6px;vertical-align:middle;">Auto-Import</span></strong>
+        <span>${is1040
+          ? (totalIncomeForms > 0
+              ? `<strong>${totalIncomeForms} forms ready:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake auto-populates all W-2/1099 screens`
+              : "W-2 · 1099-INT · 1099-DIV · 1099-NEC · 1099-MISC · SSA &nbsp;·&nbsp; no income documents found in upload")
+          : "not applicable for " + escapeHtml(etLabel)}</span>
+        ${(is1040 && totalIncomeForms > 0) ? `<span class="muted-note" style="font-size:11px;">Drake: Import ▸ GruntWorx Populate Job ▸ select file</span>` : ""}
+      </div>
+      ${(is1040 && totalIncomeForms > 0)
+        ? `<button class="primary-button small-button" id="drakeInputGruntWorx" type="button">Download XML</button>`
+        : `<span class="tag neutral">${is1040 ? "No data" : "N/A"}</span>`}
+    </div>`;
+
   const form8949Row = `
     <div class="drake-input-row ${has8949 ? "available" : "dimmed"}">
       <div class="drake-input-icon">89</div>
@@ -5959,6 +5978,7 @@ function renderDrakeInputsPanel() {
       <div class="drake-inputs-list">
         ${trialBalanceRow}
         ${scheduleCRow}
+        ${gruntWorxRow}
         ${manualGuideRow}
         ${form8949Row}
         ${form4562Row}
@@ -6074,6 +6094,10 @@ async function callDrakeGenerate(fileType, buttonEl) {
 
 async function downloadDrakeScheduleC() {
   await callDrakeGenerate("schedule_c", document.getElementById("drakeInputScheduleC"));
+}
+
+async function downloadDrakeGruntWorx() {
+  await callDrakeGenerate("gruntworx_xml", document.getElementById("drakeInputGruntWorx"));
 }
 
 async function downloadDrakeManualGuide() {
