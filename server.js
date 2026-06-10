@@ -7876,12 +7876,26 @@ async function handlePrepareWorkpaper(req, res) {
     // Pass through Drake-specific extraction arrays (optional, omitted when empty)
     const transactions8949 = normalizeTransactions8949(parsed.transactions8949);
     const assets4562        = normalizeAssets4562(parsed.assets4562);
+    const w2s        = normalizeW2s(parsed.w2s);
+    const int_1099s  = normalize1099s(parsed.int_1099s,  ["tsj","payer","ein","box1","box2","box3","box4"]);
+    const div_1099s  = normalize1099s(parsed.div_1099s,  ["tsj","payer","ein","box1a","box1b","box2a","box4"]);
+    const ret_1099rs = normalize1099s(parsed.ret_1099rs, ["tsj","payer","ein","box1","box2a","box4","box7","box7_ira"]);
+    const ssa_1099s  = normalize1099s(parsed.ssa_1099s,  ["tsj","box3","box4"]);
+    const nec_1099s  = normalize1099s(parsed.nec_1099s,  ["tsj","payer","ein","box1","box4"]);
+    const misc_1099s = normalize1099s(parsed.misc_1099s, ["tsj","payer","ein","box3","box7","box4"]);
 
     sendJson(res, 200, {
       workbook,
       entryGuide,
       ...(transactions8949.length ? { transactions8949 } : {}),
       ...(assets4562.length        ? { assets4562 }        : {}),
+      ...(w2s.length               ? { w2s }               : {}),
+      ...(int_1099s.length         ? { int_1099s }         : {}),
+      ...(div_1099s.length         ? { div_1099s }         : {}),
+      ...(ret_1099rs.length        ? { ret_1099rs }        : {}),
+      ...(ssa_1099s.length         ? { ssa_1099s }         : {}),
+      ...(nec_1099s.length         ? { nec_1099s }         : {}),
+      ...(misc_1099s.length        ? { misc_1099s }        : {}),
       raw,
       model: result.data.model || result.model,
       usage: result.data.usage || null,
@@ -7925,6 +7939,45 @@ function normalizeAssets4562(raw) {
     bonusDepreciation: a.bonusDepreciation != null ? Number(a.bonusDepreciation): null,
     businessUsePct:    a.businessUsePct   != null ? Number(a.businessUsePct)   : 100,
   })).filter((a) => a.description || a.cost);
+}
+
+function normalizeW2s(raw) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  const n = (v) => (v != null && v !== "" ? Number(v) || 0 : null);
+  return raw.map((w) => ({
+    tsj:               String(w.tsj || w.ts || "T").toUpperCase().charAt(0),
+    employer:          String(w.employer || w.employer_name || w.Employer_Name || ""),
+    ein:               String(w.ein || w.employer_ein || w.EIN || ""),
+    box1:              n(w.box1 ?? w.wages ?? w.box1_wages),
+    box2:              n(w.box2 ?? w.fedWH ?? w.box2_federal_wh ?? w.box2_fedWH),
+    box3:              n(w.box3 ?? w.ssWages ?? w.box3_ss_wages),
+    box4:              n(w.box4 ?? w.ssWH ?? w.box4_ss_wh),
+    box5:              n(w.box5 ?? w.medWages ?? w.box5_medicare_wages),
+    box6:              n(w.box6 ?? w.medWH ?? w.box6_medicare_wh),
+    box12_code:        w.box12_code || w.box12Code || null,
+    box12_amount:      n(w.box12_amount ?? w.box12Amount),
+    box13_retirement:  !!(w.box13_retirement || w.box13Retirement || w.retirement_plan),
+    box15_state:       String(w.box15_state || w.box15State || w.state || ""),
+    box16_state_wages: n(w.box16_state_wages ?? w.box16StateWages ?? w.stateWages),
+    box17_state_wh:    n(w.box17_state_wh   ?? w.box17StateWH    ?? w.stateWH),
+  })).filter((w) => w.employer || w.ein || w.box1);
+}
+
+function normalize1099s(raw, fields) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  const n = (v) => (v != null && v !== "" ? Number(v) : null);
+  return raw.map((item) => {
+    const out = { tsj: String(item.tsj || item.ts || "T").toUpperCase().charAt(0) };
+    for (const f of fields) {
+      if (f === "tsj") continue;
+      if (f.startsWith("box")) out[f] = n(item[f]);
+      else out[f] = item[f] != null ? String(item[f]) : "";
+    }
+    return out;
+  }).filter((item) => {
+    const vals = Object.values(item).filter((v) => v !== "" && v !== null && v !== "T" && v !== "S");
+    return vals.length > 0;
+  });
 }
 
 const DRAKE_EXPORT_PATTERNS = [
@@ -8188,13 +8241,13 @@ async function handleDrakeGenerate(req, res) {
       const guidePayload = {
         client:     { ssn: data.client.ein, first_name: data.client.name, last_name: "", filing_status: "" },
         spouse:     {},
-        w2s:        [],
-        int_1099s:  [],
-        div_1099s:  [],
-        ret_1099rs: [],
-        ssa_1099s:  [],
-        nec_1099s:  [],
-        misc_1099s: [],
+        w2s:        normalizeW2s(payload.w2s),
+        int_1099s:  normalize1099s(payload.int_1099s,  ["tsj","payer","ein","box1","box2","box3","box4"]),
+        div_1099s:  normalize1099s(payload.div_1099s,  ["tsj","payer","ein","box1a","box1b","box2a","box4"]),
+        ret_1099rs: normalize1099s(payload.ret_1099rs, ["tsj","payer","ein","box1","box2a","box4","box7","box7_ira"]),
+        ssa_1099s:  normalize1099s(payload.ssa_1099s,  ["tsj","box3","box4"]),
+        nec_1099s:  normalize1099s(payload.nec_1099s,  ["tsj","payer","ein","box1","box4"]),
+        misc_1099s: normalize1099s(payload.misc_1099s, ["tsj","payer","ein","box3","box7","box4"]),
       };
       const taxYear = data.taxYear || String(new Date().getFullYear() - 1);
       const artifact = await buildManualGuide(guidePayload, data.client.name || "client", taxYear);
@@ -9685,12 +9738,19 @@ function buildPreparerContent(payload) {
       "Each top-level sheets item MUST include a name and a non-empty rows array. Each rows item MUST be an array of primitive cell values.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"w2s":[],"int_1099s":[],"div_1099s":[],"ret_1099rs":[],"ssa_1099s":[],"nec_1099s":[],"misc_1099s":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
       "",
       "DRAKE IMPORT ARRAYS (include only when the relevant source documents are present in the uploads):",
       "transactions8949: Extract every capital gain/loss transaction you can find in uploaded 1099-B forms, brokerage statements, or Schedule D source documents. Each element: { description, dateAcquired, dateSold, proceeds, basis, form8949Box, adjCode, adjAmount, washSaleLoss, tsj }. Dates must be in MM/DD/YYYY format. form8949Box: 'A' (short-term, basis reported), 'B' (short-term, basis NOT reported), 'C' (short-term, other), 'D' (long-term, basis reported), 'E' (long-term, basis NOT reported), 'F' (long-term, other). If no capital gain documents are uploaded, omit this key or return an empty array.",
       "assets4562: Extract every depreciable asset you can find in uploaded depreciation schedules, fixed asset lists, or Form 4562 from prior-year returns. Each element: { description, dateInService, cost, method, life, priorDepreciation, section179, bonusDepreciation, businessUsePct }. dateInService must be in MM/DD/YYYY format. method: 'SL', '200DB', '150DB', 'HY', or blank. If no asset documents are uploaded, omit this key or return an empty array.",
-      "IMPORTANT: Only include data you can actually read from the uploaded files. Do not invent transactions or assets. If you find partial data (e.g. description and amount but no date), include what you can and set missing fields to null.",
+      "w2s: Extract every W-2 you can find in uploaded documents. Each element: { tsj, employer, ein, box1, box2, box3, box4, box5, box6, box12_code, box12_amount, box13_retirement, box15_state, box16_state_wages, box17_state_wh }. tsj: 'T'=taxpayer, 'S'=spouse. box1=wages, box2=fed WH, box3=SS wages, box4=SS WH, box5=Medicare wages, box6=Medicare WH. If no W-2 documents are uploaded, omit or return empty array.",
+      "int_1099s: Extract every 1099-INT. Each element: { tsj, payer, ein, box1, box2, box3, box4 }. box1=interest, box2=early withdrawal penalty, box3=US savings bonds, box4=fed WH. Omit if none found.",
+      "div_1099s: Extract every 1099-DIV. Each element: { tsj, payer, ein, box1a, box1b, box2a, box4 }. box1a=total dividends, box1b=qualified dividends, box2a=total capital gain, box4=fed WH. Omit if none found.",
+      "ret_1099rs: Extract every 1099-R. Each element: { tsj, payer, ein, box1, box2a, box4, box7, box7_ira }. box1=gross distribution, box2a=taxable amount, box4=fed WH, box7=distribution code (1/2/4/7/G/etc.), box7_ira=true if IRA/SEP/SIMPLE box is checked. Omit if none found.",
+      "ssa_1099s: Extract every SSA-1099. Each element: { tsj, box3, box4 }. box3=net SS benefits, box4=fed WH. Omit if none found.",
+      "nec_1099s: Extract every 1099-NEC. Each element: { tsj, payer, ein, box1, box4 }. box1=nonemployee compensation, box4=fed WH. Omit if none found.",
+      "misc_1099s: Extract every 1099-MISC (for pre-2020 returns or genuine misc income). Each element: { tsj, payer, ein, box3, box7, box4 }. box3=other income, box7=nonemployee comp (pre-2020), box4=fed WH. Omit if none found.",
+      "IMPORTANT: Only include data you can actually read from the uploaded files. Do not invent transactions, assets, or income documents. If you find partial data include what you can and set missing fields to null.",
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",

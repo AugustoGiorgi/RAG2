@@ -5707,10 +5707,17 @@ async function runPreparerWorkflow() {
     const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
     lastPreparerOutput = {
-      response: responsePayload,
+      response:         responsePayload,
       payload,
       transactions8949: Array.isArray(responsePayload.transactions8949) ? responsePayload.transactions8949 : [],
       assets4562:       Array.isArray(responsePayload.assets4562)       ? responsePayload.assets4562       : [],
+      w2s:              Array.isArray(responsePayload.w2s)              ? responsePayload.w2s              : [],
+      int_1099s:        Array.isArray(responsePayload.int_1099s)        ? responsePayload.int_1099s        : [],
+      div_1099s:        Array.isArray(responsePayload.div_1099s)        ? responsePayload.div_1099s        : [],
+      ret_1099rs:       Array.isArray(responsePayload.ret_1099rs)       ? responsePayload.ret_1099rs       : [],
+      ssa_1099s:        Array.isArray(responsePayload.ssa_1099s)        ? responsePayload.ssa_1099s        : [],
+      nec_1099s:        Array.isArray(responsePayload.nec_1099s)        ? responsePayload.nec_1099s        : [],
+      misc_1099s:       Array.isArray(responsePayload.misc_1099s)       ? responsePayload.misc_1099s       : [],
     };
     lastEntryGuideOutput = responsePayload.entryGuide ? { guide: validateEntryGuide(responsePayload.entryGuide) } : null;
     entryGuideGeneratedAt = responsePayload.entryGuide?.generatedAt || (lastEntryGuideOutput ? new Date().toISOString() : "");
@@ -5857,6 +5864,25 @@ function renderDrakeInputsPanel() {
   const has8949 = tx8949.length > 0;
   const has4562 = assets.length > 0;
 
+  // W2/1099 counts for Manual Entry Guide
+  const w2Count   = (lastPreparerOutput?.w2s        || []).length;
+  const intCount  = (lastPreparerOutput?.int_1099s  || []).length;
+  const divCount  = (lastPreparerOutput?.div_1099s  || []).length;
+  const retCount  = (lastPreparerOutput?.ret_1099rs || []).length;
+  const ssaCount  = (lastPreparerOutput?.ssa_1099s  || []).length;
+  const necCount  = (lastPreparerOutput?.nec_1099s  || []).length;
+  const miscCount = (lastPreparerOutput?.misc_1099s || []).length;
+  const totalIncomeForms = w2Count + intCount + divCount + retCount + ssaCount + necCount + miscCount;
+  const incomeFormSummary = [
+    w2Count   ? `${w2Count} W2`             : "",
+    intCount  ? `${intCount} 1099-INT`      : "",
+    divCount  ? `${divCount} 1099-DIV`      : "",
+    retCount  ? `${retCount} 1099-R`        : "",
+    ssaCount  ? `${ssaCount} SSA`           : "",
+    necCount  ? `${necCount} 1099-NEC`      : "",
+    miscCount ? `${miscCount} 1099-MISC`    : "",
+  ].filter(Boolean).join(" · ");
+
   const trialBalanceRow = `
     <div class="drake-input-row ${isBusiness ? "available" : "dimmed"}">
       <div class="drake-input-icon">TB</div>
@@ -5886,7 +5912,11 @@ function renderDrakeInputsPanel() {
       <div class="drake-input-icon">W2</div>
       <div class="drake-input-info">
         <strong>Manual Entry Guide</strong>
-        <span>1040 · W2 · 1099-INT · 1099-DIV · 1099-R · SSA · NEC &nbsp;·&nbsp; Drake screen codes &amp; values${is1040 ? "" : " — not applicable for " + escapeHtml(etLabel)}</span>
+        <span>${is1040
+          ? (totalIncomeForms > 0
+              ? `<strong>${totalIncomeForms} forms found:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake screen codes &amp; values`
+              : "W2 · 1099-INT · 1099-DIV · 1099-R · SSA · NEC &nbsp;·&nbsp; no income documents found in upload")
+          : "not applicable for " + escapeHtml(etLabel)}</span>
       </div>
       ${is1040
         ? `<button class="ghost-button small-button" id="drakeInputManualGuide" type="button">Download Excel</button>`
@@ -5989,10 +6019,17 @@ async function callDrakeGenerate(fileType, buttonEl) {
           ein:        client?.ein        || metadata.ein         || "",
           entityType: client?.returnType || client?.entityType   || metadata.returnType || "",
         },
-        workbook:        lastPreparerOutput.response?.workbook,
-        entryGuide:      lastPreparerOutput.response?.entryGuide,
+        workbook:         lastPreparerOutput.response?.workbook,
+        entryGuide:       lastPreparerOutput.response?.entryGuide,
         transactions8949: lastPreparerOutput.transactions8949 || [],
         assets4562:       lastPreparerOutput.assets4562       || [],
+        w2s:              lastPreparerOutput.w2s              || [],
+        int_1099s:        lastPreparerOutput.int_1099s        || [],
+        div_1099s:        lastPreparerOutput.div_1099s        || [],
+        ret_1099rs:       lastPreparerOutput.ret_1099rs       || [],
+        ssa_1099s:        lastPreparerOutput.ssa_1099s        || [],
+        nec_1099s:        lastPreparerOutput.nec_1099s        || [],
+        misc_1099s:       lastPreparerOutput.misc_1099s       || [],
       }),
     });
     const data = await response.json().catch(() => ({}));
