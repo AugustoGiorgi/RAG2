@@ -1,0 +1,11 @@
+{
+  "name": "qbo-connector",
+  "version": "1.0.0",
+  "description": "QuickBooks Online integration for RAG Tax AI",
+  "main": "index.js",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "test": "node examples/test_connector.js"
+  },
+  "dependencies": {}
+}

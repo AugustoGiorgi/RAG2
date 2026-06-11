@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
 const { buildPresentation } = require("./lib/pptx-builder");
+const { QBOConnector }     = require("./qbo-connector");
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -122,95 +123,6 @@ const ACCOUNTING_SOFTWARE = {
     reports: ["ProfitAndLoss", "ProfitAndLossDetail", "BalanceSheet", "BalanceSheetDetail", "TrialBalance", "GeneralLedger", "CashFlow", "AgedReceivables", "AgedPayables", "ExpensesByVendorSummary", "IncomeByCustomerSummary", "PayrollSummary"],
     supportsMultiCompany: true,
     supportsCash: true,
-  },
-  xero: {
-    id: "xero",
-    name: "Xero",
-    vendor: "Xero",
-    logo: "XE",
-    type: "cloud",
-    authType: "oauth2",
-    setupUrl: "https://developer.xero.com",
-    envVars: ["XERO_CLIENT_ID", "XERO_CLIENT_SECRET", "XERO_REDIRECT_URI"],
-    scopes: ["openid", "profile", "email", "accounting.reports.read", "accounting.settings.read", "offline_access"],
-    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashSummary", "AgedReceivablesByContact", "AgedPayablesByContact", "ExecutiveSummary"],
-    supportsMultiCompany: true,
-    supportsCash: true,
-  },
-  sage_intacct: {
-    id: "sage_intacct",
-    name: "Sage Intacct",
-    vendor: "Sage",
-    logo: "SI",
-    type: "cloud",
-    authType: "xml",
-    setupUrl: "https://developer.intacct.com",
-    envVars: ["INTACCT_SENDER_ID", "INTACCT_SENDER_PASSWORD", "INTACCT_CLIENT_ID", "INTACCT_CLIENT_SECRET"],
-    scopes: [],
-    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashFlow", "GeneralLedger", "StatisticalReport"],
-    supportsMultiCompany: true,
-    supportsCash: false,
-    note: "Advanced setup required. Uses Sage Intacct XML API and sender credentials.",
-  },
-  freshbooks: {
-    id: "freshbooks",
-    name: "FreshBooks",
-    vendor: "FreshBooks",
-    logo: "FB",
-    type: "cloud",
-    authType: "oauth2",
-    setupUrl: "https://www.freshbooks.com/api/start",
-    envVars: ["FRESHBOOKS_CLIENT_ID", "FRESHBOOKS_CLIENT_SECRET", "FRESHBOOKS_REDIRECT_URI"],
-    scopes: ["user:profile:read", "user:reports:read"],
-    reports: ["ProfitAndLoss", "BalanceSheet", "TaxSummary", "ExpenseReport", "InvoiceDetails", "PaymentReport"],
-    supportsMultiCompany: true,
-    supportsCash: true,
-    note: "Best for service businesses. Balance sheet detail may be limited.",
-  },
-  wave: {
-    id: "wave",
-    name: "Wave Accounting",
-    vendor: "Wave Financial",
-    logo: "WA",
-    type: "cloud",
-    authType: "oauth2",
-    setupUrl: "https://developer.waveapps.com",
-    envVars: ["WAVE_CLIENT_ID", "WAVE_CLIENT_SECRET", "WAVE_REDIRECT_URI"],
-    scopes: ["account1:read", "business1:read"],
-    reports: ["ProfitAndLoss", "BalanceSheet", "CashFlow", "AccountTransactions"],
-    supportsMultiCompany: true,
-    supportsCash: false,
-    note: "Uses Wave GraphQL API.",
-  },
-  zoho_books: {
-    id: "zoho_books",
-    name: "Zoho Books",
-    vendor: "Zoho",
-    logo: "ZB",
-    type: "cloud",
-    authType: "oauth2",
-    setupUrl: "https://www.zoho.com/books/api/v3/",
-    envVars: ["ZOHO_CLIENT_ID", "ZOHO_CLIENT_SECRET", "ZOHO_REDIRECT_URI"],
-    scopes: ["ZohoBooks.reports.READ", "ZohoBooks.settings.READ"],
-    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashFlow", "GeneralLedger", "AgedReceivables", "AgedPayables", "SalesByCustomer", "ExpensesByVendor"],
-    supportsMultiCompany: true,
-    supportsCash: true,
-    note: "US data center by default. Configure regional OAuth/API domains separately if needed.",
-  },
-  netsuite: {
-    id: "netsuite",
-    name: "NetSuite",
-    vendor: "Oracle",
-    logo: "NS",
-    type: "cloud",
-    authType: "oauth1",
-    setupUrl: "https://system.netsuite.com/app/setup/connections.nl",
-    envVars: ["NETSUITE_ACCOUNT_ID", "NETSUITE_CONSUMER_KEY", "NETSUITE_CONSUMER_SECRET", "NETSUITE_TOKEN_ID", "NETSUITE_TOKEN_SECRET"],
-    scopes: [],
-    reports: ["FinancialStatements", "BalanceSheet", "IncomeStatement", "TrialBalance", "GeneralLedger"],
-    supportsMultiCompany: true,
-    supportsCash: false,
-    note: "Enterprise setup. Requires NetSuite token-based authentication and SuiteAnalytics/REST permissions.",
   },
   manual_upload: {
     id: "manual_upload",
@@ -6542,6 +6454,22 @@ async function handleQboApi(req, res, requestUrl) {
     const company = getQboUserStore(username).companies?.[realmId];
     if (company) updateQboCompany(username, realmId, { ...company, lastSync: new Date().toISOString() });
     sendJson(res, 200, { ok: true, reports, errors });
+    return;
+  }
+  // ── Descarga y normalización de reportes para el workpaper (qbo-connector) ──
+  if (req.method === "POST" && requestUrl.pathname === "/api/qbo/fetch-financials") {
+    const payload    = await readJsonBody(req);
+    const realmId    = String(payload.realmId    || "");
+    const taxYear    = Number(payload.taxYear    || new Date().getFullYear() - 1);
+    const entityType = String(payload.entityType || "1120S");
+    if (!realmId) { sendJson(res, 400, { error: "realmId es requerido." }); return; }
+    const connector  = new QBOConnector();
+    const requestFn  = (pathName, params) => qboRequest(username, realmId, pathName, params);
+    const qboData    = await connector.fetchFinancials(requestFn, realmId, taxYear, entityType);
+    const canonical  = connector.normalize(qboData);
+    const company    = getQboUserStore(username).companies?.[realmId];
+    if (company) updateQboCompany(username, realmId, { ...company, lastSync: new Date().toISOString() });
+    sendJson(res, 200, { ok: true, canonical, errors: qboData.errors, fetchedAt: qboData.fetchedAt });
     return;
   }
   sendJson(res, 404, { error: "QBO route not found." });
