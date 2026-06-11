@@ -8211,16 +8211,16 @@ async function handlePreparationExportDrake(req, res) {
   }
 }
 
-// ── Drake Generate — download Schedule C, Manual Entry Guide, 8949, 4562, GruntWorx XML ─
+// ── Drake Generate — download Schedule C, Form 8949, Form 4562 ─
 // POST /api/preparation/drake-generate
-// { fileType: "schedule_c" | "manual_entry_guide" | "form_8949" | "form_4562" | "gruntworx_xml",
-//   workbook, entryGuide, metadata, client, w2s, int_1099s, ... }
+// { fileType: "schedule_c" | "form_8949" | "form_4562",
+//   workbook, entryGuide, metadata, client, transactions8949, assets4562, ... }
 // → { ok, filename, contentBase64, mimeType, meta }
 async function handleDrakeGenerate(req, res) {
   const payload = await readJsonBody(req);
   const fileType = String(payload.fileType || "").trim();
   if (!fileType) {
-    sendJson(res, 400, { error: "fileType is required (schedule_c | manual_entry_guide | form_8949 | form_4562 | gruntworx_xml)." });
+    sendJson(res, 400, { error: "fileType is required (schedule_c | form_8949 | form_4562)." });
     return;
   }
 
@@ -8244,36 +8244,6 @@ async function handleDrakeGenerate(req, res) {
         filename: artifact.filename,
         contentBase64,
         mimeType: "text/csv",
-        meta: artifact.meta || {},
-      });
-      return;
-    }
-
-    if (fileType === "manual_entry_guide") {
-      if (data.client.entityType !== "1040") {
-        sendJson(res, 400, { error: "The Manual Entry Guide is only available for 1040 returns." });
-        return;
-      }
-      const { buildArtifact: buildManualGuide } = require("./tax-loader/generators/manualEntryGuideGenerator");
-      const guidePayload = {
-        client:     { ssn: data.client.ein, first_name: data.client.name, last_name: "", filing_status: "" },
-        spouse:     {},
-        w2s:        normalizeW2s(payload.w2s),
-        int_1099s:  normalize1099s(payload.int_1099s,  ["tsj","payer","ein","box1","box2","box3","box4"]),
-        div_1099s:  normalize1099s(payload.div_1099s,  ["tsj","payer","ein","box1a","box1b","box2a","box4"]),
-        ret_1099rs: normalize1099s(payload.ret_1099rs, ["tsj","payer","ein","box1","box2a","box4","box7","box7_ira"]),
-        ssa_1099s:  normalize1099s(payload.ssa_1099s,  ["tsj","box3","box4"]),
-        nec_1099s:  normalize1099s(payload.nec_1099s,  ["tsj","payer","ein","box1","box4"]),
-        misc_1099s: normalize1099s(payload.misc_1099s, ["tsj","payer","ein","box3","box7","box4"]),
-      };
-      const taxYear = data.taxYear || String(new Date().getFullYear() - 1);
-      const artifact = await buildManualGuide(guidePayload, data.client.name || "client", taxYear);
-      const contentBase64 = artifact.buffer.toString("base64");
-      sendJson(res, 200, {
-        ok: true,
-        filename: artifact.filename,
-        contentBase64,
-        mimeType: artifact.mimetype,
         meta: artifact.meta || {},
       });
       return;
@@ -8319,70 +8289,7 @@ async function handleDrakeGenerate(req, res) {
       return;
     }
 
-    if (fileType === "gruntworx_xml") {
-      if (data.client.entityType !== "1040") {
-        sendJson(res, 400, { error: "GruntWorx XML import is only supported for 1040 returns." });
-        return;
-      }
-      // Normalize all W-2 and 1099 arrays from the payload
-      const gwPayload = {
-        w2s:        normalizeW2s(payload.w2s),
-        int_1099s:  normalize1099s(payload.int_1099s,  ["tsj","payer","ein","box1","box2","box3","box4","box6","box8","box9","box10","box11","state","state_id_number","state_wh"]),
-        div_1099s:  normalize1099s(payload.div_1099s,  ["tsj","payer","ein","box1a","box1b","box2a","box2b","box3","box4","box5","box7","box12","box13","state","state_id_number","state_wh"]),
-        nec_1099s:  normalize1099s(payload.nec_1099s,  ["tsj","payer","ein","box1","box4","state","state_id_number","state_income","state_wh"]),
-        misc_1099s: normalize1099s(payload.misc_1099s, ["tsj","payer","ein","box1","box2","box3","box4","box6","box9","box10","box12","box14","state","state_id_number","state_income","state_wh"]),
-        ssa_1099s:  normalize1099s(payload.ssa_1099s,  ["tsj","box3","box4","box5","box6","ssn","medicare_a","medicare_b","medicare_d"]),
-      };
-      // Inject taxpayer SSN into all records so Drake can derive TSJ via RecipientIdNo / EmployeeSSN.
-      // For 1040 returns, data.client.ein stores the taxpayer's SSN (not a business EIN).
-      // GRUNTWORX.KEY: RecipientIdNo → CL_1099_INT.RecipientIdNo + CL_1099_INT.TSJ (and same for DIV/NEC/MISC).
-      //               EmployeeSSN   → CL_W_2.EmployeeSSN + CL_W_2.TSJ
-      // Drake compares the SSN to the return's taxpayer/spouse SSNs and sets TSJ = T / S accordingly.
-      // Only inject when SSN is available; records with tsj="S" (spouse) would need spouse SSN — left empty for now.
-      // Strip dashes to get raw 9 digits for the injection step.
-      // formatSsn() in gruntWorxGenerator.js will re-add dashes (XXX-XX-XXXX) when writing
-      // the XML, because Drake stores SSNs WITH dashes on the TP screen and IMPORTGW.DLL
-      // does a direct string comparison — "117527660" ≠ "117-52-7660" → TSJ fails → records skipped.
-      const taxpayerSsn = (data.client.ein || "").trim().replace(/[^0-9]/g, '');
-      if (taxpayerSsn) {
-        const injectSsn = (arr) => arr.map((r) => ({
-          ...r,
-          ssn: r.ssn || (r.tsj === "S" ? "" : taxpayerSsn),
-        }));
-        gwPayload.w2s        = injectSsn(gwPayload.w2s);
-        gwPayload.int_1099s  = injectSsn(gwPayload.int_1099s);
-        gwPayload.div_1099s  = injectSsn(gwPayload.div_1099s);
-        gwPayload.nec_1099s  = injectSsn(gwPayload.nec_1099s);
-        gwPayload.misc_1099s = injectSsn(gwPayload.misc_1099s);
-        gwPayload.ssa_1099s  = injectSsn(gwPayload.ssa_1099s);
-      }
-      const totalForms = Object.values(gwPayload).reduce((s, arr) => s + arr.length, 0);
-      if (totalForms === 0) {
-        sendJson(res, 400, { error: "No W-2 or 1099 data found. Upload income documents and regenerate the workpaper." });
-        return;
-      }
-      const { buildArtifact: buildGwXml } = require("./tax-loader/generators/gruntWorxGenerator");
-      // GruntWorx taxYear = Drake SOFTWARE year (not the return's income year).
-      // Drake 2025 → taxYear="2025", Drake 2026 → taxYear="2026", etc.
-      // Drake software year = calendar year − 1 (in 2026, Drake 2025 is current).
-      const drakeSoftwareYear = String(new Date().getFullYear() - 1);
-      const artifact = buildGwXml(gwPayload, data.client.name || "client", drakeSoftwareYear);
-      if (!artifact) {
-        sendJson(res, 400, { error: "Could not generate GruntWorx XML — no income data available." });
-        return;
-      }
-      const contentBase64 = Buffer.from(artifact.content, "utf8").toString("base64");
-      sendJson(res, 200, {
-        ok: true,
-        filename: artifact.filename,
-        contentBase64,
-        mimeType: "application/xml",
-        meta: artifact.meta || {},
-      });
-      return;
-    }
-
-    sendJson(res, 400, { error: `Unknown fileType: ${fileType}. Use schedule_c, manual_entry_guide, form_8949, form_4562, or gruntworx_xml.` });
+    sendJson(res, 400, { error: `Unknown fileType: ${fileType}. Use schedule_c, form_8949, or form_4562.` });
   } catch (error) {
     sendJson(res, 500, { error: error.message || "Drake generate failed." });
   }

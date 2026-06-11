@@ -5134,7 +5134,7 @@ function renderClientProfileContext(client) {
     <div class="database-section-block">
       <h4>${is1040Client ? "SSN / EIN" : "EIN"}</h4>
       <p>${is1040Client
-        ? "SSN del contribuyente principal (usado como RecipientIdNo en el XML de GruntWorx para que Drake asigne TSJ automáticamente)."
+        ? "SSN del contribuyente principal."
         : "Employer Identification Number para este cliente."}</p>
       <div class="database-inline-form" style="align-items:center;">
         <input id="databaseClientEin" type="text"
@@ -5784,8 +5784,6 @@ function renderPreparerResult(response) {
   // Drake import file buttons
   document.getElementById("drakeInputTrialBalance")?.addEventListener("click", exportPreparerToDrake);
   document.getElementById("drakeInputScheduleC")?.addEventListener("click", downloadDrakeScheduleC);
-  document.getElementById("drakeInputGruntWorx")?.addEventListener("click", downloadDrakeGruntWorx);
-  document.getElementById("drakeInputManualGuide")?.addEventListener("click", downloadDrakeManualGuide);
   document.getElementById("drakeInputForm8949")?.addEventListener("click", downloadDrakeForm8949);
   document.getElementById("drakeInputForm4562")?.addEventListener("click", downloadDrakeForm4562);
 }
@@ -5816,25 +5814,6 @@ function renderDrakeInputsPanel() {
   const has8949 = tx8949.length > 0;
   const has4562 = assets.length > 0;
 
-  // W2/1099 counts for Manual Entry Guide
-  const w2Count   = (lastPreparerOutput?.w2s        || []).length;
-  const intCount  = (lastPreparerOutput?.int_1099s  || []).length;
-  const divCount  = (lastPreparerOutput?.div_1099s  || []).length;
-  const retCount  = (lastPreparerOutput?.ret_1099rs || []).length;
-  const ssaCount  = (lastPreparerOutput?.ssa_1099s  || []).length;
-  const necCount  = (lastPreparerOutput?.nec_1099s  || []).length;
-  const miscCount = (lastPreparerOutput?.misc_1099s || []).length;
-  const totalIncomeForms = w2Count + intCount + divCount + retCount + ssaCount + necCount + miscCount;
-  const incomeFormSummary = [
-    w2Count   ? `${w2Count} W2`             : "",
-    intCount  ? `${intCount} 1099-INT`      : "",
-    divCount  ? `${divCount} 1099-DIV`      : "",
-    retCount  ? `${retCount} 1099-R`        : "",
-    ssaCount  ? `${ssaCount} SSA`           : "",
-    necCount  ? `${necCount} 1099-NEC`      : "",
-    miscCount ? `${miscCount} 1099-MISC`    : "",
-  ].filter(Boolean).join(" · ");
-
   const trialBalanceRow = `
     <div class="drake-input-row ${isBusiness ? "available" : "dimmed"}">
       <div class="drake-input-icon">TB</div>
@@ -5857,51 +5836,6 @@ function renderDrakeInputsPanel() {
       ${is1040
         ? `<button class="ghost-button small-button" id="drakeInputScheduleC" type="button">Download CSV</button>`
         : `<span class="tag neutral">N/A</span>`}
-    </div>`;
-
-  const manualGuideRow = `
-    <div class="drake-input-row ${is1040 ? "available" : "dimmed"}">
-      <div class="drake-input-icon">W2</div>
-      <div class="drake-input-info">
-        <strong>Manual Entry Guide</strong>
-        <span>${is1040
-          ? (totalIncomeForms > 0
-              ? `<strong>${totalIncomeForms} forms found:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake screen codes &amp; values`
-              : "No se encontraron W-2 ni 1099 en los documentos subidos &nbsp;·&nbsp; subí los PDFs de los formularios para activar")
-          : "not applicable for " + escapeHtml(etLabel)}</span>
-      </div>
-      ${is1040
-        ? `<button class="ghost-button small-button" id="drakeInputManualGuide" type="button">Download Excel</button>`
-        : `<span class="tag neutral">N/A</span>`}
-    </div>`;
-
-  // GruntWorx XML — available when there is at least one W-2 or 1099 (1040 only)
-  // Pre-populate SSN from the active client record (stored as 'ein' for 1040 individuals)
-  const savedSsn = activePreparationClient()?.ein || lastPreparerOutput?.payload?.metadata?.ein || "";
-  const gruntWorxRow = `
-    <div class="drake-input-row ${(is1040 && totalIncomeForms > 0) ? "available" : "dimmed"}">
-      <div class="drake-input-icon" style="font-size:10px;letter-spacing:-0.5px;">GW</div>
-      <div class="drake-input-info">
-        <strong>GruntWorx XML <span class="tag success" style="font-size:10px;padding:2px 6px;vertical-align:middle;">Auto-Import</span></strong>
-        <span>${is1040
-          ? (totalIncomeForms > 0
-              ? `<strong>${totalIncomeForms} forms ready:</strong> ${escapeHtml(incomeFormSummary)} &nbsp;·&nbsp; Drake auto-populates all W-2/1099 screens`
-              : "W-2 · 1099-INT · 1099-DIV · 1099-NEC · 1099-MISC · SSA &nbsp;·&nbsp; no income documents found in upload")
-          : "not applicable for " + escapeHtml(etLabel)}</span>
-        ${(is1040 && totalIncomeForms > 0) ? `
-          <span class="muted-note" style="font-size:11px;">Drake: Import ▸ GruntWorx Populate Job ▸ select file</span>
-          <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;">
-            <span style="white-space:nowrap;color:#666;">Taxpayer SSN:</span>
-            <input type="text" id="drakeInputGruntWorxSsn"
-              placeholder="123-45-6789  (requerido para auto-asignar TSJ)"
-              value="${escapeHtml(savedSsn)}"
-              style="font-size:12px;padding:4px 8px;border:1px solid #d0d5dd;border-radius:6px;width:240px;" />
-          </label>` : ""}
-        ${(is1040 && totalIncomeForms === 0) ? `<span class="muted-note" style="font-size:11px;">Para activar: subí los PDFs/imágenes de los W-2 y 1099 junto con los demás documentos y regenerá el workpaper.</span>` : ""}
-      </div>
-      ${(is1040 && totalIncomeForms > 0)
-        ? `<button class="primary-button small-button" id="drakeInputGruntWorx" type="button">Download XML</button>`
-        : `<span class="tag neutral">${is1040 ? "No data" : "N/A"}</span>`}
     </div>`;
 
   const form8949Row = `
@@ -5940,8 +5874,6 @@ function renderDrakeInputsPanel() {
       <div class="drake-inputs-list">
         ${trialBalanceRow}
         ${scheduleCRow}
-        ${gruntWorxRow}
-        ${manualGuideRow}
         ${form8949Row}
         ${form4562Row}
       </div>
@@ -5999,7 +5931,7 @@ async function callDrakeGenerate(fileType, buttonEl, options = {}) {
           id:         client?.id         || metadata.clientId    || "",
           name:       client?.name       || metadata.clientName  || "",
           // options.ein (caller override) > client DB > workpaper metadata
-          // For 1040 returns, 'ein' stores the taxpayer's SSN — used as RecipientIdNo in GruntWorx XML
+          // For 1040 returns, 'ein' stores the taxpayer's SSN
           ein:        options.ein        || client?.ein          || metadata.ein || "",
           // Fallback chain: database client → metadata → AI-generated entryGuide returnType
           entityType: client?.returnType || client?.entityType   || metadata.returnType ||
@@ -6060,17 +5992,6 @@ async function callDrakeGenerate(fileType, buttonEl, options = {}) {
 
 async function downloadDrakeScheduleC() {
   await callDrakeGenerate("schedule_c", document.getElementById("drakeInputScheduleC"));
-}
-
-async function downloadDrakeGruntWorx() {
-  // Read SSN from the inline input (required for Drake to derive TSJ via RecipientIdNo)
-  const ssnInput = document.getElementById("drakeInputGruntWorxSsn");
-  const ssn = (ssnInput?.value || "").trim();
-  await callDrakeGenerate("gruntworx_xml", document.getElementById("drakeInputGruntWorx"), { ein: ssn });
-}
-
-async function downloadDrakeManualGuide() {
-  await callDrakeGenerate("manual_entry_guide", document.getElementById("drakeInputManualGuide"));
 }
 
 async function downloadDrakeForm8949() {
