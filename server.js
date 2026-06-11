@@ -6519,7 +6519,7 @@ async function handleAccountingApi(req, res, requestUrl) {
   const username = req.user?.username || "augusto";
   const parts = requestUrl.pathname.split("/").filter(Boolean);
   if (req.method === "GET" && requestUrl.pathname === "/api/accounting/status") {
-    const available = Object.values(ACCOUNTING_SOFTWARE).map((software) => accountingPublicSoftware(software, username));
+    const available = [ACCOUNTING_SOFTWARE.quickbooks].map((software) => accountingPublicSoftware(software, username));
     const connected = available.filter((item) => item.connected).map((item) => {
       const companies = item.softwareId === "quickbooks"
         ? qboCompaniesForUser(username).map((company) => ({ id: company.realmId, name: company.companyName || company.realmId }))

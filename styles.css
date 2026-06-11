@@ -3417,7 +3417,8 @@ h1 {
 .accounting-software-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  grid-template-columns: minmax(260px, 520px);
+  justify-content: center;
   margin-top: 8px;
   width: 100%;
 }
@@ -3435,6 +3436,19 @@ h1 {
   padding: 12px;
   text-align: left;
   transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.accounting-software-card.quickbooks-only {
+  align-items: center;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 78px;
+  padding: 14px 16px;
+}
+
+.accounting-card-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .accounting-software-card:hover {

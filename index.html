@@ -879,20 +879,20 @@
                     <circle cx="12" cy="12" r="12" fill="#2563eb"/>
                     <path d="M7.3 8.3a4.7 4.7 0 0 1 4.7-4.7h.2a4.7 4.7 0 0 1 4.5 5.9h-2.2A2.6 2.6 0 0 0 12 5.7h-.1a2.6 2.6 0 0 0 0 5.2h.8v2h-.8a4.7 4.7 0 0 1-4.6-4.6Zm4 6.2h2.2a2.6 2.6 0 0 0 2.5 3.8h.1a2.6 2.6 0 0 0 0-5.2h-.8v-2h.8a4.7 4.7 0 0 1 0 9.4H16a4.7 4.7 0 0 1-4.7-6Z" fill="white"/>
                   </svg>
-                  <span>Connected Accounting Software</span>
+                  <span>QuickBooks Online</span>
                 </div>
-                <p>Connect cloud accounting platforms to pull financial reports directly, or keep using manual upload.</p>
+                <p>Connect QuickBooks Online to pull financial reports directly. Manual upload remains available above.</p>
                 <div id="accountingSoftwareGrid" class="accounting-software-grid"></div>
-                <button class="btn-qbo-connect" id="qbo-connect-btn" type="button" hidden>Connect Selected Software</button>
-                <span id="qbo-disabled-msg" class="muted-note" hidden>Select a configured platform above, or use manual upload as the fallback.</span>
+                <button class="btn-qbo-connect" id="qbo-connect-btn" type="button" hidden>Connect QuickBooks</button>
+                <span id="qbo-disabled-msg" class="muted-note" hidden>QuickBooks setup is required before reports can be pulled directly.</span>
               </div>
 
               <div id="qbo-connected-panel" hidden>
                 <div class="qbo-header-bar">
-                  <div class="qbo-status-indicator"><span class="qbo-status-dot"></span><span id="qbo-connected-label">Accounting software connected</span></div>
+                  <div class="qbo-status-indicator"><span class="qbo-status-dot"></span><span id="qbo-connected-label">QuickBooks Online connected</span></div>
                   <button class="qbo-disconnect-btn" id="qbo-disconnect-btn" type="button">Disconnect</button>
                 </div>
-                <div class="qbo-step">
+                <div class="qbo-step qbo-source-step" hidden>
                   <span class="qbo-step-label">Fetching from</span>
                   <div id="accountingConnectedPicker" class="accounting-connected-picker"></div>
                 </div>
@@ -1927,6 +1927,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260608-drake-auto-entry"></script>
+    <script src="app.js?v=20260611-qbo-only"></script>
   </body>
 </html>
