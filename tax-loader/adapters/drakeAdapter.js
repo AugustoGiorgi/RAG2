@@ -108,56 +108,8 @@ class DrakeAdapter extends BaseAdapter {
   }
 
   async prepare(data) {
-    const is1040 = data.client.entityType === "1040";
-    if (is1040) return this.prepareUiPayload(data);
     const fieldMap = this.loadFieldMap(data.client.entityType);
     return this.prepareTrialBalanceTemplate(data, fieldMap);
-  }
-
-  /**
-   * Build the JSON payload that companion's /ui-load sends to drake_ui.py.
-   * Called by prepare() for 1040 returns.
-   */
-  prepareUiPayload(data) {
-    const p = data.client || {};
-    const f = {};
-    for (const field of data.fields || []) {
-      f[field.canonicalKey] = field.value;
-    }
-
-    const client = {
-      ssn:            p.ssn || p.ein || "",
-      first_name:     p.first_name    || f["taxpayer.first_name"]    || "",
-      last_name:      p.last_name     || f["taxpayer.last_name"]     || "",
-      middle_initial: p.middle_initial|| f["taxpayer.middle_initial"]|| "",
-      dob:            p.dob           || f["taxpayer.dob"]           || "",
-      filing_status:  p.filing_status || f["taxpayer.filing_status"] || "1",
-      address_street: p.address_street|| f["taxpayer.address_street"]|| "",
-      address_city:   p.address_city  || f["taxpayer.address_city"]  || "",
-      address_state:  p.address_state || f["taxpayer.address_state"] || "",
-      address_zip:    p.address_zip   || f["taxpayer.address_zip"]   || "",
-    };
-
-    const spouse = {
-      ssn:        p.spouse_ssn        || f["spouse.ssn"]        || "",
-      first_name: p.spouse_first_name || f["spouse.first_name"] || "",
-      last_name:  p.spouse_last_name  || f["spouse.last_name"]  || "",
-      dob:        p.spouse_dob        || f["spouse.dob"]        || "",
-    };
-
-    const w2s        = data.w2s         || p.w2s         || [];
-    const int_1099s  = data.int_1099s   || p.int_1099s   || [];
-    const div_1099s  = data.div_1099s   || p.div_1099s   || [];
-    const nec_1099s  = data.nec_1099s   || p.nec_1099s   || [];
-    const misc_1099s = data.misc_1099s  || p.misc_1099s  || [];
-    const ssa_1099s  = data.ssa_1099s   || p.ssa_1099s   || [];
-
-    return {
-      kind:     "drake_1040_ui",
-      software: "drake",
-      meta: { entityType: "1040", taxYear: data.taxYear, ssn: client.ssn },
-      uiPayload: { client, spouse, w2s, int_1099s, div_1099s, nec_1099s, misc_1099s, ssa_1099s },
-    };
   }
 
   async prepareTrialBalanceTemplate(data, fieldMap) {
@@ -217,28 +169,6 @@ class DrakeAdapter extends BaseAdapter {
   async load(artifact) {
     if (!this.companionUrl) throw new Error("Drake requires companionUrl.");
     const token = this.config.companionToken || "";
-
-    // 1040 UI automation route
-    if (artifact.kind === "drake_1040_ui") {
-      const response = await fetch(`${this.companionUrl}/ui-load`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Companion-Token": token },
-        body: JSON.stringify(artifact.uiPayload),
-      }).catch((err) => { throw new Error(`companion unreachable: ${err.message}`); });
-
-      const result = await response.json().catch(() => ({}));
-      const errors   = result.errors   || (!response.ok ? [`companion HTTP ${response.status}`] : []);
-      const warnings = result.warnings || [];
-
-      return {
-        success:      result.ok ?? response.ok,
-        fieldsLoaded: (result.screens_filled || []).length,
-        clientCreated: result.client_created ?? false,
-        errors,
-        warnings,
-        auditTrail: { software: "drake", ...artifact.meta, companionResult: result, timestamp: new Date().toISOString() },
-      };
-    }
 
     // Trial balance / file-import route
     const response = await fetch(`${this.companionUrl}/import`, {

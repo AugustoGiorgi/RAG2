@@ -13,7 +13,6 @@ const { generateTrialBalance } = require('./generators/trialBalanceGenerator');
 const { buildArtifact: build8949 }        = require('./generators/form8949Generator');
 const { buildArtifact: build4562 }        = require('./generators/form4562Generator');
 const { buildArtifact: buildSchC }        = require('./generators/scheduleCGenerator');
-const { buildArtifact: buildManualGuide } = require('./generators/manualEntryGuideGenerator');
 const DRAKE = require('./config/drakeFormat');
 const path  = require('path');
 const fs    = require('fs');
@@ -63,16 +62,15 @@ class DrakeLoader {
    * @param {Array}  [extras.transactions8949]  Capital gain transactions
    * @param {Array}  [extras.assets4562]        Depreciable asset records
    * @returns {Promise<{
-   *   trialBalance:     Object|null,
-   *   form8949:         Object|null,
-   *   form4562:         Object|null,
-   *   scheduleC:        Object|null,
-   *   manualEntryGuide: Object|null,  // 1040 only — XLSX guide for W2/1099 manual entry
+   *   trialBalance: Object|null,
+   *   form8949:     Object|null,
+   *   form4562:     Object|null,
+   *   scheduleC:    Object|null,
    * }>}
    */
   async generateFiles(data, extras = {}) {
     const et = data.client?.entityType;
-    const result = { trialBalance: null, form8949: null, form4562: null, scheduleC: null, manualEntryGuide: null };
+    const result = { trialBalance: null, form8949: null, form4562: null, scheduleC: null };
 
     // ── Trial Balance (business entities) ────────────────────────────────────
     if (['1120S', '1065', '1120'].includes(et)) {
@@ -120,24 +118,6 @@ class DrakeLoader {
     // ── Schedule C (1040) ─────────────────────────────────────────────────────
     if (et === '1040') {
       result.scheduleC = buildSchC(data);
-
-      // ── Manual entry guide for W2 / 1099 forms (1040 only) ─────────────────
-      // Drake has no free file-import for these — guide shows Drake screen codes
-      // and exact field values to type. When workpaperParser reads W2/1099 tabs,
-      // those arrays will be populated; for now they default to [].
-      const guidePayload = {
-        client:     data.client     || {},
-        spouse:     data.spouse     || {},
-        w2s:        data.w2s        || [],
-        int_1099s:  data.int_1099s  || [],
-        div_1099s:  data.div_1099s  || [],
-        ret_1099rs: data.ret_1099rs || data.r_1099s || [],
-        ssa_1099s:  data.ssa_1099s  || [],
-        nec_1099s:  data.nec_1099s  || [],
-        misc_1099s: data.misc_1099s || [],
-      };
-      const clientName = data.client?.name || data.client?.ein || 'client';
-      result.manualEntryGuide = await buildManualGuide(guidePayload, clientName, data.taxYear || 2025);
     }
 
     return result;

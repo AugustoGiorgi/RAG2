@@ -118,17 +118,10 @@ async function testLegacyEntity(entityType) {
   assert.strictEqual(cch.content.fields.length, 5);
   assert(cch.meta.skipped.includes(parsed.fields[5].canonicalKey));
 
-  // Drake artifact (legacy adapter)
-  const drake = await loader.generateFileOnly('drake', parsed);
-  assert.strictEqual(drake.software, 'drake');
-
-  if (entityType === '1040') {
-    // Legacy 1040 path → UI payload (drake_ui.py flow)
-    assert.strictEqual(drake.kind, 'drake_1040_ui', '1040 legacy path returns UI payload');
-    assert(drake.uiPayload, 'uiPayload must be present for 1040');
-    // No fieldCount in UI-payload meta — that's expected
-  } else {
-    // Business entities → trial balance template artifact
+  // Drake artifact (legacy adapter) — only for business entities (1040 has no TB)
+  if (entityType !== '1040') {
+    const drake = await loader.generateFileOnly('drake', parsed);
+    assert.strictEqual(drake.software, 'drake');
     assert.strictEqual(drake.kind, 'drake_trial_balance_template');
     assert.strictEqual(drake.meta.fieldCount, 5, 'manual field must be skipped in Drake TB');
     assert(drake.filename.endsWith('.xls'));
@@ -184,18 +177,8 @@ async function testDrakeLoaderEntity(entityType) {
     assert(files.scheduleC.filename.endsWith('.csv'), 'scheduleC must be a csv');
     assert(files.scheduleC.content.includes('Schedule_C_Line'), 'CSV must have Schedule_C_Line header');
 
-    // Manual entry guide must be generated for 1040
-    assert(files.manualEntryGuide, 'manualEntryGuide must be generated for 1040');
-    assert(Buffer.isBuffer(files.manualEntryGuide.buffer), 'manualEntryGuide must have XLSX buffer');
-    assert(files.manualEntryGuide.filename.endsWith('.xlsx'), 'manualEntryGuide must be xlsx');
-    assert(files.manualEntryGuide.filename.includes('manual_entry'), 'filename must say manual_entry');
-    assert(files.manualEntryGuide.meta.totalForms === 0, 'totalForms=0 when no W2/1099 data in workpaper');
-
     // No trial balance for 1040
     assert.strictEqual(files.trialBalance, null, 'no trialBalance for 1040');
-  } else {
-    // Business entities must NOT have a manual entry guide
-    assert.strictEqual(files.manualEntryGuide, null, 'no manualEntryGuide for business entity');
   }
 
   // 8949 and 4562 are null when no extras provided

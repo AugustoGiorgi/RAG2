@@ -66,39 +66,9 @@
         <div class="admin-dashboard-header">
           <div>
             <h2>Admin Dashboard</h2>
-            <p>API usage and cost tracking</p>
           </div>
           <button id="closeAdminDashboardButton" type="button">Close</button>
         </div>
-        <div class="cost-summary-cards">
-          <div class="cost-card"><div class="cost-card-label">Today</div><div class="cost-card-amount" id="cost-today">$0.00</div><div class="cost-card-sub" id="cost-today-calls">0 calls</div></div>
-          <div class="cost-card"><div class="cost-card-label">This Week</div><div class="cost-card-amount" id="cost-week">$0.00</div><div class="cost-card-sub" id="cost-week-calls">0 calls</div></div>
-          <div class="cost-card"><div class="cost-card-label">This Month</div><div class="cost-card-amount" id="cost-month">$0.00</div><div class="cost-card-sub" id="cost-month-calls">0 calls</div></div>
-          <div class="cost-card cost-card-total"><div class="cost-card-label">All Time</div><div class="cost-card-amount" id="cost-alltime">$0.00</div><div class="cost-card-sub" id="cost-alltime-calls">0 calls</div></div>
-        </div>
-        <div class="cost-period-bar">
-          <div class="cost-period-tabs">
-            <button class="cost-period-tab active" data-cost-period="today" type="button">Today</button>
-            <button class="cost-period-tab" data-cost-period="week" type="button">This Week</button>
-            <button class="cost-period-tab" data-cost-period="month" type="button">This Month</button>
-            <button class="cost-period-tab" data-cost-period="all" type="button">All Time</button>
-          </div>
-          <button id="costExportButton" class="cost-export-button" type="button">Export CSV</button>
-        </div>
-        <div class="cost-breakdown-grid">
-          <section class="cost-breakdown-card">
-            <h3>Cost by Action</h3>
-            <table class="cost-table"><thead><tr><th>Action</th><th>Calls</th><th>Total Cost</th><th>Avg Cost</th></tr></thead><tbody id="cost-by-action-body"></tbody></table>
-          </section>
-          <section class="cost-breakdown-card">
-            <h3>Daily Trend</h3>
-            <div id="cost-daily-chart" class="cost-daily-chart"></div>
-          </section>
-        </div>
-        <section class="cost-log-section">
-          <h3>Recent API Calls</h3>
-          <table class="cost-table cost-log-table"><thead><tr><th>Time</th><th>Action</th><th>Client</th><th>Model</th><th>Input</th><th>Output</th><th>Cost</th><th>Duration</th></tr></thead><tbody id="cost-log-body"></tbody></table>
-        </section>
       </div>
 
       <div id="drive-picker-modal" class="modal-overlay" style="display:none">
@@ -821,7 +791,6 @@
               <p class="eyebrow">Step 4</p>
               <h2>Run the senior review</h2>
               <p id="runHint">The app will validate files, send grouped documents to the backend, and display a structured review.</p>
-              <p id="reviewCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="runReview" class="primary-button" type="submit">Run Senior Review</button>
           </section>
@@ -981,7 +950,6 @@
               <p class="eyebrow">Generate</p>
               <h2>Prepare Excel output</h2>
               <p id="prepRunHint">The app will send your instructions and files to Claude, then build an Excel workbook with an AI Notes tab.</p>
-              <p id="prepCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="runPreparer" class="primary-button" type="button">Generate Excel Workpaper</button>
           </section>
@@ -1158,7 +1126,6 @@
                 <textarea id="deliverableCustomInstructions" rows="2" placeholder="Any specific message or context to include..."></textarea>
               </label>
             </div>
-            <p id="deliverableCostEstimate" class="preflight-cost" hidden></p>
             <button id="generateEmailDraft" class="primary-button" type="button">Generate Email Draft</button>
             <div id="deliverableDraftPanel" class="gmail-send-section" hidden>
               <label class="field full">
@@ -1539,7 +1506,6 @@
               <p class="eyebrow">Section 3</p>
               <h2>Analyze notice</h2>
               <p id="noticeRunHint">The app will send the notice and supporting context to Claude.</p>
-              <p id="noticeCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="analyzeNotice" class="primary-button" type="button">Analyze Notice</button>
           </section>
@@ -1656,7 +1622,6 @@
               <p class="eyebrow">Section 3</p>
               <h2>Analyze errors</h2>
               <p id="diagnosticsRunHint">Select software and provide error text or a screenshot.</p>
-              <p id="diagnosticsCostEstimate" class="preflight-cost" hidden></p>
             </div>
             <button id="analyzeDiagnostics" class="primary-button" type="button" disabled>Analyze Errors</button>
           </section>
@@ -1950,7 +1915,6 @@
             <textarea id="organizerAdditionalContext"></textarea>
             <div id="organizerValidationMessages"></div>
             <p id="organizerRunHint"></p>
-            <p id="organizerCostEstimate"></p>
             <button id="generateOrganizer" type="button"></button>
             <div id="organizerExportActions" hidden></div>
             <button id="organizerPreparerView" type="button"></button>

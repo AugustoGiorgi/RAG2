@@ -5158,9 +5158,10 @@ function buildLoginPage(error = "") {
       .shape-3 { width: 180px; height: 180px; top: 45%; right: 20%; }
       .login-brand, .login-features, .login-left-footer { position: relative; z-index: 1; }
       .login-logo-mark {
-        width: 68px; height: 68px; border-radius: 16px; margin-bottom: 18px;
-        background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.22);
-        display: grid; place-items: center; box-shadow: 0 20px 45px rgba(0,0,0,.18);
+        width: 68px; height: 68px; margin-bottom: 18px;
+      }
+      .login-logo-mark img {
+        width: 68px; height: 68px; object-fit: contain; display: block;
       }
       .login-app-name { margin: 0; font-size: 42px; line-height: 1; font-weight: 850; letter-spacing: 0; }
       .login-slogan { margin: 12px 0 0; color: rgba(255,255,255,.72); font-size: 16px; line-height: 1.5; }
@@ -5202,11 +5203,8 @@ function buildLoginPage(error = "") {
       <section class="login-left-panel">
         <div class="login-bg-shapes"><div class="shape shape-1"></div><div class="shape shape-2"></div><div class="shape shape-3"></div></div>
         <div class="login-brand">
-          <div class="login-logo-mark" aria-hidden="true">
-            <svg width="52" height="52" viewBox="0 0 64 64" fill="none">
-              <path d="M15 13h24c8 0 14 6 14 13.5S47 40 39 40h-7l18 16H36L18 40h-3V29h24c2 0 4-1 4-3s-2-4-5-4H15V13Z" fill="white"/>
-              <path d="M14 42h13l10 9H14v-9Z" fill="#60a5fa"/>
-            </svg>
+          <div class="login-logo-mark">
+            <img src="/assets/rag-r-logo.png" alt="RAG Tax AI logo" />
           </div>
           <h1 class="login-app-name">RAG Tax AI</h1>
           <p class="login-slogan">Built for CPA firms. Powered by AI.</p>

@@ -43,7 +43,6 @@ const els = {
   reviewStatus: document.getElementById("reviewStatus"),
   runReview: document.getElementById("runReview"),
   runHint: document.getElementById("runHint"),
-  reviewCostEstimate: document.getElementById("reviewCostEstimate"),
   userStatus: document.getElementById("userStatus"),
   dashboardButton: document.getElementById("dashboardButton"),
   dashboardOverlay: document.getElementById("dashboardOverlay"),
@@ -64,10 +63,6 @@ const els = {
   adminNavButton: document.getElementById("adminNavButton"),
   adminDashboard: document.getElementById("admin-dashboard"),
   closeAdminDashboardButton: document.getElementById("closeAdminDashboardButton"),
-  costExportButton: document.getElementById("costExportButton"),
-  costByActionBody: document.getElementById("cost-by-action-body"),
-  costDailyChart: document.getElementById("cost-daily-chart"),
-  costLogBody: document.getElementById("cost-log-body"),
   apiStatus: document.getElementById("apiStatus"),
   webSearchStatus: document.getElementById("webSearchStatus"),
   webSearchPolicy: document.getElementById("webSearchPolicy"),
@@ -141,7 +136,6 @@ const els = {
   prepValidationMessages: document.getElementById("prepValidationMessages"),
   prepStatus: document.getElementById("prepStatus"),
   prepRunHint: document.getElementById("prepRunHint"),
-  prepCostEstimate: document.getElementById("prepCostEstimate"),
   runPreparer: document.getElementById("runPreparer"),
   prepResults: document.getElementById("prepResults"),
   prepExportActions: document.getElementById("prepExportActions"),
@@ -179,7 +173,6 @@ const els = {
   analyzeNotice: document.getElementById("analyzeNotice"),
   noticeStartOver: document.getElementById("noticeStartOver"),
   noticeRunHint: document.getElementById("noticeRunHint"),
-  noticeCostEstimate: document.getElementById("noticeCostEstimate"),
   noticeResults: document.getElementById("noticeResults"),
   diagnosticsSidebarCard: document.getElementById("diagnosticsSidebarCard"),
   researchSidebarCard: document.getElementById("researchSidebarCard"),
@@ -362,7 +355,6 @@ const els = {
   diagnosticsImagePreview: document.getElementById("diagnosticsImagePreview"),
   analyzeDiagnostics: document.getElementById("analyzeDiagnostics"),
   diagnosticsRunHint: document.getElementById("diagnosticsRunHint"),
-  diagnosticsCostEstimate: document.getElementById("diagnosticsCostEstimate"),
   diagnosticsResults: document.getElementById("diagnosticsResults"),
   deliverableReviewState: document.getElementById("deliverableReviewState"),
   deliverableNoticeState: document.getElementById("deliverableNoticeState"),
@@ -399,7 +391,6 @@ const els = {
   deliverableDeadline: document.getElementById("deliverableDeadline"),
   deliverableCustomInstructions: document.getElementById("deliverableCustomInstructions"),
   deliverableEmailTone: document.getElementById("deliverableEmailTone"),
-  deliverableCostEstimate: document.getElementById("deliverableCostEstimate"),
   generateEmailDraft: document.getElementById("generateEmailDraft"),
   deliverableDraftPanel: document.getElementById("deliverableDraftPanel"),
   emailSubjectDraft: document.getElementById("emailSubjectDraft"),
@@ -434,7 +425,6 @@ const els = {
   organizerValidationMessages: document.getElementById("organizerValidationMessages"),
   organizerStatus: document.getElementById("organizerStatus"),
   organizerRunHint: document.getElementById("organizerRunHint"),
-  organizerCostEstimate: document.getElementById("organizerCostEstimate"),
   generateOrganizer: document.getElementById("generateOrganizer"),
   organizerExportActions: document.getElementById("organizerExportActions"),
   organizerPreparerView: document.getElementById("organizerPreparerView"),
@@ -530,7 +520,6 @@ let organizerCurrentView = "preparer";
 let qboReportsForReview = [];
 let currentUsername = "";
 let currentUser = { username: "", role: "user", displayName: "" };
-let currentCostPeriod = "today";
 let pendingDeliverableGmailDraft = false;
 let creatingDeliverableGmailDraft = false;
 let currentSessionId = localStorage.getItem("taxapp_current_session_id") || "";
@@ -614,8 +603,6 @@ function init() {
   els.qboFetchBtn?.addEventListener("click", fetchQBOReports);
   els.adminNavButton?.addEventListener("click", openAdminDashboard);
   els.closeAdminDashboardButton?.addEventListener("click", closeAdminDashboard);
-  els.costExportButton?.addEventListener("click", exportCostLog);
-  document.querySelectorAll("[data-cost-period]").forEach((button) => button.addEventListener("click", () => setCostPeriod(button.dataset.costPeriod, button)));
   document.querySelectorAll("[data-qbo-preset]").forEach((button) => button.addEventListener("click", () => setQBOPreset(button.dataset.qboPreset, button)));
   setupEstimatedTaxesEvents();
   setupTrackerEvents();
@@ -3850,13 +3837,11 @@ async function loadAuthStatus() {
       role: payload.role || "user",
       displayName: payload.displayName || payload.username || "",
     };
-    window.showCostEstimates = currentUser.role === "admin";
     document.querySelectorAll(".admin-only").forEach((element) => {
       element.hidden = currentUser.role !== "admin";
     });
     els.userStatus.textContent = currentUser.displayName ? `Signed in: ${currentUser.displayName}` : "Signed in";
     if (!els.deliverablePreparerName.value.trim()) els.deliverablePreparerName.value = currentUsername;
-    if (currentUser.role === "admin") initCostDashboard().catch(() => null);
   } catch (_) {
     els.userStatus.textContent = "Auth unknown";
   }
@@ -3879,89 +3864,18 @@ function showCostEstimateBanner(estimate, onConfirm, onCancel) {
 function openAdminDashboard() {
   if (currentUser.role !== "admin") return;
   els.adminDashboard.hidden = false;
-  initCostDashboard().catch((error) => showToast(`Could not load admin dashboard: ${error.message}`, "error"));
 }
 
 function closeAdminDashboard() {
   els.adminDashboard.hidden = true;
 }
 
-async function initCostDashboard() {
-  if (currentUser.role !== "admin" || !els.adminDashboard) return;
-  const summary = await fetch(`${API_BASE_URL}/api/cost/summary`).then((res) => res.json());
-  setText("cost-today", `$${Number(summary.today?.total || 0).toFixed(4)}`);
-  setText("cost-week", `$${Number(summary.thisWeek?.total || 0).toFixed(4)}`);
-  setText("cost-month", `$${Number(summary.thisMonth?.total || 0).toFixed(4)}`);
-  setText("cost-alltime", `$${Number(summary.allTime?.total || 0).toFixed(4)}`);
-  setText("cost-today-calls", `${summary.today?.calls || 0} calls`);
-  setText("cost-week-calls", `${summary.thisWeek?.calls || 0} calls`);
-  setText("cost-month-calls", `${summary.thisMonth?.calls || 0} calls`);
-  setText("cost-alltime-calls", `${summary.allTime?.calls || 0} calls`);
-  renderCostByAction(summary.topCostActions || []);
-  renderDailyChart(summary.dailyTrend || []);
-  await loadCostLog(currentCostPeriod);
-}
 
 function setText(id, text) {
   const el = document.getElementById(id);
   if (el) el.textContent = text;
 }
 
-function renderCostByAction(rows) {
-  if (!els.costByActionBody) return;
-  els.costByActionBody.innerHTML = rows.length ? rows.map((row) => `
-    <tr><td>${escapeHtml(row.key || row.action || "unknown")}</td><td>${row.calls || 0}</td><td>$${Number(row.total || 0).toFixed(4)}</td><td>$${Number(row.avgCost || 0).toFixed(4)}</td></tr>
-  `).join("") : `<tr><td colspan="4">No API calls logged yet.</td></tr>`;
-}
-
-function renderDailyChart(dailyTrend) {
-  if (!els.costDailyChart) return;
-  if (!dailyTrend.length) {
-    els.costDailyChart.innerHTML = `<p class="muted">No data yet</p>`;
-    return;
-  }
-  const max = Math.max(...dailyTrend.map((day) => Number(day.total || 0)), 0.000001);
-  els.costDailyChart.innerHTML = dailyTrend.slice(-14).map((day) => {
-    const pct = Math.max(2, Math.round((Number(day.total || 0) / max) * 100));
-    return `<div class="chart-bar-group"><div class="chart-bar-wrapper"><div class="chart-bar" style="height:${pct}%" title="$${Number(day.total || 0).toFixed(4)} - ${day.calls || 0} calls"></div></div><div class="chart-label">${escapeHtml(String(day.date || "").slice(5))}</div></div>`;
-  }).join("");
-}
-
-async function loadCostLog(period = currentCostPeriod) {
-  currentCostPeriod = period;
-  const data = await fetch(`${API_BASE_URL}/api/cost/log?period=${encodeURIComponent(period)}`).then((res) => res.json());
-  if (!els.costLogBody) return;
-  els.costLogBody.innerHTML = (data.entries || []).slice(0, 50).map((entry) => `
-    <tr>
-      <td>${escapeHtml(new Date(entry.timestamp).toLocaleString())}</td>
-      <td>${escapeHtml(entry.action || "")}</td>
-      <td>${escapeHtml(entry.clientName || "-")}</td>
-      <td>${escapeHtml(entry.model || "")}</td>
-      <td>${Number(entry.inputTokens || 0).toLocaleString()}</td>
-      <td>${Number(entry.outputTokens || 0).toLocaleString()}</td>
-      <td>$${Number(entry.totalCost || 0).toFixed(4)}</td>
-      <td>${Number(entry.durationMs || 0)}ms</td>
-    </tr>
-  `).join("") || `<tr><td colspan="8">No API calls logged for this period.</td></tr>`;
-}
-
-function setCostPeriod(period, button) {
-  document.querySelectorAll("[data-cost-period]").forEach((item) => item.classList.toggle("active", item === button));
-  loadCostLog(period).catch(() => null);
-}
-
-async function exportCostLog() {
-  const data = await fetch(`${API_BASE_URL}/api/cost/log?period=all`).then((res) => res.json());
-  const headers = ["timestamp", "action", "tab", "clientName", "returnType", "taxYear", "username", "model", "inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens", "totalCost", "durationMs"];
-  const rows = (data.entries || []).map((entry) => headers.map((key) => `"${String(entry[key] ?? "").replace(/"/g, '""')}"`).join(","));
-  const blob = new Blob([[headers.join(","), ...rows].join("\n")], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `ragtaxai_cost_log_${new Date().toISOString().slice(0, 10)}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 
 async function loadDashboardSessions() {
   const response = await fetch(`${API_BASE_URL}/api/sessions`);
@@ -4231,7 +4145,6 @@ async function runReview(event) {
   try {
     renderProgress(null, 1);
     const payload = await buildReviewPayload();
-    showPreflightCost(els.reviewCostEstimate, estimatePayloadCost(payload, 4500), "senior review");
     renderValidation(validation);
     renderProgress(null, 2);
     renderProgress(null, 3);
@@ -4377,7 +4290,6 @@ async function runNoticeAnalysis() {
       clientFacts: els.noticeClientFacts.value.trim(),
       state: els.noticeState.value,
     };
-    showPreflightCost(els.noticeCostEstimate, estimateObjectCost(payload, 5000), "notice analysis");
     const response = await runWithCostEstimate("notices", {
       hasWorkpaper: Boolean(payload.priorReturn),
       hasImage: String(payload.noticeFile?.type || "").startsWith("image/"),
@@ -4507,7 +4419,6 @@ async function runDiagnostics() {
       taxYear: els.diagnosticsTaxYear.value.trim(),
       additionalContext: els.diagnosticsContext.value.trim(),
     };
-    showPreflightCost(els.diagnosticsCostEstimate, estimateObjectCost(payload, 6000), "e-file diagnostics");
     const response = await runWithCostEstimate("diagnostics", {
       returnType: payload.returnType || "",
       hasImage: Boolean(payload.errorImage),
@@ -5466,7 +5377,6 @@ async function runOrganizer(sectionName = "") {
 
   try {
     const payload = await buildOrganizerPayload(sectionName);
-    showPreflightCost(els.organizerCostEstimate, estimateObjectCost(payload, 7000), sectionName ? "section regeneration" : "organizer generation");
     els.organizerRunHint.textContent = "Sending organizer request to backend...";
     const response = await runWithCostEstimate("organizer", {
       returnType: payload.returnType || payload.metadata?.returnType || "",
@@ -5720,7 +5630,6 @@ async function runPreparerWorkflow() {
       taxSoftware: prepState.taxSoftware,
       files,
     };
-    showPreflightCost(els.prepCostEstimate, estimatePayloadCost(payload, 20000), "preparation workbook and data entry guide generation");
     els.prepRunHint.textContent = "Sending preparation package to backend...";
     const response = await runWithCostEstimate("preparation", {
       returnType: payload.metadata?.returnType || "",
@@ -7097,7 +7006,6 @@ async function runDeliverable(type) {
   try {
     if (els.deliverableSaveDefaults.checked) saveFirmDefaults();
     const payload = buildDeliverablePayload(type);
-    showPreflightCost(els.deliverableCostEstimate, estimateObjectCost(payload, type === "email" ? 3500 : 6000), "deliverable generation");
     const endpoint = type === "email" ? "/api/deliverable/email-draft" : "/api/deliverable";
     const response = await runWithCostEstimate("deliverable", {
       returnType: payload.returnType || lastReview?.payload?.metadata?.returnType || "",
@@ -7579,7 +7487,6 @@ async function generateDeliverableEmailDraft() {
   if (els.deliverableSaveDefaults?.checked) saveFirmDefaults();
   if (els.deliverableSaveClientInfo?.checked) await saveDeliverableClientInfo();
   const payload = buildDeliverableEmailPayload();
-  showPreflightCost(els.deliverableCostEstimate, estimateObjectCost(payload, 3500), "email draft generation");
   els.generateEmailDraft.disabled = true;
   els.generateEmailDraft.textContent = "Generating email draft...";
   try {
@@ -9748,56 +9655,6 @@ function normalizedArea(issue) {
   return String(issue.areaReviewed || issue.category || issue.formOrSchedule || "").toLowerCase();
 }
 
-function estimatePayloadCost(payload, estimatedOutputTokens = 3500) {
-  const inputCost = Number(serverConfig.costModel?.inputCostPerMillionTokens || 3);
-  const outputCost = Number(serverConfig.costModel?.outputCostPerMillionTokens || 15);
-  const textChars = JSON.stringify(payload.metadata || {}).length + (payload.files || []).reduce((sum, file) => {
-    if (file.text) return sum + file.text.length;
-    if (file.encoding === "base64") return sum + Math.round((file.data || "").length * 0.75);
-    return sum + 500;
-  }, 0);
-  const estimatedInputTokens = Math.ceil(textChars / 4);
-  return {
-    inputTokens: estimatedInputTokens,
-    outputTokens: estimatedOutputTokens,
-    totalUsd: (estimatedInputTokens / 1_000_000) * inputCost + (estimatedOutputTokens / 1_000_000) * outputCost,
-  };
-}
-
-function estimateObjectCost(payload, estimatedOutputTokens = 3500) {
-  const inputCost = Number(serverConfig.costModel?.inputCostPerMillionTokens || 3);
-  const outputCost = Number(serverConfig.costModel?.outputCostPerMillionTokens || 15);
-  const estimatedInputTokens = Math.ceil(estimatePayloadChars(payload) / 4);
-  return {
-    inputTokens: estimatedInputTokens,
-    outputTokens: estimatedOutputTokens,
-    totalUsd: (estimatedInputTokens / 1_000_000) * inputCost + (estimatedOutputTokens / 1_000_000) * outputCost,
-  };
-}
-
-function estimatePayloadChars(value) {
-  if (value === null || value === undefined) return 0;
-  if (typeof value === "string") return value.length;
-  if (typeof value === "number" || typeof value === "boolean") return String(value).length;
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + estimatePayloadChars(item), 0);
-  if (typeof value === "object") {
-    return Object.entries(value).reduce((sum, [key, item]) => {
-      if (key === "content" && value.encoding === "base64") return sum + Math.round(String(item || "").length * 0.75);
-      return sum + key.length + estimatePayloadChars(item);
-    }, 0);
-  }
-  return String(value).length;
-}
-
-function preflightCostMessage(cost, operationName) {
-  return "";
-}
-
-function showPreflightCost(element, cost, operationName = "this operation") {
-  if (!element) return;
-  element.textContent = "";
-  element.hidden = true;
-}
 
 function formatBytes(bytes) {
   if (!bytes) return "0 KB";
