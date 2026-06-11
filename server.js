@@ -648,6 +648,7 @@ const server = http.createServer(async (req, res) => {
     if (requestUrl.pathname.startsWith("/api/drive")) { await handleDriveApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/accounting")) { await handleAccountingApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/qbo")) { await handleQboApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/cch")) { await handleCchApi(req, res, requestUrl); return; }
     if (req.method === "GET" && req.url.startsWith("/api/context")) { await handleContextList(req, res); return; }
     if (req.method === "POST" && req.url === "/api/context/upload") {
       if (!requireAdmin(req, res)) return;
@@ -6473,6 +6474,86 @@ async function handleQboApi(req, res, requestUrl) {
     return;
   }
   sendJson(res, 404, { error: "QBO route not found." });
+}
+
+// ── CCH Axcess Tax (Wolters Kluwer Open Integration Platform) ───────────────
+// Reports whether the firm's OIP credentials, endpoints and field maps are in
+// place. Every value comes from official CCH documentation — nothing is invented
+// here, so the integration stays inert until those values are supplied.
+function cchConfigStatus() {
+  const CCH = require("./tax-loader/config/cchEndpoints");
+  const isSet = (value) => Boolean(value) && !String(value).startsWith(CCH.SENTINEL);
+  const env = {
+    CCH_BASE_URL:            isSet(CCH.baseUrl),
+    CCH_OAUTH_TOKEN_PATH:    isSet(CCH.oauth.tokenPath),
+    CCH_OAUTH_GRANT_TYPE:    isSet(CCH.oauth.grantType),
+    CCH_OAUTH_SCOPES:        isSet(CCH.oauth.scope),
+    CCH_CLIENTS_SEARCH_PATH: isSet(CCH.paths.clientsSearch),
+    CCH_CLIENTS_CREATE_PATH: isSet(CCH.paths.clientsCreate),
+    CCH_RETURNS_CREATE_PATH: isSet(CCH.paths.returnsCreate),
+    CCH_RETURN_INPUT_PATH:   isSet(CCH.paths.returnInput),
+    CCH_RETURN_INPUT_METHOD: isSet(CCH.methods.returnInput),
+    CCH_DIAGNOSTICS_PATH:    isSet(CCH.paths.diagnostics),
+    CCH_CLIENT_ID:           isSet(process.env.CCH_CLIENT_ID),
+    CCH_CLIENT_SECRET:       isSet(process.env.CCH_CLIENT_SECRET),
+  };
+  const fieldMaps = {};
+  for (const entity of ["1040", "1065", "1120", "1120S"]) {
+    try {
+      const map = JSON.parse(fsSync.readFileSync(path.join(ROOT, "tax-loader", "fieldMaps", `cch_axcess_${entity}.json`), "utf8"));
+      fieldMaps[entity] = map._verified === true;
+    } catch (_) {
+      fieldMaps[entity] = false;
+    }
+  }
+  const missingEnv = Object.entries(env).filter(([, ok]) => !ok).map(([key]) => key);
+  const unverifiedFieldMaps = Object.entries(fieldMaps).filter(([, ok]) => !ok).map(([key]) => key);
+  return {
+    configured: missingEnv.length === 0 && unverifiedFieldMaps.length === 0,
+    missingEnv,
+    unverifiedFieldMaps,
+    env,
+    fieldMaps,
+  };
+}
+
+async function handleCchApi(req, res, requestUrl) {
+  if (req.method === "GET" && requestUrl.pathname === "/api/cch/status") {
+    sendJson(res, 200, cchConfigStatus());
+    return;
+  }
+  if (req.method === "POST" && requestUrl.pathname === "/api/cch/push-return") {
+    const status = cchConfigStatus();
+    if (!status.configured) {
+      sendJson(res, 503, {
+        error: "CCH Axcess is not configured. Supply the OIP environment variables and complete the field maps before pushing returns.",
+        missingEnv: status.missingEnv,
+        unverifiedFieldMaps: status.unverifiedFieldMaps,
+      });
+      return;
+    }
+    const payload = await readJsonBody(req);
+    const data = payload.data || payload;
+    if (!data?.client?.entityType || !Array.isArray(data.fields)) {
+      sendJson(res, 400, { error: "Body must be a CanonicalReturn with client.entityType and fields[]." });
+      return;
+    }
+    try {
+      const { CCHAxcessAdapter } = require("./tax-loader/adapters/cchAxcessAdapter");
+      const adapter = new CCHAxcessAdapter({
+        clientId:     String(process.env.CCH_CLIENT_ID || ""),
+        clientSecret: String(process.env.CCH_CLIENT_SECRET || ""),
+        apiKey:       String(process.env.CCH_API_KEY || ""),
+      });
+      const artifact = await adapter.prepare(data);
+      const result = await adapter.load(artifact, data);
+      sendJson(res, result.success ? 200 : 502, { ok: result.success, ...result });
+    } catch (error) {
+      sendJson(res, 500, { error: error.message || "CCH push failed." });
+    }
+    return;
+  }
+  sendJson(res, 404, { error: "CCH route not found." });
 }
 
 async function handleAccountingAuthRoute(req, res, requestUrl) {
