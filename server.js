@@ -660,6 +660,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo/callback") { await handleQboCallback(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/auth/accounting/")) { await handleAccountingAuthRoute(req, res, requestUrl); return; }
     if (req.method === "GET" && req.url === "/healthz") { await handleHealth(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname.startsWith("/assets/")) { await serveStatic(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
