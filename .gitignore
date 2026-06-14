@@ -2,6 +2,7 @@ node_modules/
 npm-debug.log
 .env
 .env.*
+!.env.example
 .vs/
 data/client_files/
 data/local-secrets.json

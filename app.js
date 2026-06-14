@@ -3038,18 +3038,19 @@ async function initQBOSection() {
   if (!els.qboConnectPrompt) return;
   try {
     const status = await fetch(`${API_BASE_URL}/api/accounting/status`).then((r) => r.json());
-    qboState.accountingAvailable = quickBooksOnly(status.available || []);
-    qboState.accountingConnected = quickBooksOnly(status.connected || []);
-    qboState.activeSoftwareId = "quickbooks";
+    qboState.accountingAvailable = cloudProviders(status.available || []);
+    qboState.accountingConnected = cloudProviders(status.connected || []);
     renderAccountingSoftwareGrid();
-    const firstConnected = qboState.accountingConnected.find((item) => item.softwareId === "quickbooks");
+    const firstConnected = qboState.accountingConnected[0];
     if (firstConnected) {
       qboState.connected = true;
+      qboState.activeSoftwareId = firstConnected.softwareId;
       qboState.companies = firstConnected.companies || [];
-      await loadAccountingReports("quickbooks");
+      await loadAccountingReports(firstConnected.softwareId);
       showQBOConnectedPanel();
     } else {
       qboState.connected = false;
+      qboState.activeSoftwareId = qboState.accountingAvailable[0]?.softwareId || "quickbooks";
       els.qboConnectPrompt.hidden = false;
       els.qboConnectedPanel.hidden = true;
     }
@@ -3058,58 +3059,65 @@ async function initQBOSection() {
   }
 }
 
-function quickBooksOnly(items) {
-  return (Array.isArray(items) ? items : []).filter((item) => item?.softwareId === "quickbooks" || item?.id === "quickbooks");
+// Cloud accounting providers (QuickBooks + Xero); manual upload is not a card.
+function cloudProviders(items) {
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const id = item?.softwareId || item?.id;
+    return id && id !== "manual_upload";
+  });
 }
 
-function quickBooksSoftwareDefinition() {
-  return qboState.accountingAvailable.find((item) => item.softwareId === "quickbooks") || {
-    softwareId: "quickbooks",
-    name: "QuickBooks Online",
-    vendor: "Intuit",
-    logo: "QBO",
-    configured: false,
-    connected: false,
-    setupUrl: "https://developer.intuit.com",
-    envVarsPresent: { QBO_CLIENT_ID: false, QBO_CLIENT_SECRET: false, QBO_REDIRECT_URI: false },
-  };
+const ACCOUNTING_FALLBACKS = {
+  quickbooks: { softwareId: "quickbooks", name: "QuickBooks Online", vendor: "Intuit", logo: "QBO", configured: false, connected: false, setupUrl: "https://developer.intuit.com", envVarsPresent: { QBO_CLIENT_ID: false, QBO_CLIENT_SECRET: false, QBO_REDIRECT_URI: false }, desc: "Pull P&L, Balance Sheet, Trial Balance, General Ledger and related reports." },
+  xero: { softwareId: "xero", name: "Xero", vendor: "Xero", logo: "XE", configured: false, connected: false, setupUrl: "https://developer.xero.com", envVarsPresent: { XERO_CLIENT_ID: false, XERO_CLIENT_SECRET: false, XERO_REDIRECT_URI: false }, desc: "Pull P&L, Balance Sheet, Trial Balance and related reports." },
+};
+
+function accountingSoftwareDefinition(softwareId) {
+  return qboState.accountingAvailable.find((item) => item.softwareId === softwareId)
+    || ACCOUNTING_FALLBACKS[softwareId]
+    || { softwareId, name: softwareId, vendor: "", logo: String(softwareId || "").slice(0, 2).toUpperCase(), configured: false, connected: false };
 }
 
 function renderAccountingSoftwareGrid() {
   if (!els.accountingSoftwareGrid) return;
-  const software = quickBooksSoftwareDefinition();
-  const isConnected = qboState.accountingConnected.some((item) => item.softwareId === "quickbooks") || software.connected;
-  const state = isConnected ? "connected" : software.configured ? "configured" : "locked";
-  const label = isConnected ? "Connected" : software.configured ? "Connect QuickBooks" : "Setup required";
-  els.accountingSoftwareGrid.innerHTML = `
-    <button class="accounting-software-card quickbooks-only ${state}" type="button" data-accounting-software="quickbooks">
+  const providers = cloudProviders(qboState.accountingAvailable);
+  const list = providers.length ? providers : [accountingSoftwareDefinition("quickbooks"), accountingSoftwareDefinition("xero")];
+  els.accountingSoftwareGrid.innerHTML = list.map((software) => {
+    const connected = qboState.accountingConnected.some((item) => item.softwareId === software.softwareId) || software.connected;
+    const state = connected ? "connected" : software.configured ? "configured" : "locked";
+    const label = connected ? "Connected" : software.configured ? `Connect ${software.name}` : "Setup required";
+    const desc = software.desc || ACCOUNTING_FALLBACKS[software.softwareId]?.desc || "Pull financial reports for the workpaper.";
+    return `
+    <button class="accounting-software-card quickbooks-only ${state}" type="button" data-accounting-software="${escapeHtml(software.softwareId)}">
       <span class="accounting-logo">${escapeHtml(software.logo || "")}</span>
       <span class="accounting-card-copy">
-        <span class="accounting-card-name">${escapeHtml(software.name || "QuickBooks Online")}</span>
-        <small>${escapeHtml(software.vendor || "Intuit")} · Pull P&L, Balance Sheet, Trial Balance, General Ledger and related reports.</small>
+        <span class="accounting-card-name">${escapeHtml(software.name || software.softwareId)}</span>
+        <small>${escapeHtml(software.vendor || "")} · ${escapeHtml(desc)}</small>
       </span>
       <strong>${escapeHtml(label)}</strong>
     </button>`;
+  }).join("");
   els.accountingSoftwareGrid.querySelectorAll("[data-accounting-software]").forEach((button) => {
     button.addEventListener("click", () => selectAccountingSoftware(button.dataset.accountingSoftware));
   });
   if (els.qboConnectBtn) els.qboConnectBtn.hidden = true;
-  if (els.qboDisabledMsg) els.qboDisabledMsg.hidden = software.configured;
+  if (els.qboDisabledMsg) els.qboDisabledMsg.hidden = list.some((s) => s.configured);
 }
 
 async function selectAccountingSoftware(softwareId) {
-  if (softwareId !== "quickbooks") return;
-  const software = quickBooksSoftwareDefinition();
+  const software = accountingSoftwareDefinition(softwareId);
   if (!software) return;
-  if (!software.configured) {
+  const live = accountingSoftwareById(softwareId);
+  if (!live?.configured) {
     showAccountingSetupInstructions(software);
     return;
   }
-  if (!software.connected) {
-    connectQBO(software.softwareId);
+  const connected = qboState.accountingConnected.some((item) => item.softwareId === softwareId) || live.connected;
+  if (!connected) {
+    connectQBO(softwareId);
     return;
   }
-  await activateAccountingSoftware(software.softwareId);
+  await activateAccountingSoftware(softwareId);
 }
 
 function showAccountingSetupInstructions(software) {
@@ -3142,10 +3150,10 @@ async function loadAccountingReports(softwareId) {
 }
 
 function connectQBO(softwareId = "quickbooks") {
-  softwareId = "quickbooks";
-  const popup = window.open(`/auth/accounting/${encodeURIComponent(softwareId)}`, "accountingAuth", "width=720,height=820,scrollbars=yes");
+  const id = softwareId || qboState.activeSoftwareId || "quickbooks";
+  const popup = window.open(`/auth/accounting/${encodeURIComponent(id)}`, "accountingAuth", "width=720,height=820,scrollbars=yes");
   if (!popup) {
-    window.location.href = `/auth/accounting/${encodeURIComponent(softwareId)}`;
+    window.location.href = `/auth/accounting/${encodeURIComponent(id)}`;
     return;
   }
   const timer = window.setInterval(() => {
@@ -3157,24 +3165,24 @@ function connectQBO(softwareId = "quickbooks") {
 }
 
 async function disconnectQBO() {
-  const software = accountingSoftwareById("quickbooks") || quickBooksSoftwareDefinition();
-  if (!window.confirm(`Disconnect ${software?.name || "QuickBooks Online"}?`)) return;
-  await fetch(`${API_BASE_URL}/api/accounting/quickbooks/disconnect`, { method: "POST" }).catch(() => null);
+  const softwareId = qboState.activeSoftwareId || "quickbooks";
+  const software = accountingSoftwareDefinition(softwareId);
+  if (!window.confirm(`Disconnect ${software?.name || softwareId}?`)) return;
+  await fetch(`${API_BASE_URL}/api/accounting/${encodeURIComponent(softwareId)}/disconnect`, { method: "POST" }).catch(() => null);
   qboState.connected = false;
   qboState.companies = [];
   qboState.selectedRealmId = "";
-  qboState.activeSoftwareId = "quickbooks";
   els.qboConnectPrompt.hidden = false;
   els.qboConnectedPanel.hidden = true;
   await initQBOSection();
-  showToast(`${software?.name || "QuickBooks Online"} disconnected.`, "info");
+  showToast(`${software?.name || softwareId} disconnected.`, "info");
 }
 
 function showQBOConnectedPanel() {
   els.qboConnectPrompt.hidden = true;
   els.qboConnectedPanel.hidden = false;
-  const software = accountingSoftwareById("quickbooks") || quickBooksSoftwareDefinition();
-  document.getElementById("qbo-connected-label").textContent = `${software?.name || "QuickBooks Online"} connected`;
+  const software = accountingSoftwareDefinition(qboState.activeSoftwareId);
+  document.getElementById("qbo-connected-label").textContent = `${software?.name || "Accounting software"} connected`;
   renderAccountingConnectedPicker();
   els.qboCompanySelect.innerHTML = `<option value="">Select a company</option>${qboState.companies.map((company) => `<option value="${escapeHtml(company.id || company.realmId)}">${escapeHtml(company.name || company.companyName || company.id || company.realmId)}</option>`).join("")}`;
   if (qboState.companies.length === 1) {
@@ -3184,13 +3192,19 @@ function showQBOConnectedPanel() {
 }
 
 function accountingSoftwareById(softwareId) {
-  if (softwareId !== "quickbooks") return null;
-  return qboState.accountingAvailable.find((item) => item.softwareId === "quickbooks") || null;
+  return qboState.accountingAvailable.find((item) => item.softwareId === softwareId) || null;
 }
 
+// When more than one provider is connected, show chips to switch between them.
 function renderAccountingConnectedPicker() {
   if (!els.accountingConnectedPicker) return;
-  els.accountingConnectedPicker.innerHTML = "";
+  const connected = qboState.accountingConnected;
+  if (connected.length <= 1) { els.accountingConnectedPicker.innerHTML = ""; return; }
+  els.accountingConnectedPicker.innerHTML = connected.map((software) => `
+    <button class="accounting-connected-chip ${software.softwareId === qboState.activeSoftwareId ? "active" : ""}" type="button" data-connected-software="${escapeHtml(software.softwareId)}">${escapeHtml(software.name || software.softwareId)}</button>`).join("");
+  els.accountingConnectedPicker.querySelectorAll("[data-connected-software]").forEach((button) => {
+    button.addEventListener("click", () => activateAccountingSoftware(button.dataset.connectedSoftware));
+  });
 }
 
 function onQBOCompanyChange(realmId) {

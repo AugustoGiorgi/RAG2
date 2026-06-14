@@ -124,6 +124,20 @@ const ACCOUNTING_SOFTWARE = {
     supportsMultiCompany: true,
     supportsCash: true,
   },
+  xero: {
+    id: "xero",
+    name: "Xero",
+    vendor: "Xero",
+    logo: "XE",
+    type: "cloud",
+    authType: "oauth2",
+    setupUrl: "https://developer.xero.com",
+    envVars: ["XERO_CLIENT_ID", "XERO_CLIENT_SECRET", "XERO_REDIRECT_URI"],
+    scopes: ["openid", "profile", "email", "accounting.reports.read", "accounting.settings.read", "offline_access"],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashSummary", "AgedReceivablesByContact", "AgedPayablesByContact", "ExecutiveSummary"],
+    supportsMultiCompany: true,
+    supportsCash: true,
+  },
   manual_upload: {
     id: "manual_upload",
     name: "Manual Upload",
@@ -4261,7 +4275,8 @@ function buildAccountingAuthUrl(softwareId, username) {
     response_type: "code",
     redirect_uri: config.redirectUri,
     scope: config.scope,
-    state: Buffer.from(JSON.stringify({ username, softwareId })).toString("base64url"),
+    // HMAC-signed state prevents CSRF / tampering: the callback verifies sig before trusting username.
+    state: Buffer.from(JSON.stringify({ username, softwareId, sig: hmac(`accounting:${softwareId}:${username}`) })).toString("base64url"),
   });
   if (softwareId === "zoho_books") {
     params.set("access_type", "offline");
@@ -4284,6 +4299,95 @@ async function exchangeAccountingToken(softwareId, code) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(new Error(data.error_description || data.error || `Could not connect ${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId}.`), { statusCode: response.status, expose: true });
   return { ...data, expires_at: Date.now() + (Number(data.expires_in || 3600) * 1000) - 60000 };
+}
+
+// Refresh an OAuth2 accounting token. Xero ROTATES the refresh token on every use,
+// so the caller must persist the returned refresh_token. invalidGrant flags a dead
+// refresh token (client revoked access, or expired by inactivity) → reconnect needed.
+async function refreshAccountingToken(softwareId, refreshToken) {
+  const config = accountingOAuthConfig(softwareId);
+  if (!config?.clientId || !config?.clientSecret) throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not configured.`), { statusCode: 503, expose: true });
+  const headers = { accept: "application/json", "content-type": "application/x-www-form-urlencoded" };
+  const reqBody = new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
+  if (softwareId === "xero" || softwareId === "freshbooks" || softwareId === "wave") {
+    headers.authorization = `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`;
+  } else {
+    reqBody.set("client_id", config.clientId);
+    reqBody.set("client_secret", config.clientSecret);
+  }
+  const response = await fetch(config.tokenUrl, { method: "POST", headers, body: reqBody });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const text = `${data.error || ""} ${data.error_description || ""}`;
+    const error = Object.assign(new Error(data.error_description || data.error || `Could not refresh ${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId}.`), { statusCode: response.status, expose: true });
+    error.invalidGrant = response.status === 400 || response.status === 401 || /invalid_grant|invalid_request|unauthorized|revoked/i.test(text);
+    throw error;
+  }
+  return {
+    ...data,
+    refresh_token: data.refresh_token || refreshToken, // Xero rotates — keep the new one
+    expires_at: Date.now() + (Number(data.expires_in || 1800) * 1000) - 60000,
+  };
+}
+
+// Return a valid (non-expired) access token for an OAuth2 accounting provider,
+// refreshing and persisting the rotated token when needed. Marks the connection
+// "disconnected" when the refresh token is dead so the UI can prompt reconnection.
+async function getValidAccountingTokens(username, softwareId, { force = false } = {}) {
+  const record = getAccountingRecord(username, softwareId);
+  const tokens = record.tokens;
+  if (!tokens?.access_token && !tokens?.refresh_token) {
+    throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not connected.`), { statusCode: 401, expose: true });
+  }
+  const expired = !tokens.access_token || Number(tokens.expires_at || 0) <= Date.now();
+  if (!force && !expired) return tokens;
+  if (!tokens.refresh_token) {
+    updateAccountingRecord(username, softwareId, { status: "disconnected" });
+    throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} session expired. Reconnect to continue.`), { statusCode: 401, expose: true, reconnect: true });
+  }
+  try {
+    const refreshed = await refreshAccountingToken(softwareId, tokens.refresh_token);
+    const merged = { ...tokens, ...refreshed };
+    updateAccountingRecord(username, softwareId, { tokens: merged, status: "connected", lastRefreshedAt: new Date().toISOString() });
+    return merged;
+  } catch (error) {
+    if (error.invalidGrant) {
+      updateAccountingRecord(username, softwareId, { status: "disconnected" });
+      throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} access was revoked or expired. Reconnect to continue.`), { statusCode: 401, expose: true, reconnect: true });
+    }
+    throw error;
+  }
+}
+
+// Best-effort token revocation at the provider on disconnect. Never throws — the
+// local record is always removed by the caller regardless of the provider result.
+async function revokeAccountingTokens(softwareId, tokens = {}) {
+  try {
+    const config = accountingOAuthConfig(softwareId);
+    const token = tokens.refresh_token || tokens.access_token;
+    if (!config?.clientId || !token) return;
+    const revokeUrls = {
+      xero: "https://identity.xero.com/connect/revocation",
+      quickbooks: "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+    };
+    const url = revokeUrls[softwareId];
+    if (!url) return;
+    if (softwareId === "quickbooks") {
+      await fetch(url, {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
+        body: JSON.stringify({ token }),
+      });
+    } else {
+      await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
+        body: new URLSearchParams({ token }),
+      });
+    }
+  } catch (_) {
+    // Revocation is best-effort; ignore provider errors.
+  }
 }
 
 async function accountingApiFetch(url, tokens, options = {}) {
@@ -4388,44 +4492,64 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
   }
   const record = getAccountingRecord(username, softwareId);
   const company = (record.companies || []).find((item) => item.id === companyId) || {};
-  if (!record.tokens?.access_token) throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not connected.`), { statusCode: 401, expose: true });
-  let raw = {};
-  if (softwareId === "xero") {
-    const map = {
-      ProfitAndLoss: "ProfitAndLoss",
-      BalanceSheet: "BalanceSheet",
-      TrialBalance: "TrialBalance",
-      CashSummary: "CashSummary",
-      ExecutiveSummary: "ExecutiveSummary",
-      AgedReceivablesByContact: "AgedReceivablesByContact",
-      AgedPayablesByContact: "AgedPayablesByContact",
-    };
-    const query = new URLSearchParams();
-    if (spec.startDate) query.set("fromDate", spec.startDate);
-    if (spec.endDate) query.set("toDate", spec.endDate);
-    query.set("reportingBasis", spec.cash ? "CASH" : "ACCRUAL");
-    raw = await accountingApiFetch(`https://api.xero.com/api.xro/2.0/Reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, record.tokens, { headers: { "xero-tenant-id": companyId } });
-  } else if (softwareId === "zoho_books") {
-    const map = { ProfitAndLoss: "profitandloss", BalanceSheet: "balancesheet", TrialBalance: "trial_balance", CashFlow: "cashflow", GeneralLedger: "generalledger", AgedReceivables: "aging/receivables", AgedPayables: "aging/payables" };
-    const query = new URLSearchParams({ organization_id: companyId });
-    if (spec.startDate) query.set("from_date", spec.startDate);
-    if (spec.endDate) query.set("to_date", spec.endDate);
-    if (spec.cash) query.set("cash_basis", "true");
-    raw = await accountingApiFetch(`https://www.zohoapis.com/books/v3/reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, record.tokens);
-  } else if (softwareId === "freshbooks") {
-    const map = { ProfitAndLoss: "profitloss", BalanceSheet: "balancesheet", TaxSummary: "taxsummary", ExpenseReport: "expenses_report" };
-    const query = new URLSearchParams();
-    if (spec.startDate) query.set("date_from", spec.startDate);
-    if (spec.endDate) query.set("date_to", spec.endDate);
-    raw = await accountingApiFetch(`https://api.freshbooks.com/accounting/account/${companyId}/reports/${map[spec.reportId] || "profitloss"}?${query.toString()}`, record.tokens);
-  } else if (softwareId === "wave") {
-    raw = await accountingApiFetch("https://gql.waveapps.com/graphql/public", record.tokens, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query: "query($businessId: ID!) { business(id: $businessId) { id name } }", variables: { businessId: companyId } }),
-    });
-  } else {
+  // Refresh-before-call: getValidAccountingTokens refreshes + persists the rotated token.
+  let tokens = await getValidAccountingTokens(username, softwareId);
+
+  // Per-provider report call, parameterized by token so we can retry after a refresh.
+  async function callProvider(tok) {
+    if (softwareId === "xero") {
+      const map = {
+        ProfitAndLoss: "ProfitAndLoss",
+        BalanceSheet: "BalanceSheet",
+        TrialBalance: "TrialBalance",
+        CashSummary: "CashSummary",
+        ExecutiveSummary: "ExecutiveSummary",
+        AgedReceivablesByContact: "AgedReceivablesByContact",
+        AgedPayablesByContact: "AgedPayablesByContact",
+      };
+      const query = new URLSearchParams();
+      if (spec.startDate) query.set("fromDate", spec.startDate);
+      if (spec.endDate) query.set("toDate", spec.endDate);
+      query.set("reportingBasis", spec.cash ? "CASH" : "ACCRUAL");
+      return accountingApiFetch(`https://api.xero.com/api.xro/2.0/Reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, tok, { headers: { "xero-tenant-id": companyId } });
+    }
+    if (softwareId === "zoho_books") {
+      const map = { ProfitAndLoss: "profitandloss", BalanceSheet: "balancesheet", TrialBalance: "trial_balance", CashFlow: "cashflow", GeneralLedger: "generalledger", AgedReceivables: "aging/receivables", AgedPayables: "aging/payables" };
+      const query = new URLSearchParams({ organization_id: companyId });
+      if (spec.startDate) query.set("from_date", spec.startDate);
+      if (spec.endDate) query.set("to_date", spec.endDate);
+      if (spec.cash) query.set("cash_basis", "true");
+      return accountingApiFetch(`https://www.zohoapis.com/books/v3/reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, tok);
+    }
+    if (softwareId === "freshbooks") {
+      const map = { ProfitAndLoss: "profitloss", BalanceSheet: "balancesheet", TaxSummary: "taxsummary", ExpenseReport: "expenses_report" };
+      const query = new URLSearchParams();
+      if (spec.startDate) query.set("date_from", spec.startDate);
+      if (spec.endDate) query.set("date_to", spec.endDate);
+      return accountingApiFetch(`https://api.freshbooks.com/accounting/account/${companyId}/reports/${map[spec.reportId] || "profitloss"}?${query.toString()}`, tok);
+    }
+    if (softwareId === "wave") {
+      return accountingApiFetch("https://gql.waveapps.com/graphql/public", tok, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "query($businessId: ID!) { business(id: $businessId) { id name } }", variables: { businessId: companyId } }),
+      });
+    }
     throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} report fetching requires advanced setup and is not available in this local adapter yet.`), { statusCode: 501, expose: true });
+  }
+
+  let raw = {};
+  try {
+    raw = await callProvider(tokens);
+  } catch (error) {
+    // Token expired mid-flight → refresh once and retry. getValidAccountingTokens
+    // marks the connection disconnected if the refresh token itself is dead.
+    if (error.statusCode === 401) {
+      tokens = await getValidAccountingTokens(username, softwareId, { force: true });
+      raw = await callProvider(tokens);
+    } else {
+      throw error;
+    }
   }
   const reportDef = accountingReportDefinitions(softwareId).find((item) => item.id === spec.reportId);
   const parsed = normalizeAccountingReport(raw, spec.reportId, { ...spec, softwareId, companyId, companyName: company.name || companyId, reportName: reportDef?.name || spec.reportId, currency: company.currency || "" });
@@ -6576,7 +6700,13 @@ async function handleAccountingAuthRoute(req, res, requestUrl) {
   const realmId = requestUrl.searchParams.get("realmId");
   let state = {};
   try { state = JSON.parse(Buffer.from(requestUrl.searchParams.get("state") || "", "base64url").toString("utf8")); } catch (_) {}
-  const owner = state.username || username;
+  // Verify the HMAC-signed state to prevent CSRF / login-CSRF (attacker attaching their connection to a victim).
+  const stateUser = String(state.username || "");
+  if (!stateUser || !safeEqual(String(state.sig || ""), hmac(`accounting:${softwareId}:${stateUser}`))) {
+    sendHtml(res, 400, "<p>Accounting authorization failed state verification. Please retry the connection.</p>");
+    return;
+  }
+  const owner = stateUser;
   if (!code) { sendHtml(res, 400, "<p>Accounting authorization did not return a code.</p>"); return; }
   const tokens = await exchangeAccountingToken(softwareId, code);
   if (softwareId === "quickbooks") {
@@ -6600,7 +6730,7 @@ async function handleAccountingApi(req, res, requestUrl) {
   const username = req.user?.username || "augusto";
   const parts = requestUrl.pathname.split("/").filter(Boolean);
   if (req.method === "GET" && requestUrl.pathname === "/api/accounting/status") {
-    const available = [ACCOUNTING_SOFTWARE.quickbooks].map((software) => accountingPublicSoftware(software, username));
+    const available = Object.values(ACCOUNTING_SOFTWARE).map((software) => accountingPublicSoftware(software, username));
     const connected = available.filter((item) => item.connected).map((item) => {
       const companies = item.softwareId === "quickbooks"
         ? qboCompaniesForUser(username).map((company) => ({ id: company.realmId, name: company.companyName || company.realmId }))
@@ -6641,8 +6771,18 @@ async function handleAccountingApi(req, res, requestUrl) {
   }
   if (parts.length === 4 && parts[3] === "disconnect" && req.method === "POST") {
     const softwareId = parts[2];
-    if (softwareId === "quickbooks") deleteQboUser(username);
-    else deleteAccountingRecord(username, softwareId);
+    // Revoke at the provider (best-effort) before removing the local record.
+    if (softwareId === "quickbooks") {
+      const companies = getQboUserStore(username).companies || {};
+      for (const realmId of Object.keys(companies)) {
+        await revokeAccountingTokens("quickbooks", companies[realmId]?.tokens || {});
+      }
+      deleteQboUser(username);
+    } else {
+      const record = getAccountingRecord(username, softwareId);
+      await revokeAccountingTokens(softwareId, record.tokens || {});
+      deleteAccountingRecord(username, softwareId);
+    }
     sendJson(res, 200, { ok: true });
     return;
   }
