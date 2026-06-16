@@ -100,7 +100,7 @@ const GOOGLE_OAUTH_SCOPE = (process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_
 const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "false").toLowerCase() === "true";
 const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
 const QBO_CLIENT_SECRET = String(process.env.QBO_CLIENT_SECRET || LOCAL_SECRETS.qboClientSecret || "").trim();
-const QBO_REDIRECT_URI = String(process.env.QBO_REDIRECT_URI || LOCAL_SECRETS.qboRedirectUri || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/qbo/callback`).trim();
+const QBO_REDIRECT_URI = String(process.env.QBO_REDIRECT_URI || LOCAL_SECRETS.qboRedirectUri || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/accounting/quickbooks/callback`).trim();
 const QBO_ENVIRONMENT = String(process.env.QBO_ENVIRONMENT || LOCAL_SECRETS.qboEnvironment || "sandbox").trim();
 const QBO_SCOPES = "com.intuit.quickbooks.accounting openid profile email";
 if (ANTHROPIC_API_KEY) process.env.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY;
@@ -6684,7 +6684,7 @@ async function handleAccountingAuthRoute(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
   const softwareId = parts[2];
   const isCallback = parts[3] === "callback";
-  const username = req.user?.username || readSession(req)?.username || "augusto";
+  const username = req.user?.username || getSession(req)?.username || "augusto";
   const software = ACCOUNTING_SOFTWARE[softwareId];
   if (!software) { sendHtml(res, 404, "<p>Accounting software not found.</p>"); return; }
   if (software.authType === "none") { redirect(res, "/?accounting=manual"); return; }
