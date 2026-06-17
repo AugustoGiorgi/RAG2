@@ -9844,16 +9844,22 @@ function buildUserPrompt(payload, context = { knowledgeBase: [], reviewExamples:
 
 function buildPreparerContent(payload) {
   const metadata = payload.metadata || {};
+  const taxYearNum = Number(String(metadata.taxYear || payload.taxYear || "").match(/\d{4}/)?.[0] || 0);
+  const priorYearNum = taxYearNum ? taxYearNum - 1 : 0;
+  const yearContext = taxYearNum
+    ? `TAX YEAR CONTEXT: You are preparing the workpaper for TAX YEAR ${taxYearNum}. The prior year is ${priorYearNum}. Any file or document whose name includes "${priorYearNum}" or that was uploaded as a prior-year reference contains ${priorYearNum} amounts — those are REFERENCE ONLY and must never appear as current-year amounts in this workpaper. All income, expense, balance sheet, and GL amounts for the ${taxYearNum} workpaper must come exclusively from files labeled current_financials.`
+    : "";
   const content = [{
     type: "text",
     text: [
       "You are a senior tax preparer assistant. Your task is to produce an Excel-ready workpaper workbook based on the user's instructions and uploaded files.",
       "Do not prepare a tax return and do not invent amounts.",
+      ...(yearContext ? [yearContext] : []),
       "Use the uploaded files according to the user's instructions. If prior-year workpapers and current-year reports are included, use prior-year workpapers for workbook structure, sheet names, section order, labels, and row layout; use current-year reports for updated values.",
       "The backend labels each uploaded file with a preparation role. Follow those labels exactly:",
       "- current_financials: source of truth for every current-year P&L, balance sheet, trial balance, and GL amount.",
       "- prior_return: source for beginning balances, carryforwards, depreciation/tax basis support, prior tax positions, and prior-year tax return disclosures only.",
-      "- prior_workpaper: source for workbook structure, section order, labels, formulas/categories, and formatting only. Prior-year amounts are reference only.",
+      "- prior_workpaper: source for workbook structure, section order, labels, formulas/categories, and formatting only. Prior-year amounts are reference only and must never be used as current-year values.",
       "- supporting_document: use only for directly supported values/context.",
       "For a requested new-year workbook, keep a similar visual format to the prior-year Excel file: section boxes, underlined labels, title/header rows, column widths, merged cells, spacing, and sheet order should be mirrored as closely as the structured output allows while updating the numbers and year labels.",
       "The output must be a new workpaper workbook, not a narrative memo and not JSON pasted into Excel.",
@@ -10298,30 +10304,68 @@ function detectPreparationFileRole(file = {}, payload = {}) {
   const joined = `${name}\n${text}`;
   const hasWorkbookTemplate = Boolean(file.workbookTemplate?.sheets?.length || (Array.isArray(file.workbookTemplates) && file.workbookTemplates.some((template) => template?.sheets?.length)));
 
+  // True when the file name explicitly references prior year but NOT current year
+  // e.g. "workpaper 2024.xlsx" or "P&L 2024.pdf" when tax year is 2025
+  const isPriorYearByName = Boolean(priorYear && name.includes(priorYear) && currentYear && !name.includes(currentYear));
+
+  // 1. Excel with workpaper/template keywords → prior_workpaper
   if (hasWorkbookTemplate && /\b(template|workpaper|work paper|estimate|est tax|projection|safe harbor)\b/.test(joined)) {
     return {
       id: "prior_workpaper",
       description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
     };
   }
+
+  // 2. Any file (PDF or Excel) that has workpaper/template keywords AND prior year in name → prior_workpaper
+  if (/\b(template|workpaper|work paper|safe harbor)\b/.test(joined) && isPriorYearByName) {
+    return {
+      id: "prior_workpaper",
+      description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
+    };
+  }
+
+  // 3. Tax return (prior year) → prior_return
   if (/\b(form\s*(1040|1041|1065|1120|1120s|1120-s)|u\.s\.\s*(individual|income tax|corporation|partnership)|schedule\s+[a-z0-9-]+|tax return|return transcript)\b/.test(joined) && (!currentYear || !name.includes(currentYear) || name.includes(priorYear))) {
     return {
       id: "prior_return",
       description: "Prior-year tax return: use for beginning balances, carryforwards, depreciation/tax basis, prior tax positions, and prior-year support only.",
     };
   }
+
+  // 4. Financial statement keywords — with year-based disambiguation
   if (/\b(profit\s*(and|&)?\s*loss|p&l|income statement|balance sheet|trial balance|general ledger|gl detail|financial statement|financial report|quickbooks|xero|sage|netsuite|freshbooks|zoho|wave)\b/.test(joined)) {
-    return {
-      id: "current_financials",
-      description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
-    };
+    // File name says prior year, not current year → prior-year reference (e.g. "P&L 2024.pdf" when preparing 2025)
+    if (isPriorYearByName) {
+      return {
+        id: "prior_workpaper",
+        description: "Prior-year financial statement: use for prior-year reference values, beginning balances, and workpaper structure only. All current-year amounts must come from current-year financial files.",
+      };
+    }
+    // Not an Excel workbook → must be a PDF/text financial export → current-year source
+    if (!hasWorkbookTemplate) {
+      return {
+        id: "current_financials",
+        description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
+      };
+    }
+    // Excel file with financial content: only treat as current_financials when current year is in the name
+    if (currentYear && name.includes(currentYear)) {
+      return {
+        id: "current_financials",
+        description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
+      };
+    }
+    // Excel file with financial content but no clear current-year indicator → safer to treat as prior reference
   }
+
+  // 5. Excel workbook fallback → prior_workpaper
   if (hasWorkbookTemplate) {
     return {
       id: "prior_workpaper",
       description: "Workbook/template file: use structure and prior-year categories only unless user explicitly says otherwise.",
     };
   }
+
   return {
     id: "supporting_document",
     description: "Supporting document: use only for values or context directly supported by the file.",
