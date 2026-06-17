@@ -7982,7 +7982,12 @@ async function handlePrepareWorkpaper(req, res) {
 
   const taxSoftware = resolveTaxSoftwareFromPayload(payload);
   const returnType = resolveReturnTypeFromPayload(payload);
-  const taxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
+  const rawTaxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
+  // The frontend can send a stale preparation year (a hidden field default), so
+  // reconcile it against the years that actually appear in the uploaded filenames.
+  // Current-year financials carry the most recent year, so the latest filename year
+  // is the authoritative preparation year when it is newer than the metadata year.
+  const taxYear = reconcilePreparationYear(rawTaxYear, payload.files);
   payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
   payload.files = annotatePreparationFileRoles(payload.files || [], payload);
   const content = buildPreparerContent(payload);
@@ -10315,6 +10320,22 @@ function getReviewFeedbackForPayload(payload = {}) {
     createdBy: entry.createdBy || entry.addedBy || entry.username || "",
     createdAt: entry.createdAt || entry.addedAt || "",
   })).filter((entry) => entry.text);
+}
+
+// Returns the preparation (current) tax year as a string, reconciling the metadata
+// year with the most recent year that appears in the uploaded filenames. The metadata
+// year can be a stale hidden-field default (e.g. "2024" while the user uploads 2025
+// financials), so we take whichever year is later. Falls back to the metadata year,
+// then the latest filename year, then "".
+function reconcilePreparationYear(metaYearStr, files) {
+  const metaYear = Number(String(metaYearStr || "").match(/\b(20\d{2})\b/)?.[1] || 0);
+  let maxFileYear = 0;
+  for (const file of Array.isArray(files) ? files : []) {
+    const matches = String(file?.name || "").match(/\b(20\d{2})\b/g);
+    if (matches) for (const y of matches) maxFileYear = Math.max(maxFileYear, Number(y));
+  }
+  const reconciled = Math.max(metaYear, maxFileYear);
+  return reconciled ? String(reconciled) : String(metaYearStr || "").trim();
 }
 
 function annotatePreparationFileRoles(files, payload = {}) {
