@@ -9928,19 +9928,49 @@ function buildPreparerContent(payload) {
 
   for (const file of payload.files || []) {
     if (!file.text) continue;
+    const role = file.preparationRole || "supporting_document";
     const workbookTemplates = [
       file.workbookTemplate,
       ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : []),
     ].filter((template) => template?.sheets?.length);
+
+    // Role-specific header for the structured Excel data block — this is critical
+    // because the prior header said "PRIOR-YEAR WORKBOOK TEMPLATE" for ALL files,
+    // which confused Claude into treating current-year Excel exports as prior-year references.
+    let structuredDataHeader;
+    if (role === "current_financials") {
+      structuredDataHeader = `=== STRUCTURED CURRENT-YEAR FINANCIAL DATA (${taxYearNum || "CURRENT YEAR"}) — SOURCE OF TRUTH FOR ALL CURRENT-YEAR AMOUNTS — USE THESE NUMBERS IN THE WORKPAPER ===`;
+    } else if (role === "prior_workpaper") {
+      structuredDataHeader = `=== STRUCTURED PRIOR-YEAR WORKBOOK (${priorYearNum || "PRIOR YEAR"}) — USE STRUCTURE AND LABELS ONLY — DO NOT COPY THESE DOLLAR AMOUNTS INTO CURRENT-YEAR WORKPAPER ===`;
+    } else if (role === "prior_return") {
+      structuredDataHeader = `=== STRUCTURED PRIOR-YEAR TAX RETURN (${priorYearNum || "PRIOR YEAR"}) — USE ONLY FOR CARRYFORWARDS, BEGINNING BALANCES, AND DEPRECIATION BASIS ===`;
+    } else {
+      structuredDataHeader = `=== STRUCTURED WORKBOOK DATA ===`;
+    }
+
     const templateBlock = workbookTemplates.length
-      ? ["", "=== STRUCTURED PRIOR-YEAR WORKBOOK TEMPLATE TO MIRROR ===", safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
+      ? ["", structuredDataHeader, safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
       : "";
+
+    // Per-file year instruction so Claude cannot miss which year the data belongs to
+    let yearNote = "";
+    if (taxYearNum) {
+      if (role === "current_financials") {
+        yearNote = `YEAR: ${taxYearNum} (CURRENT YEAR) — All dollar amounts in this file are ${taxYearNum} values. Use them as the authoritative source for the workpaper.`;
+      } else if (role === "prior_workpaper") {
+        yearNote = `YEAR: ${priorYearNum || "PRIOR"} (PRIOR YEAR REFERENCE) — Do NOT use any dollar amounts from this file as ${taxYearNum} current-year values. Use only sheet names, row labels, section order, and formatting.`;
+      } else if (role === "prior_return") {
+        yearNote = `YEAR: ${priorYearNum || "PRIOR"} (PRIOR YEAR RETURN) — Dollar amounts are ${priorYearNum || "prior-year"} values. Use only for beginning balances, carryforwards, and depreciation basis.`;
+      }
+    }
+
     content.push({
       type: "text",
       text: [
         `=== PREPARATION SOURCE FILE: ${file.name} ===`,
-        `ROLE: ${file.preparationRole || "supporting_document"}`,
+        `ROLE: ${role}`,
         `ROLE PURPOSE: ${file.preparationRoleDescription || "Use only for directly supported values or context."}`,
+        yearNote,
         file.text,
         templateBlock,
       ].filter(Boolean).join("\n\n"),
@@ -10309,7 +10339,8 @@ function detectPreparationFileRole(file = {}, payload = {}) {
   const isPriorYearByName = Boolean(priorYear && name.includes(priorYear) && currentYear && !name.includes(currentYear));
 
   // 1. Excel with workpaper/template keywords → prior_workpaper
-  if (hasWorkbookTemplate && /\b(template|workpaper|work paper|estimate|est tax|projection|safe harbor)\b/.test(joined)) {
+  // Note: use workpapers? to match both "workpaper" and "workpapers" (plural)
+  if (hasWorkbookTemplate && /\b(templates?|workpapers?|work papers?|estimate|est tax|projection|safe harbor)\b/.test(joined)) {
     return {
       id: "prior_workpaper",
       description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
@@ -10317,7 +10348,7 @@ function detectPreparationFileRole(file = {}, payload = {}) {
   }
 
   // 2. Any file (PDF or Excel) that has workpaper/template keywords AND prior year in name → prior_workpaper
-  if (/\b(template|workpaper|work paper|safe harbor)\b/.test(joined) && isPriorYearByName) {
+  if (/\b(templates?|workpapers?|work papers?|safe harbor)\b/.test(joined) && isPriorYearByName) {
     return {
       id: "prior_workpaper",
       description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
