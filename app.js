@@ -6743,6 +6743,91 @@ function coerceWorkpaperCell(value) {
   return num === null ? sanitizeExcelCell(value) : num;
 }
 
+// Evaluates a same-sheet Excel formula (SUM ranges/lists + - * / and parentheses) against
+// the numeric cells already placed in ws, returning a finite number or null. We need this
+// because SheetJS DROPS formula cells that have no cached value when writing the file, which
+// previously made every total disappear. We compute the value here and store it alongside the
+// formula so the cell survives and Excel still recomputes it when an amount is edited.
+function evaluateWorkpaperFormula(formula, ws) {
+  const XLSX = window.XLSX;
+  try {
+    let expr = String(formula).trim().replace(/^=/, "");
+    if (!expr || expr.includes("!")) return null; // cross-sheet refs not cached here
+    expr = expr.replace(/SUM\(([^)]*)\)/gi, (match, inner) => {
+      let sum = 0;
+      for (const part of String(inner).split(",")) {
+        const seg = part.trim();
+        if (!seg) continue;
+        if (/^[A-Z]+\d+:[A-Z]+\d+$/i.test(seg)) {
+          const range = XLSX.utils.decode_range(seg.toUpperCase());
+          for (let r = range.s.r; r <= range.e.r; r += 1) {
+            for (let c = range.s.c; c <= range.e.c; c += 1) {
+              const cell = ws[XLSX.utils.encode_cell({ r, c })];
+              if (cell && typeof cell.v === "number") sum += cell.v;
+            }
+          }
+        } else if (/^[A-Z]+\d+$/i.test(seg)) {
+          const cell = ws[seg.toUpperCase()];
+          if (cell && typeof cell.v === "number") sum += cell.v;
+        } else if (/^-?\d*\.?\d+$/.test(seg)) {
+          sum += Number(seg);
+        }
+      }
+      return `(${sum})`;
+    });
+    // Replace any remaining single cell references with their numeric value (0 if blank/text).
+    expr = expr.replace(/\$?[A-Z]+\$?\d+/gi, (ref) => {
+      const cell = ws[ref.replace(/\$/g, "").toUpperCase()];
+      return cell && typeof cell.v === "number" ? `(${cell.v})` : "(0)";
+    });
+    return safeEvalArithmetic(expr);
+  } catch (error) {
+    return null;
+  }
+}
+
+// Safely evaluates a pure-arithmetic string (+ - * / and parentheses) without eval().
+function safeEvalArithmetic(expr) {
+  if (!/^[-+*/().\d\s]+$/.test(expr)) return null;
+  const tokens = expr.match(/\d*\.?\d+|[-+*/()]/g);
+  if (!tokens) return null;
+  const prec = { "+": 1, "-": 1, "*": 2, "/": 2 };
+  const output = [];
+  const ops = [];
+  let prev = null;
+  for (const token of tokens) {
+    if (/^\d*\.?\d+$/.test(token)) {
+      output.push(Number(token));
+    } else if (token === "(") {
+      ops.push(token);
+    } else if (token === ")") {
+      while (ops.length && ops[ops.length - 1] !== "(") output.push(ops.pop());
+      if (ops.pop() !== "(") return null;
+    } else {
+      // Treat a leading +/- (start, after "(", or after another operator) as unary.
+      if ((token === "-" || token === "+") && (prev === null || prev === "(" || prev in prec)) output.push(0);
+      while (ops.length && ops[ops.length - 1] !== "(" && prec[ops[ops.length - 1]] >= prec[token]) output.push(ops.pop());
+      ops.push(token);
+    }
+    prev = token;
+  }
+  while (ops.length) {
+    const op = ops.pop();
+    if (op === "(") return null;
+    output.push(op);
+  }
+  const stack = [];
+  for (const token of output) {
+    if (typeof token === "number") { stack.push(token); continue; }
+    const b = stack.pop();
+    const a = stack.pop();
+    if (a === undefined || b === undefined) return null;
+    stack.push(token === "+" ? a + b : token === "-" ? a - b : token === "*" ? a * b : b === 0 ? 0 : a / b);
+  }
+  const result = stack.pop();
+  return stack.length === 0 && Number.isFinite(result) ? result : null;
+}
+
 function downloadWorkbook(fileName, workbook, entryGuide) {
   const XLSX = window.XLSX;
   if (!XLSX) throw new Error("Excel engine is not loaded.");
@@ -6761,12 +6846,16 @@ function downloadWorkbook(fileName, workbook, entryGuide) {
     // are written as real Excel formulas below, everything else stays text.
     const valueRows = cellRows.map((row) => row.map((cell) => (isWorkpaperFormula(cell) ? "" : coerceWorkpaperCell(cell))));
     const ws = XLSX.utils.aoa_to_sheet(valueRows);
-    // Inject real Excel formulas wherever the AI returned an "=..." cell.
+    // Inject real Excel formulas wherever the AI returned an "=..." cell. Process top-to-bottom
+    // so a total that references an earlier subtotal sees its already-computed value. We must set
+    // a cached value (v) too, otherwise SheetJS drops the cell when writing and the total vanishes.
     cellRows.forEach((row, r) => row.forEach((cell, c) => {
       if (!isWorkpaperFormula(cell)) return;
       const address = XLSX.utils.encode_cell({ r, c });
       const prev = ws[address] || {};
-      ws[address] = { ...prev, t: "n", f: String(cell).trim().replace(/^=/, "") };
+      const formula = String(cell).trim().replace(/^=/, "");
+      const computed = evaluateWorkpaperFormula(formula, ws);
+      ws[address] = { ...prev, t: "n", f: formula, v: computed === null ? 0 : computed };
     }));
     if (Array.isArray(sheet.merges) && sheet.merges.length) ws["!merges"] = sheet.merges;
     ws["!cols"] = Array.isArray(sheet.cols) && sheet.cols.length ? sheet.cols : inferWorksheetColumns(valueRows);
