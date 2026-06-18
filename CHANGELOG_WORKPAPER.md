@@ -94,3 +94,20 @@ Nota sobre el error 504: es un timeout del proxy del VPS (nginx) cuando la gener
 tarda más que `proxy_read_timeout`. Es intermitente y no se arregla desde el código; el
 fix durable es subir ese timeout en el VPS (a ~300s). Este fix de parseo asegura que
 cuando la llamada SÍ completa, se entregue el workbook real en vez del fallback.
+
+---
+
+## 2026-06-18 — Feature: botón "Add from Google Drive" en todas las secciones de carga
+
+Antes solo el tab Deliverable mostraba Drive funcionando. Causa: los botones genéricos
+(`.drive-upload-btn`) estaban ocultos hasta `status.connected`, y faltaban 3 zonas activas.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | app.js | (1) Registradas 3 zonas nuevas en `setupDriveUploadButtons`: `presentation`, `calculation`, `estimated-reviewed-workbook`. (2) Entradas en `DRIVE_ZONE_CONFIG` y ramas en `addFilesToZone` para esas zonas. (3) `refreshDriveStatus` ahora muestra los botones cuando Drive está **enabled** (no solo connected). (4) `openDriveForZone` dispara la conexión si no está conectado. | `git revert <hash>` |
+| _(pendiente)_ | index.html | `data-drive-button-host` en la caja de reviewed-workbook para ubicar bien el botón. | (incluido en el mismo commit) |
+
+Zonas que ya tenían Drive (sin cambios): review, prep-package, knowledge, examples, notice,
+notice-prior-return, diagnostics, estimated (zonas principales), deliverable.
+Inputs legacy/ocultos sin handler (no se tocan): taxReturns/workpapers/documents,
+prepPriorWorkpaper/prepFinancialReports, organizerPriorReturn.

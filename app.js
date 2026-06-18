@@ -3340,6 +3340,9 @@ const DRIVE_ZONE_CONFIG = {
   "notice-prior-return": { title: "Select Prior Return", subtitle: "Select the prior-year return for context", allowedTypes: ["pdf", "docx"], multiSelect: false },
   "diagnostics-screenshot": { title: "Select Screenshot or Error File", subtitle: "Select an image, PDF, or text file with e-file errors", allowedTypes: ["image", "pdf", "txt"], multiSelect: false },
   "organizer-prior-return": { title: "Select Prior Year Return", subtitle: "Select the prior-year return to personalize the organizer", allowedTypes: ["pdf", "docx", "xlsx", "txt"], multiSelect: false },
+  "presentation": { title: "Select Presentation Source Files", subtitle: "Select source materials for the presentation", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
+  "calculation": { title: "Select Calculation Files", subtitle: "Select 1099s, W-2s, statements, financial reports, or PDFs", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
+  "estimated-reviewed-workbook": { title: "Select Reviewed Workbook", subtitle: "Select the reviewed Excel workpaper to attach to the email", allowedTypes: ["xlsx"], multiSelect: false },
 };
 
 function setupDriveUploadButtons() {
@@ -3350,6 +3353,9 @@ function setupDriveUploadButtons() {
   addDriveButtonAfterInput("noticeFile", "notice-document");
   addDriveButtonAfterInput("noticePriorReturn", "notice-prior-return");
   addDriveButtonAfterInput("diagnosticsImage", "diagnostics-screenshot");
+  addDriveButtonAfterInput("presentationFiles", "presentation");
+  addDriveButtonAfterInput("calculationFiles", "calculation");
+  addDriveButtonAfterInput("estReviewedWorkbookFile", "estimated-reviewed-workbook");
 }
 
 function addDriveButtonAfterInput(inputId, zoneId) {
@@ -3381,6 +3387,11 @@ function setupDrivePickerDomEvents() {
 function openDriveForZone(zoneId) {
   const config = DRIVE_ZONE_CONFIG[zoneId];
   if (!config) return;
+  if (!window.driveState?.connected) {
+    showToast("Connect Google Drive to load files.", "info");
+    connectGoogleDrive();
+    return;
+  }
   DrivePicker.open({
     ...config,
     onFilesSelected: (files) => addFilesToZone(zoneId, files),
@@ -3396,8 +3407,11 @@ async function refreshDriveStatus() {
   try {
     const status = await fetch(`${API_BASE_URL}/api/drive/status`).then((response) => response.json());
     window.driveState = status;
+    // Show the "Add from Google Drive" buttons whenever the Drive feature is enabled, even if
+    // the user has not connected yet — clicking one will prompt the connection. This makes the
+    // button appear on every upload section, not only where the user happens to be connected.
     document.querySelectorAll(".drive-upload-btn").forEach((button) => {
-      button.style.display = status.connected ? "inline-flex" : "none";
+      button.style.display = status.enabled ? "inline-flex" : "none";
     });
     if (els.deliverableDriveConnectPrompt) els.deliverableDriveConnectPrompt.hidden = Boolean(status.connected);
     if (els.deliverableSelectFolder) els.deliverableSelectFolder.hidden = !status.connected;
@@ -3440,6 +3454,18 @@ function addFilesToZone(zoneId, driveFiles) {
     renderOrganizerFiles();
   } else if (zoneId === "knowledge-base" || zoneId === "review-examples") {
     uploadDriveContextFiles(zoneId === "knowledge-base" ? "knowledge_base" : "review_examples", files);
+  } else if (zoneId === "presentation") {
+    presentationState.files = mergeFiles(presentationState.files, files);
+    renderPresentationFiles();
+  } else if (zoneId === "calculation") {
+    calculationState.files = mergeFiles(calculationState.files, files);
+    renderCalculationFiles();
+  } else if (zoneId === "estimated-reviewed-workbook") {
+    const file = files[0];
+    if (file) {
+      estimatedTaxesState.reviewedWorkpaper = file;
+      if (els.estReviewedWorkbookStatus) els.estReviewedWorkbookStatus.textContent = `${displayFileName(file)} ready to attach.`;
+    }
   }
   showToast(`${files.length} file${files.length === 1 ? "" : "s"} added from Google Drive.`, "success");
 }
