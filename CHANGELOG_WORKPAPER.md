@@ -71,3 +71,26 @@ truncamiento, celdas de texto sin fórmulas).
 Los fixes de datos (datos 2025 correctos, reconciliación de año, fallback seguro,
 diagnóstico engine v4) **se mantienen intactos**. La feature de fórmulas queda en el
 historial (`bf8d77d`, `d8956e4`) por si se retoma más adelante con otro enfoque.
+
+---
+
+## 2026-06-18 — Fix: generación inestable (a veces "0 hojas" → fallback en blanco)
+
+Síntoma (output 22): con el mismo código que generó bien el output 19, a veces Claude
+devolvía "AI returned 0 sheet(s); TEMPLATE FALLBACK USED" (esqueleto en blanco con
+advertencia), aunque la respuesta NO estaba truncada.
+
+Causa: `parseClaudeJson` agarraba el PRIMER bloque JSON que parseaba. Cuando Claude
+escribe un fragmento de ejemplo (o el thinking filtra uno) antes del workbook real, ese
+fragmento ganaba → 0 hojas → fallback.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js | `parseWorkpaperJson`: entre todos los bloques JSON parseables, elige el que realmente contiene hojas usables (no el primer fragmento). Usado en `handlePrepareWorkpaper`. | `git revert <hash>` |
+
+Verificado: con un fragmento señuelo antes del workbook real, ahora elige el workbook real.
+
+Nota sobre el error 504: es un timeout del proxy del VPS (nginx) cuando la generación
+tarda más que `proxy_read_timeout`. Es intermitente y no se arregla desde el código; el
+fix durable es subir ese timeout en el VPS (a ~300s). Este fix de parseo asegura que
+cuando la llamada SÍ completa, se entregue el workbook real en vez del fallback.

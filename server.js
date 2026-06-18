@@ -8017,7 +8017,7 @@ async function handlePrepareWorkpaper(req, res) {
   logClaudeCost(req, result, "preparation", "preparation", payload, startedAt);
 
   const raw = extractText(result.data);
-  const parsed = parseClaudeJson(raw);
+  const parsed = parseWorkpaperJson(raw);
   if (!parsed) {
     sendJson(res, 502, {
       error: "Claude did not return valid workbook JSON. No Excel file was generated because raw JSON/text is not an acceptable workpaper output.",
@@ -9262,6 +9262,42 @@ function parseClaudeJson(raw) {
     }
   }
   return null;
+}
+
+// Like parseClaudeJson, but when the response contains several JSON-ish blocks (common when
+// the model adds a small example, or when thinking text leaks a fragment), prefer the block
+// that actually contains usable workbook sheets instead of just the first object that parses.
+// This is what was causing intermittent "0 sheets -> template fallback" results: a small
+// fragment parsed first and won, so the real workbook was ignored.
+function parseWorkpaperJson(raw) {
+  const text = String(raw || "").trim();
+  const rawCandidates = [];
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) rawCandidates.push(match[1]);
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) rawCandidates.push(text.slice(firstBrace, lastBrace + 1));
+  rawCandidates.push(...extractBalancedJsonObjects(text));
+  rawCandidates.push(text);
+
+  const parsedObjects = [];
+  for (const candidate of rawCandidates) {
+    const cleaned = String(candidate || "").trim().replace(/^json\s*/i, "").replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    if (!cleaned) continue;
+    let obj = null;
+    try { obj = JSON.parse(cleaned); } catch (_) {
+      try { obj = JSON.parse(repairJsonTextForParsing(cleaned)); } catch (_) {}
+    }
+    if (obj && typeof obj === "object") parsedObjects.push(obj);
+  }
+  // Prefer a parsed object that yields usable sheets.
+  for (const obj of parsedObjects) {
+    try {
+      const candidate = workbookCandidateFromParsed(obj);
+      if (Array.isArray(candidate.sheets) && candidate.sheets.some((sheet) => normalizeSheetRows(sheet).length)) return obj;
+    } catch (_) {}
+  }
+  // Otherwise fall back to the first parseable object, then the shared parser.
+  return parsedObjects[0] || parseClaudeJson(raw);
 }
 
 function repairJsonTextForParsing(text) {
