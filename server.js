@@ -7998,10 +7998,15 @@ async function handlePrepareWorkpaper(req, res) {
       "ENTRY GUIDE PROPERTY FORMAT: inside the workbook JSON, the entryGuide property must use this schema:"
     );
   const startedAt = Date.now();
+  // A full multi-sheet workpaper plus the embedded data-entry guide does not fit in
+  // 10k output tokens (20k max minus 10k thinking). When it overflows, Claude's JSON is
+  // truncated, no usable sheets parse, and normalizeWorkbook silently falls back to
+  // copying the prior-year template — which is why prior-year numbers were appearing.
+  // Give the response far more room and a smaller thinking budget.
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
-    maxTokens: 20000,
+    maxTokens: 48000,
     models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
-    thinking: { type: "enabled", budget_tokens: 10000 },
+    thinking: { type: "enabled", budget_tokens: 6000 },
     webSearch: false,
     system: [{
       type: "text",
@@ -8023,6 +8028,32 @@ async function handlePrepareWorkpaper(req, res) {
   let workbook;
   try {
     workbook = normalizeWorkbook(parsed, raw, payload);
+
+    // Diagnostics: surface, inside the workbook itself, exactly which code path ran.
+    // This makes it possible to confirm a deploy is live and to see whether the AI
+    // actually produced the workbook or the safety fallback had to be used.
+    const wasTruncated = result.data?.stop_reason === "max_tokens";
+    const claudeSheetCount = Array.isArray(parsed?.sheets) ? parsed.sheets.length : 0;
+    const roleSummary = (payload.files || [])
+      .map((f) => `${f.name} -> ${f.preparationRole || "?"}`)
+      .join("; ");
+    const diagnostics = [
+      `[workpaper engine v4 | ${new Date().toISOString()}]`,
+      `Preparation year: ${payload.metadata?.taxYear || "(none)"}`,
+      `AI returned ${claudeSheetCount} sheet(s); ${workbook.usedTemplateFallback ? "TEMPLATE FALLBACK USED (AI output unusable)" : "AI-generated workbook used"}.`,
+      wasTruncated ? "WARNING: AI response hit the max_tokens limit and was truncated. Re-run; if it persists the workbook is too large." : "AI response completed (not truncated).",
+      `File roles: ${roleSummary || "(none)"}`,
+    ];
+    if (workbook.usedTemplateFallback) {
+      diagnostics.push("ACTION REQUIRED: The AI did not return a usable workbook, so only the empty prior-year structure was provided (all amounts blank). Re-run the preparation to get populated current-year numbers.");
+    }
+    workbook.aiNotes = [...diagnostics, ...(Array.isArray(workbook.aiNotes) ? workbook.aiNotes : [])];
+    // Refresh the AI Notes sheet so the diagnostics are visible in the downloaded file.
+    const aiNotesSheet = workbook.sheets.find((s) => String(s.name || "").trim().toLowerCase() === "ai notes");
+    if (aiNotesSheet) {
+      aiNotesSheet.rows = [["AI Notes"], ...workbook.aiNotes.map((note) => [String(note)])];
+    }
+
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
     appendEntryGuideSheetToWorkbook(workbook, entryGuide);
 
@@ -11373,15 +11404,22 @@ function normalizeWorkbook(parsed, raw, payload = {}) {
     styles: normalizeSheetStyles(sheet.styles),
   })).filter((sheet) => sheet.rows.length);
   const aiNotes = Array.isArray(workbook.aiNotes) ? workbook.aiNotes.map((note) => String(note || "")) : [];
+  let usedTemplateFallback = false;
   if (!normalizedSheets.length) {
     const templateWorkbook = workbookTemplateFromPayload(payload);
     if (templateWorkbook) {
+      usedTemplateFallback = true;
+      // CRITICAL: Claude returned no usable sheets, so we are forced to fall back to the
+      // uploaded prior-year template. We must NOT copy prior-year dollar amounts into this
+      // workbook (that would present last year's numbers as if they were current year).
+      // Strip every amount, leave the structure/labels, and mark each sheet as incomplete.
+      const warningRow = ["⚠ AI GENERATION INCOMPLETE — STRUCTURE ONLY. All amounts were left blank because the AI did not return a complete workbook. Re-run the preparation. Do NOT file these numbers."];
       normalizedSheets.push(...templateWorkbook.sheets.map((sheet, index) => ({
         name: String(sheet.name || `Sheet ${index + 1}`).slice(0, 31),
-        rows: normalizeRows(sheet.rows),
-        merges: Array.isArray(sheet.merges) ? sheet.merges : [],
+        rows: [warningRow, ...stripAmountsFromRows(normalizeRows(sheet.rows))],
+        merges: [],
         cols: Array.isArray(sheet.cols) ? sheet.cols : [],
-        styles: normalizeSheetStyles(sheet.styles),
+        styles: [],
       })).filter((sheet) => sheet.rows.length));
     }
   }
@@ -11394,7 +11432,7 @@ function normalizeWorkbook(parsed, raw, payload = {}) {
       rows: [["AI Notes"], ...(aiNotes.length ? aiNotes : ["Workbook generated from source files. Review any blank cells marked unable to verify."]).map((note) => [note])],
     });
   }
-  return { sheets: normalizedSheets, aiNotes };
+  return { sheets: normalizedSheets, aiNotes, usedTemplateFallback };
 }
 
 function workbookTemplateFromPayload(payload = {}) {
