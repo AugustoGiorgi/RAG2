@@ -104,8 +104,8 @@ Antes solo el tab Deliverable mostraba Drive funcionando. Causa: los botones gen
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | app.js | (1) Registradas 3 zonas nuevas en `setupDriveUploadButtons`: `presentation`, `calculation`, `estimated-reviewed-workbook`. (2) Entradas en `DRIVE_ZONE_CONFIG` y ramas en `addFilesToZone` para esas zonas. (3) `refreshDriveStatus` ahora muestra los botones cuando Drive está **enabled** (no solo connected). (4) `openDriveForZone` dispara la conexión si no está conectado. | `git revert <hash>` |
-| _(pendiente)_ | index.html | `data-drive-button-host` en la caja de reviewed-workbook para ubicar bien el botón. | (incluido en el mismo commit) |
+| `3c07119` | app.js | (1) Registradas 3 zonas nuevas en `setupDriveUploadButtons`: `presentation`, `calculation`, `estimated-reviewed-workbook`. (2) Entradas en `DRIVE_ZONE_CONFIG` y ramas en `addFilesToZone` para esas zonas. (3) `refreshDriveStatus` ahora muestra los botones cuando Drive está **enabled** (no solo connected). (4) `openDriveForZone` dispara la conexión si no está conectado. | `git revert 3c07119` |
+| `3c07119` | index.html | `data-drive-button-host` en la caja de reviewed-workbook para ubicar bien el botón. | (incluido en el mismo commit) |
 
 Zonas que ya tenían Drive (sin cambios): review, prep-package, knowledge, examples, notice,
 notice-prior-return, diagnostics, estimated (zonas principales), deliverable.
