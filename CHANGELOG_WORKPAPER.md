@@ -159,4 +159,4 @@ nunca decir que un archivo es ilegible si está adjunto.
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js | `buildUploadedFileContext` recolecta `documents` (PDFs base64); `buildCalculationContent` emite bloques `document`; prompt de calculation instruye a leer adjuntos directamente. | `git revert <hash>` |
+| `f24ac78` | server.js | `buildUploadedFileContext` recolecta `documents` (PDFs base64); `buildCalculationContent` emite bloques `document`; prompt de calculation instruye a leer adjuntos directamente. | `git revert f24ac78` |
