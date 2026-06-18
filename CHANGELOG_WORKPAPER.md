@@ -141,5 +141,5 @@ Review Notes / Specific Instructions".
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js | Schema de review: nuevo campo `instructionResponses` ([{prompt, response, status}]). Prompt: instruye a Claude a responder cada nota/fact. `normalizeDirectReview` normaliza el campo. | `git revert <hash>` |
-| _(pendiente)_ | app.js | `normalizeReviewForExport` incluye `instructionResponses` (+ helper `normalizeInstructionResponses`). `toCleanWrittenReview` renderiza la sección "RESPONSES TO INSTRUCTIONS & CLIENT FACTS" debajo del summary (aparece en memo en pantalla, .txt y .docx). | (mismo commit) |
+| `d27c2b5` | server.js | Schema de review: nuevo campo `instructionResponses` ([{prompt, response, status}]). Prompt: instruye a Claude a responder cada nota/fact. `normalizeDirectReview` normaliza el campo. | `git revert d27c2b5` |
+| `d27c2b5` | app.js | `normalizeReviewForExport` incluye `instructionResponses` (+ helper `normalizeInstructionResponses`). `toCleanWrittenReview` renderiza la sección "RESPONSES TO INSTRUCTIONS & CLIENT FACTS" debajo del summary (aparece en memo en pantalla, .txt y .docx). | (mismo commit) |
