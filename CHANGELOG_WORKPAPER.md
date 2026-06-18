@@ -130,3 +130,16 @@ JSON final normalmente. Verificado con un round-trip HTTP real.
 |---|---|---|---|
 | `8c08346` | server.js | `startHeartbeatResponse` / `endHeartbeatResponse`; aplicados a `handleReview` y `handlePrepareWorkpaper` (envuelven la llamada larga a Claude). | `git revert 8c08346` |
 | `8c08346` | app.js | Como el heartbeat siempre responde 200, `requestClaudeReview` y `runPreparerWorkflow` ahora detectan `error` en el body aunque el status sea 200. | (mismo commit) |
+
+---
+
+## 2026-06-18 — Feature: sección de respuestas a Instructions / Client Facts en la review
+
+Pedido: al inicio de la review, debajo de "ISSUES & ITEMS TO REVIEW SUMMARY", una sección
+que responda las preguntas/afirmaciones de "Client Facts / Expected Information" y "User
+Review Notes / Specific Instructions".
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js | Schema de review: nuevo campo `instructionResponses` ([{prompt, response, status}]). Prompt: instruye a Claude a responder cada nota/fact. `normalizeDirectReview` normaliza el campo. | `git revert <hash>` |
+| _(pendiente)_ | app.js | `normalizeReviewForExport` incluye `instructionResponses` (+ helper `normalizeInstructionResponses`). `toCleanWrittenReview` renderiza la sección "RESPONSES TO INSTRUCTIONS & CLIENT FACTS" debajo del summary (aparece en memo en pantalla, .txt y .docx). | (mismo commit) |

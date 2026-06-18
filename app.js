@@ -8156,6 +8156,7 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
     executiveSummary: safeText(source.executiveSummary || source.summary),
     documentsRead: normalizeDocumentsRead(source.documentsRead || source.documentSummary || source.documentsReviewed),
     feedbackApplied: normalizeReviewStringArray(source.feedbackApplied || source.firmFeedbackApplied),
+    instructionResponses: normalizeInstructionResponses(source.instructionResponses),
     issues,
     checkboxReview: normalizeCheckboxReview(source.checkboxReview),
     tieOutResults: normalizeTieOutResults(source.tieOutResults || source.tieOuts || source.numericTieOut),
@@ -8171,6 +8172,18 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
     structuringFailed: Boolean(source.structuringFailed),
     rawReviewOutput: safeText(source.rawReviewOutput),
   };
+}
+
+function normalizeInstructionResponses(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    return {
+      prompt: safeText(item.prompt || item.question || item.fact || item.instruction || item.item),
+      response: safeText(item.response || item.answer || item.finding),
+      status: safeText(item.status).toUpperCase(),
+    };
+  }).filter((item) => item && (item.prompt || item.response));
 }
 
 function normalizeReviewIssueForExport(issue = {}) {
@@ -8920,6 +8933,19 @@ function toCleanWrittenReview(response, metadata = {}) {
     ...(() => {
       const summaryLines = buildIssueSummaryLines(structured.issues);
       return summaryLines.length ? summaryLines.map((line) => `- ${line}`) : ["- No issues identified in the structured review."];
+    })(),
+    "",
+    "RESPONSES TO INSTRUCTIONS & CLIENT FACTS",
+    "----------------------------------------",
+    ...(() => {
+      const responses = Array.isArray(structured.instructionResponses) ? structured.instructionResponses : [];
+      if (!responses.length) return ["- No specific instructions or client facts were provided to address."];
+      return responses.flatMap((item) => {
+        const lines = [`- ${safeText(item.prompt) || "Instruction"}`];
+        lines.push(`  Response: ${safeText(item.response) || "No response provided."}`);
+        if (safeText(item.status)) lines.push(`  Status: ${safeText(item.status)}`);
+        return lines;
+      });
     })(),
     "",
     "ISSUES & ITEMS TO REVIEW",

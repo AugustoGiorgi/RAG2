@@ -7109,6 +7109,15 @@ function normalizeDirectReview(review, reviewRequest) {
     normalized.documentsRead = reviewRequest.documentsRead.map((doc) => ({ filename: doc.name, role: doc.role, summary: "Included in the review package." }));
   }
   if (!Array.isArray(normalized.feedbackApplied)) normalized.feedbackApplied = reviewRequest.feedbackApplied;
+  normalized.instructionResponses = Array.isArray(normalized.instructionResponses)
+    ? normalized.instructionResponses
+        .map((item) => ({
+          prompt: String(item?.prompt || item?.question || item?.fact || item?.instruction || "").trim(),
+          response: String(item?.response || item?.answer || item?.finding || "").trim(),
+          status: String(item?.status || "ANSWERED").toUpperCase(),
+        }))
+        .filter((item) => item.prompt || item.response)
+    : [];
   return normalized;
 }
 
@@ -9431,7 +9440,7 @@ async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
 }
 
 function reviewJsonSchemaText() {
-  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
+  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"instructionResponses":[{"prompt":"string","response":"string","status":"CONFIRMED|DISCREPANCY|UNABLE_TO_VERIFY|ANSWERED"}],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
 }
 
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
@@ -9887,6 +9896,8 @@ function buildUserPrompt(payload, context = { knowledgeBase: [], reviewExamples:
     clientFacts,
     "",
     "Compare the client facts above against all uploaded documents. If a document contains a different SSN, EIN, name, address, partner/shareholder detail, tax year, state, or other expected value, flag it as an issue with evidence and recommended action.",
+    "",
+    "REQUIRED - instructionResponses: Populate the instructionResponses array with one entry for EACH distinct question, instruction, or statement found in the User Review Notes / Specific Instructions and in the Client Facts / Expected Information above. For each: 'prompt' = the user's question or statement (quote or closely paraphrase it); 'response' = a direct, specific answer grounded in the uploaded documents (answer the question, or confirm/refute the fact citing the actual value found and where); 'status' = CONFIRMED when a fact matches the documents, DISCREPANCY when it differs (also raise it as an issue), UNABLE_TO_VERIFY when it cannot be found, or ANSWERED for instructions/questions that are not facts to confirm. If BOTH inputs are empty or the default placeholder text, return an empty instructionResponses array.",
     "",
     `Client name: ${clientName}`,
     `Entity name: ${metadata.entityName || "Not specified"}`,
