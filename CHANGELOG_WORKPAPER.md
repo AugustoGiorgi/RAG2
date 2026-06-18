@@ -111,3 +111,22 @@ Zonas que ya tenían Drive (sin cambios): review, prep-package, knowledge, examp
 notice-prior-return, diagnostics, estimated (zonas principales), deliverable.
 Inputs legacy/ocultos sin handler (no se tocan): taxReturns/workpapers/documents,
 prepPriorWorkpaper/prepFinancialReports, organizerPriorReturn.
+
+---
+
+## 2026-06-18 — Fix: error 504 en Review (y Workpaper) por timeout del proxy
+
+Síntoma: el tab Review fallaba con "Backend returned 504" (también el workpaper antes).
+Causa: el proxy del VPS (nginx) corta la conexión si la generación de Claude tarda más
+que `proxy_read_timeout` (~60s). Reviews/workpapers grandes tardan más → 504. No se puede
+arreglar desde el VPS (sin acceso).
+
+Fix (heartbeat / keep-alive, sin tocar el VPS): el server manda 200 + headers enseguida y
+escribe un espacio cada 15s mientras Claude trabaja, con `X-Accel-Buffering: no` para que
+nginx no buffere. `JSON.parse` ignora los espacios iniciales, así que el cliente parsea el
+JSON final normalmente. Verificado con un round-trip HTTP real.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js | `startHeartbeatResponse` / `endHeartbeatResponse`; aplicados a `handleReview` y `handlePrepareWorkpaper` (envuelven la llamada larga a Claude). | `git revert <hash>` |
+| _(pendiente)_ | app.js | Como el heartbeat siempre responde 200, `requestClaudeReview` y `runPreparerWorkflow` ahora detectan `error` en el body aunque el status sea 200. | (mismo commit) |

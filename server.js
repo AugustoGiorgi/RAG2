@@ -6814,13 +6814,15 @@ async function handleReview(req, res) {
     payload.files = annotateReviewFileRoles(payload.files || [], payload);
     const reviewRequest = buildDirectReviewRequest(payload, req);
     const startedAt = Date.now();
+    // Keep the proxy connection alive during the long model call to avoid a 504.
+    startHeartbeatResponse(res);
     const result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
       system: reviewRequest.systemPrompt,
       messages: [{ role: "user", content: reviewRequest.userContent }],
     }, reviewModelCandidates());
     if (!result.ok) {
-      sendJson(res, Number(result.status) || 502, { error: result.error || "Claude API request failed." });
+      endHeartbeatResponse(res, { error: result.error || "Claude API request failed." });
       return;
     }
     logClaudeCost(req, result, "review", "review", payload, startedAt);
@@ -6852,7 +6854,7 @@ async function handleReview(req, res) {
 
     const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
 
-    sendJson(res, 200, {
+    endHeartbeatResponse(res, {
       ok: true,
       review,
       structured: review,
@@ -6869,9 +6871,9 @@ async function handleReview(req, res) {
     });
   } catch (error) {
     console.error("[Review] route failed:", error);
-    sendJson(res, Number(error.statusCode) || 500, {
-      error: error.expose ? error.message : `Review route failed: ${error.message || "Unexpected server error."}`,
-    });
+    const message = error.expose ? error.message : `Review route failed: ${error.message || "Unexpected server error."}`;
+    if (res._heartbeatActive) endHeartbeatResponse(res, { error: message });
+    else sendJson(res, Number(error.statusCode) || 500, { error: message });
   }
 }
 
@@ -7998,6 +8000,8 @@ async function handlePrepareWorkpaper(req, res) {
       "ENTRY GUIDE PROPERTY FORMAT: inside the workbook JSON, the entryGuide property must use this schema:"
     );
   const startedAt = Date.now();
+  // Keep the proxy connection alive during the long model call to avoid a 504.
+  startHeartbeatResponse(res);
   // A full multi-sheet workpaper plus the embedded data-entry guide does not fit in
   // 10k output tokens (20k max minus 10k thinking). When it overflows, Claude's JSON is
   // truncated, no usable sheets parse, and normalizeWorkbook silently falls back to
@@ -8013,13 +8017,13 @@ async function handlePrepareWorkpaper(req, res) {
       text: withDatabaseContext(`${softwareContext}\n\n${entryGuideSystem}\n\nYou create Excel-ready tax workpapers for preparers from uploaded source files and user instructions. Be precise, do not invent values, and return only valid JSON for workbook generation. Adapt all guidance, AI Notes, and entry-related instructions to the selected tax software. Keep the workbook complete but compact enough to fit in one response: include the needed sheets and rows, avoid narrative prose, and do not repeat source text inside cells unless it belongs in the workpaper. The data entry guide must be generated in this same response so the app does not make a second Claude call.\n\nABSOLUTE PREPARATION RULES:\n- Files labeled current_financials are the only source of truth for current-year P&L, balance sheet, and GL amounts.\n- Files labeled prior_workpaper provide structure, sheet order, labels, prior adjustment categories, and formatting only. Prior-year amounts are reference only and must never be copied as current-year amounts.\n- Files labeled prior_return provide beginning balances, carryforwards, depreciation/tax basis support, Schedule A/Schedule 2 style support where relevant, and prior tax positions only.\n- Replace every prior-year amount when producing the current-year workpaper. If a current-year amount is not found, use 0 or blank and flag it; never silently carry forward a prior-year value.\n- Book-to-tax reconciliation starts from current-year net income per books from current_financials, then applies supported tax adjustments. M-1/M-3, taxable income, M-2, and retained earnings must foot or clearly flag the unreconciled difference.\n- The Data Entry Guide must include tie-out checks against current-year P&L, current-year balance sheet, and book-to-tax reconciliation.`, payload, "preparation"),
     }],
   });
-  if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
+  if (!result.ok) { endHeartbeatResponse(res, { error: result.error }); return; }
   logClaudeCost(req, result, "preparation", "preparation", payload, startedAt);
 
   const raw = extractText(result.data);
   const parsed = parseWorkpaperJson(raw);
   if (!parsed) {
-    sendJson(res, 502, {
+    endHeartbeatResponse(res, {
       error: "Claude did not return valid workbook JSON. No Excel file was generated because raw JSON/text is not an acceptable workpaper output.",
       raw,
     });
@@ -8068,7 +8072,7 @@ async function handlePrepareWorkpaper(req, res) {
     const nec_1099s  = normalize1099s(parsed.nec_1099s,  ["tsj","payer","ein","box1","box4"]);
     const misc_1099s = normalize1099s(parsed.misc_1099s, ["tsj","payer","ein","box3","box7","box4"]);
 
-    sendJson(res, 200, {
+    endHeartbeatResponse(res, {
       workbook,
       entryGuide,
       ...(transactions8949.length ? { transactions8949 } : {}),
@@ -8086,7 +8090,7 @@ async function handlePrepareWorkpaper(req, res) {
       costEstimate: estimateClaudeCost(result.data.usage || null),
     });
   } catch (error) {
-    sendJson(res, 502, {
+    endHeartbeatResponse(res, {
       error: error.message || "Claude did not return usable workbook sheets. No Excel file was generated.",
       raw,
     });
@@ -11977,6 +11981,34 @@ function sendJson(res, statusCode, payload) {
   };
   res.writeHead(statusCode, headers);
   res.end(JSON.stringify(payload));
+}
+
+// Long AI calls (review, workpaper) can run longer than the reverse proxy's read timeout,
+// which produces a 504 even though the backend is still working. To keep the proxy
+// connection alive we send the 200 + headers immediately and write a single space every
+// few seconds while the work runs. JSON.parse ignores the leading whitespace, so the
+// client still parses the final JSON normally. "X-Accel-Buffering: no" stops nginx from
+// buffering the response so the heartbeat bytes actually reach the proxy.
+function startHeartbeatResponse(res) {
+  if (res.headersSent || res._heartbeatActive) return;
+  res.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    ...corsHeaders(res),
+  });
+  try { res.write(" "); } catch (_) {}
+  res._heartbeatActive = true;
+  res._heartbeatTimer = setInterval(() => {
+    try { res.write(" "); } catch (_) {}
+  }, 15000);
+  res._heartbeatTimer.unref?.();
+}
+
+function endHeartbeatResponse(res, payload) {
+  if (res._heartbeatTimer) { clearInterval(res._heartbeatTimer); res._heartbeatTimer = null; }
+  res._heartbeatActive = false;
+  try { res.end(JSON.stringify(payload)); } catch (_) {}
 }
 
 function sendCorsPreflight(res) {

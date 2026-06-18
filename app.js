@@ -4282,6 +4282,9 @@ async function requestClaudeReview(payload) {
 
   const responsePayload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
+  // The backend uses a keep-alive heartbeat (always HTTP 200), so an error is reported in
+  // the body even on a 200 response.
+  if (responsePayload.error) throw new Error(responsePayload.error);
   return responsePayload;
 }
 
@@ -5697,6 +5700,9 @@ async function runPreparerWorkflow() {
     }));
     const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(responsePayload.error || `Backend returned ${response.status}`);
+    // The backend uses a keep-alive heartbeat (always HTTP 200), so a failure is reported in
+    // the body even on a 200 response.
+    if (responsePayload.error && !responsePayload.workbook) throw new Error(responsePayload.error);
     lastPreparerOutput = {
       response:         responsePayload,
       payload,
