@@ -6710,6 +6710,39 @@ function workbookPreviewText(workbook) {
   }).join("\n\n");
 }
 
+// True when a cell holds an Excel formula the AI returned as text, e.g. "=SUM(B6:B12)".
+function isWorkpaperFormula(value) {
+  return typeof value === "string" && value.trim().length > 1 && value.trim().charAt(0) === "=";
+}
+
+// Parses a plain monetary/numeric cell into a JS number, or null if it is not one.
+// Anything with letters, "%", or "/" (dates) is left alone so labels are never mangled.
+// Handles "$1,234.56", "(53,732)" (parentheses = negative), "-6,410.66", "125".
+function parseWorkpaperAmount(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const s = String(value == null ? "" : value).trim();
+  if (!s) return null;
+  if (/[a-zA-Z%/]/.test(s)) return null;
+  if (!/\d/.test(s)) return null;
+  let str = s.replace(/[$\s,]/g, "");
+  let negative = false;
+  if (/^\(.*\)$/.test(str)) { negative = true; str = str.slice(1, -1); }
+  if (str.charAt(0) === "-") { negative = true; str = str.slice(1); }
+  else if (str.charAt(0) === "+") { str = str.slice(1); }
+  if (!/^(\d+\.?\d*|\.\d+)$/.test(str)) return null;
+  const n = Number(str);
+  if (!Number.isFinite(n)) return null;
+  return negative ? -n : n;
+}
+
+// Returns a number for numeric cells (so Excel can compute on them) or sanitized text otherwise.
+function coerceWorkpaperCell(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return value;
+  const num = parseWorkpaperAmount(value);
+  return num === null ? sanitizeExcelCell(value) : num;
+}
+
 function downloadWorkbook(fileName, workbook, entryGuide) {
   const XLSX = window.XLSX;
   if (!XLSX) throw new Error("Excel engine is not loaded.");
@@ -6722,11 +6755,22 @@ function downloadWorkbook(fileName, workbook, entryGuide) {
   const normalizedSheets = sheets;
   normalizedSheets.forEach((sheet, index) => {
     const rows = Array.isArray(sheet.rows) && sheet.rows.length ? sheet.rows : [["No rows returned"]];
-    const normalizedRows = rows.map((row) => (Array.isArray(row) ? row : [row]).map(sanitizeExcelCell));
-    const ws = XLSX.utils.aoa_to_sheet(normalizedRows);
+    const cellRows = rows.map((row) => (Array.isArray(row) ? row : [row]));
+    // Build the value matrix: real numbers stay numeric (so the preparer can do math and
+    // formulas can reference them), formula strings ("=...") become a placeholder here and
+    // are written as real Excel formulas below, everything else stays text.
+    const valueRows = cellRows.map((row) => row.map((cell) => (isWorkpaperFormula(cell) ? "" : coerceWorkpaperCell(cell))));
+    const ws = XLSX.utils.aoa_to_sheet(valueRows);
+    // Inject real Excel formulas wherever the AI returned an "=..." cell.
+    cellRows.forEach((row, r) => row.forEach((cell, c) => {
+      if (!isWorkpaperFormula(cell)) return;
+      const address = XLSX.utils.encode_cell({ r, c });
+      const prev = ws[address] || {};
+      ws[address] = { ...prev, t: "n", f: String(cell).trim().replace(/^=/, "") };
+    }));
     if (Array.isArray(sheet.merges) && sheet.merges.length) ws["!merges"] = sheet.merges;
-    ws["!cols"] = Array.isArray(sheet.cols) && sheet.cols.length ? sheet.cols : inferWorksheetColumns(normalizedRows);
-    applyWorksheetStyles(ws, sheet, normalizedRows);
+    ws["!cols"] = Array.isArray(sheet.cols) && sheet.cols.length ? sheet.cols : inferWorksheetColumns(valueRows);
+    applyWorksheetStyles(ws, sheet, valueRows);
     XLSX.utils.book_append_sheet(wb, ws, safeSheetName(safeText(sheet.name) || `Sheet ${index + 1}`));
   });
   if (!normalizedSheets.some((sheet) => String(sheet.name || "").toLowerCase() === "ai notes")) {
