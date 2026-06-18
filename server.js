@@ -9934,10 +9934,23 @@ function buildPreparerContent(payload) {
   for (const file of payload.files || []) {
     if (!file.text) continue;
     const role = file.preparationRole || "supporting_document";
-    const workbookTemplates = [
+    let workbookTemplates = [
       file.workbookTemplate,
       ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : []),
     ].filter((template) => template?.sheets?.length);
+
+    // For prior-year workpapers we provide ONLY the empty structure (labels, sheet
+    // order, formatting) with every dollar amount blanked out. This is the key
+    // enforcement: if the prior-year numbers are not in the prompt, the model cannot
+    // copy them and is forced to fill the workpaper from the current-year financials.
+    // Labels, section names, adjustment categories, and notes are preserved.
+    let fileText = file.text;
+    if (role === "prior_workpaper") {
+      workbookTemplates = workbookTemplates.map(stripAmountsFromTemplate);
+      fileText = workbookTemplates.length
+        ? csvTextFromTemplates(workbookTemplates)
+        : stripFinancialAmountsFromText(file.text);
+    }
 
     // Role-specific header for the structured Excel data block — this is critical
     // because the prior header said "PRIOR-YEAR WORKBOOK TEMPLATE" for ALL files,
@@ -9946,7 +9959,7 @@ function buildPreparerContent(payload) {
     if (role === "current_financials") {
       structuredDataHeader = `=== STRUCTURED CURRENT-YEAR FINANCIAL DATA (${taxYearNum || "CURRENT YEAR"}) — SOURCE OF TRUTH FOR ALL CURRENT-YEAR AMOUNTS — USE THESE NUMBERS IN THE WORKPAPER ===`;
     } else if (role === "prior_workpaper") {
-      structuredDataHeader = `=== STRUCTURED PRIOR-YEAR WORKBOOK (${priorYearNum || "PRIOR YEAR"}) — USE STRUCTURE AND LABELS ONLY — DO NOT COPY THESE DOLLAR AMOUNTS INTO CURRENT-YEAR WORKPAPER ===`;
+      structuredDataHeader = `=== EMPTY PRIOR-YEAR WORKBOOK SKELETON (${priorYearNum || "PRIOR YEAR"}) — FORMAT/STRUCTURE/LABELS ONLY — ALL DOLLAR AMOUNTS HAVE BEEN REMOVED ON PURPOSE — FILL EVERY VALUE FROM THE CURRENT-YEAR FINANCIAL FILES ===`;
     } else if (role === "prior_return") {
       structuredDataHeader = `=== STRUCTURED PRIOR-YEAR TAX RETURN (${priorYearNum || "PRIOR YEAR"}) — USE ONLY FOR CARRYFORWARDS, BEGINNING BALANCES, AND DEPRECIATION BASIS ===`;
     } else {
@@ -9963,7 +9976,7 @@ function buildPreparerContent(payload) {
       if (role === "current_financials") {
         yearNote = `YEAR: ${taxYearNum} (CURRENT YEAR) — All dollar amounts in this file are ${taxYearNum} values. Use them as the authoritative source for the workpaper.`;
       } else if (role === "prior_workpaper") {
-        yearNote = `YEAR: ${priorYearNum || "PRIOR"} (PRIOR YEAR REFERENCE) — Do NOT use any dollar amounts from this file as ${taxYearNum} current-year values. Use only sheet names, row labels, section order, and formatting.`;
+        yearNote = `YEAR: ${priorYearNum || "PRIOR"} (PRIOR YEAR TEMPLATE — AMOUNTS REMOVED) — This file has had all dollar amounts intentionally stripped. Use it ONLY for sheet names, row labels, section order, adjustment categories, and formatting. Every number in the new ${taxYearNum} workpaper must be calculated from the current-year financial files, never carried over from prior year.`;
       } else if (role === "prior_return") {
         yearNote = `YEAR: ${priorYearNum || "PRIOR"} (PRIOR YEAR RETURN) — Dollar amounts are ${priorYearNum || "prior-year"} values. Use only for beginning balances, carryforwards, and depreciation basis.`;
       }
@@ -9976,13 +9989,69 @@ function buildPreparerContent(payload) {
         `ROLE: ${role}`,
         `ROLE PURPOSE: ${file.preparationRoleDescription || "Use only for directly supported values or context."}`,
         yearNote,
-        file.text,
+        fileText,
         templateBlock,
       ].filter(Boolean).join("\n\n"),
     });
   }
 
   return content;
+}
+
+// Returns true when a cell holds a pure financial amount / date / percentage
+// (digits plus only financial punctuation, no letters). Label cells that contain
+// letters — e.g. "Add: Meals 50%", "401(k) Safe Harbor", "January - December 2024"
+// — are NOT treated as amounts and are preserved.
+function isFinancialAmountCell(value) {
+  const s = String(value == null ? "" : value).trim();
+  if (!s) return false;
+  if (!/\d/.test(s)) return false;       // must contain a digit
+  if (/[a-zA-Z]/.test(s)) return false;  // any letter => it is a label, keep it
+  return /^[\d\s.,()\-$%/]+$/.test(s);   // only digits + financial/date punctuation => amount
+}
+
+function stripAmountsFromRows(rows) {
+  return (Array.isArray(rows) ? rows : []).map((row) =>
+    (Array.isArray(row) ? row : []).map((cell) => (isFinancialAmountCell(cell) ? "" : cell))
+  );
+}
+
+function stripAmountsFromTemplate(template) {
+  if (!template || !Array.isArray(template.sheets)) return template;
+  return {
+    ...template,
+    sheets: template.sheets.map((sheet) => ({
+      ...sheet,
+      rows: stripAmountsFromRows(sheet.rows),
+    })),
+  };
+}
+
+// Rebuild a clean, number-free CSV view from already-stripped templates so the
+// natural-language text the model reads also contains no copyable prior-year amounts.
+function csvTextFromTemplates(templates) {
+  return (Array.isArray(templates) ? templates : []).map((template) => {
+    if (!template || !Array.isArray(template.sheets)) return "";
+    return template.sheets.map((sheet) => {
+      const head = `--- Sheet: ${sheet.name || ""} ---`;
+      const body = (Array.isArray(sheet.rows) ? sheet.rows : []).map((row) =>
+        (Array.isArray(row) ? row : []).map((cell) => {
+          const s = String(cell == null ? "" : cell);
+          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        }).join(",")
+      ).join("\n");
+      return `${head}\n${body}`;
+    }).join("\n\n");
+  }).filter(Boolean).join("\n\n");
+}
+
+// Fallback for prior_workpaper files that have no structured template (e.g. a PDF).
+// Blanks standalone financial amounts in free text while leaving labels intact.
+function stripFinancialAmountsFromText(text) {
+  return String(text || "").replace(
+    /(^|[\s,;|(])\$?-?\(?\d[\d,]*(?:\.\d+)?\)?%?(?=$|[\s,;|)])/g,
+    (match, lead) => `${lead}`
+  );
 }
 
 function buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware) {
