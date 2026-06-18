@@ -86,7 +86,7 @@ fragmento ganaba → 0 hojas → fallback.
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js | `parseWorkpaperJson`: entre todos los bloques JSON parseables, elige el que realmente contiene hojas usables (no el primer fragmento). Usado en `handlePrepareWorkpaper`. | `git revert <hash>` |
+| `38a9065` | server.js | `parseWorkpaperJson`: entre todos los bloques JSON parseables, elige el que realmente contiene hojas usables (no el primer fragmento). Usado en `handlePrepareWorkpaper`. | `git revert 38a9065` |
 
 Verificado: con un fragmento señuelo antes del workbook real, ahora elige el workbook real.
 
