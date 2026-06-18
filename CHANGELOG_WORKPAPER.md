@@ -177,7 +177,7 @@ conexión (`openDriveForZone`). Además `refreshDriveStatus` re-ejecuta `setupDr
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | app.js | `addDriveButtonAfterInput` crea el botón visible (no `display:none`). `refreshDriveStatus` re-crea los botones y los mantiene `inline-flex` siempre (sin gating por `enabled`). | `git revert <hash>` |
+| `32f3f44` | app.js | `addDriveButtonAfterInput` crea el botón visible (no `display:none`). `refreshDriveStatus` re-crea los botones y los mantiene `inline-flex` siempre (sin gating por `enabled`). | `git revert 32f3f44` |
 
 Secciones cubiertas: Review, Preparer, Presentation, Calculation, Estimated (zonas + reviewed
 workbook), Notice (doc + prior return), Diagnostics, Knowledge, Examples, Deliverable.
