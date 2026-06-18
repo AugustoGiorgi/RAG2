@@ -128,5 +128,5 @@ JSON final normalmente. Verificado con un round-trip HTTP real.
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js | `startHeartbeatResponse` / `endHeartbeatResponse`; aplicados a `handleReview` y `handlePrepareWorkpaper` (envuelven la llamada larga a Claude). | `git revert <hash>` |
-| _(pendiente)_ | app.js | Como el heartbeat siempre responde 200, `requestClaudeReview` y `runPreparerWorkflow` ahora detectan `error` en el body aunque el status sea 200. | (mismo commit) |
+| `8c08346` | server.js | `startHeartbeatResponse` / `endHeartbeatResponse`; aplicados a `handleReview` y `handlePrepareWorkpaper` (envuelven la llamada larga a Claude). | `git revert 8c08346` |
+| `8c08346` | app.js | Como el heartbeat siempre responde 200, `requestClaudeReview` y `runPreparerWorkflow` ahora detectan `error` en el body aunque el status sea 200. | (mismo commit) |
