@@ -143,3 +143,20 @@ Review Notes / Specific Instructions".
 |---|---|---|---|
 | `d27c2b5` | server.js | Schema de review: nuevo campo `instructionResponses` ([{prompt, response, status}]). Prompt: instruye a Claude a responder cada nota/fact. `normalizeDirectReview` normaliza el campo. | `git revert d27c2b5` |
 | `d27c2b5` | app.js | `normalizeReviewForExport` incluye `instructionResponses` (+ helper `normalizeInstructionResponses`). `toCleanWrittenReview` renderiza la sección "RESPONSES TO INSTRUCTIONS & CLIENT FACTS" debajo del summary (aparece en memo en pantalla, .txt y .docx). | (mismo commit) |
+
+---
+
+## 2026-06-18 — Fix: Misc Calculations no podía leer PDFs escaneados/imagen
+
+Síntoma: en Misc Calculations, un PDF sin capa de texto ('Tax summary.pdf') daba "No fue
+posible extraer el contenido legible del archivo". Causa: la extracción de texto (cliente
+con pdf.js y servidor con regex) falla en PDFs escaneados/imagen.
+
+Fix: `buildUploadedFileContext` ahora adjunta los PDFs como bloques `document` (base64), y
+`buildCalculationContent` los envía a Claude, que lee PDFs nativamente (incluso escaneados,
+vía visión). El prompt aclara que debe leer los documentos/imágenes adjuntos directamente y
+nunca decir que un archivo es ilegible si está adjunto.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js | `buildUploadedFileContext` recolecta `documents` (PDFs base64); `buildCalculationContent` emite bloques `document`; prompt de calculation instruye a leer adjuntos directamente. | `git revert <hash>` |

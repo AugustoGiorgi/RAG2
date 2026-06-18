@@ -7434,6 +7434,7 @@ async function handleCalculationsRun(req, res) {
 function buildUploadedFileContext(files = []) {
   const textParts = [];
   const images = [];
+  const documents = [];
   for (const file of Array.isArray(files) ? files.slice(0, 30) : []) {
     const name = String(file.name || "Uploaded file");
     const type = String(file.type || mimeFromName(name) || "");
@@ -7442,6 +7443,26 @@ function buildUploadedFileContext(files = []) {
       file.workbookTemplate,
       ...(Array.isArray(file.workbookTemplates) ? file.workbookTemplates : []),
     ].filter((template) => template?.sheets?.length);
+
+    // PDFs: always attach the actual file as a document block so the model reads it
+    // natively (including scanned / image-only PDFs that have no extractable text layer,
+    // which is why "could not extract readable text" was appearing). Supplement with any
+    // genuinely readable extracted text.
+    const isPdf = /\.pdf$/i.test(name) || type.includes("pdf");
+    if (isPdf && content) {
+      documents.push({ name, type: "application/pdf", content, role: file.role || "other" });
+      let pdfText = String(file.text || "").trim();
+      if (!pdfText || /could not extract/i.test(pdfText)) {
+        try { pdfText = extractPdfPlainText(Buffer.from(content, "base64")); } catch (_) { pdfText = ""; }
+      }
+      if (pdfText && !/Server could not extract readable text/i.test(pdfText)) {
+        textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n${pdfText.slice(0, 60000)}`);
+      } else {
+        textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n[PDF attached as a document for direct reading.]`);
+      }
+      continue;
+    }
+
     if (String(file.text || "").trim()) {
       const templateBlock = workbookTemplates.length
         ? ["", "=== STRUCTURED WORKBOOK TEMPLATE TO MIRROR ===", safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
@@ -7480,7 +7501,7 @@ function buildUploadedFileContext(files = []) {
       textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n${extracted.trim().slice(0, 60000)}${templateBlock}`);
     }
   }
-  return { text: textParts.join("\n\n---\n\n").slice(0, 180000), images };
+  return { text: textParts.join("\n\n---\n\n").slice(0, 180000), images, documents };
 }
 
 function extractPdfPlainText(buffer) {
@@ -7574,10 +7595,18 @@ ${extractedText || "(No readable text extracted.)"}`;
 }
 
 function buildCalculationContent(payload, context) {
-  const blocks = context.images.slice(0, 8).map((image) => ({
-    type: "image",
-    source: { type: "base64", media_type: image.type || "image/png", data: image.content },
-  }));
+  const blocks = [
+    ...(context.documents || []).slice(0, 10).map((doc) => ({
+      type: "document",
+      source: { type: "base64", media_type: doc.type || "application/pdf", data: doc.content },
+      title: doc.name,
+      context: doc.role || "calculation source file",
+    })),
+    ...context.images.slice(0, 8).map((image) => ({
+      type: "image",
+      source: { type: "base64", media_type: image.type || "image/png", data: image.content },
+    })),
+  ];
   blocks.push({ type: "text", text: buildCalculationUserPrompt(payload, context.text) });
   return blocks;
 }
@@ -7586,6 +7615,7 @@ function buildCalculationSystemPrompt(payload, extractedText) {
   return `You are a senior CPA and financial analyst. Perform the user's requested calculations from uploaded financial data.
 
 Rules:
+- PDFs and images are attached directly to this message as document/image blocks. READ THEM DIRECTLY, including scanned or image-only PDFs and photographed statements. Never claim a file is unreadable or that text could not be extracted when it is attached — extract the figures straight from the attached document or image.
 - Show all work and make every number traceable.
 - Label every row clearly.
 - Round currency and percentages appropriately.
@@ -7593,10 +7623,10 @@ Rules:
 - Return ONLY one valid JSON object. Do not include prose before or after it.
 - Every sheet must contain either sections with columns/rows or direct rows.
 - Every material number must include a source row, note, or formula/reference in the workbook content.
-- If data is missing, create a flag. Do not invent amounts.
+- If data is genuinely missing from every attached file and the text, create a flag. Do not invent amounts.
 
-Uploaded content:
-${extractedText || "(No readable text extracted.)"}`;
+Uploaded content (text-extracted; attached PDFs/images may contain additional or clearer data):
+${extractedText || "(No text extracted — read the attached PDF/image documents directly.)"}`;
 }
 
 function buildCalculationUserPrompt(payload, extractedText) {
