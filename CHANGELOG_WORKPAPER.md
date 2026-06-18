@@ -160,3 +160,24 @@ nunca decir que un archivo es ilegible si está adjunto.
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
 | `f24ac78` | server.js | `buildUploadedFileContext` recolecta `documents` (PDFs base64); `buildCalculationContent` emite bloques `document`; prompt de calculation instruye a leer adjuntos directamente. | `git revert f24ac78` |
+
+---
+
+## 2026-06-18 — Fix (real) botones de Google Drive en TODAS las tabs
+
+Causa raíz encontrada: los botones hardcodeados de Estimated/Deliverable tienen clase
+`ghost-button` (siempre visibles), mientras que los botones genéricos (`drive-upload-btn`)
+solo se mostraban cuando `status.enabled` era true. En el setup del usuario `enabled` es
+false, así que solo aparecían Estimated y Deliverable.
+
+Fix: los botones genéricos ahora son **siempre visibles** (igual que los hardcodeados), sin
+gating por `enabled`/`connected`. Si no está conectado, al hacer click se dispara la
+conexión (`openDriveForZone`). Además `refreshDriveStatus` re-ejecuta `setupDriveUploadButtons()`
+(idempotente) para garantizar que el botón exista en cada sección.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | app.js | `addDriveButtonAfterInput` crea el botón visible (no `display:none`). `refreshDriveStatus` re-crea los botones y los mantiene `inline-flex` siempre (sin gating por `enabled`). | `git revert <hash>` |
+
+Secciones cubiertas: Review, Preparer, Presentation, Calculation, Estimated (zonas + reviewed
+workbook), Notice (doc + prior return), Diagnostics, Knowledge, Examples, Deliverable.

@@ -3367,7 +3367,9 @@ function addDriveButtonAfterInput(inputId, zoneId) {
   if (!host || document.getElementById(`drive-btn-${zoneId}`)) return;
   const wrap = document.createElement("div");
   wrap.className = zoneId === "notice-prior-return" ? "" : "drive-upload-row";
-  wrap.innerHTML = `<button class="drive-upload-btn" id="drive-btn-${zoneId}" type="button" data-drive-zone="${zoneId}" style="display:none">${DRIVE_SVG} Add from Google Drive</button>`;
+  // Always visible (like the hardcoded Estimated/Deliverable buttons). If Drive is not
+  // connected, clicking prompts the connection via openDriveForZone.
+  wrap.innerHTML = `<button class="drive-upload-btn" id="drive-btn-${zoneId}" type="button" data-drive-zone="${zoneId}" style="display:inline-flex">${DRIVE_SVG} Add from Google Drive</button>`;
   if (host.hasAttribute("data-drive-button-host") || zoneId === "notice-prior-return") host.appendChild(wrap);
   else host.insertAdjacentElement("afterend", wrap);
   wrap.querySelector("button").addEventListener("click", () => openDriveForZone(zoneId));
@@ -3407,11 +3409,13 @@ async function refreshDriveStatus() {
   try {
     const status = await fetch(`${API_BASE_URL}/api/drive/status`).then((response) => response.json());
     window.driveState = status;
-    // Show the "Add from Google Drive" buttons whenever the Drive feature is enabled, even if
-    // the user has not connected yet — clicking one will prompt the connection. This makes the
-    // button appear on every upload section, not only where the user happens to be connected.
+    // Make sure a Drive button exists on every upload section (idempotent), then keep them all
+    // visible — exactly like the hardcoded Estimated/Deliverable buttons. We intentionally do
+    // NOT gate visibility on status.enabled/connected; clicking an unconnected button prompts
+    // the Google connection via openDriveForZone. This guarantees the button shows on every tab.
+    setupDriveUploadButtons();
     document.querySelectorAll(".drive-upload-btn").forEach((button) => {
-      button.style.display = status.enabled ? "inline-flex" : "none";
+      button.style.display = "inline-flex";
     });
     if (els.deliverableDriveConnectPrompt) els.deliverableDriveConnectPrompt.hidden = Boolean(status.connected);
     if (els.deliverableSelectFolder) els.deliverableSelectFolder.hidden = !status.connected;
