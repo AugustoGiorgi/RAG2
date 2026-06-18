@@ -52,3 +52,22 @@ total se perdía.
 Verificado: subtotal `=SUM(B2:B5)` y total `=B6+B7` sobreviven al round-trip
 write→read con los valores correctos y siguen siendo fórmulas vivas (editás un monto y
 Excel recalcula).
+
+---
+
+## 2026-06-18 — ROLLBACK de fórmulas
+
+Las fórmulas no funcionaban como se esperaba en el uso real, así que se revirtió TODA
+la feature de fórmulas. `app.js` y `server.js` se restauraron al estado del commit
+`28948ef` (el output 19, que funcionaba: datos 2025 correctos, generado por AI, sin
+truncamiento, celdas de texto sin fórmulas).
+
+- Se eliminó del frontend: `coerceWorkpaperCell`, `isWorkpaperFormula`,
+  `parseWorkpaperAmount`, `evaluateWorkpaperFormula`, `safeEvalArithmetic` y la inyección
+  de fórmulas en `downloadWorkbook` (vuelve a usar `sanitizeExcelCell`).
+- Se eliminó del prompt del server el bloque de fórmulas (vuelve a "Do not include
+  formulas unless obvious and safe").
+
+Los fixes de datos (datos 2025 correctos, reconciliación de año, fallback seguro,
+diagnóstico engine v4) **se mantienen intactos**. La feature de fórmulas queda en el
+historial (`bf8d77d`, `d8956e4`) por si se retoma más adelante con otro enfoque.
