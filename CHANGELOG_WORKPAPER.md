@@ -37,3 +37,18 @@ diferencias/tie-outs sean fórmulas, para que al editar un monto se recalculen s
 | `bf8d77d` | app.js + server.js | `downloadWorkbook`: coerciona montos a números reales (`coerceWorkpaperCell`) y convierte strings `=...` en celdas fórmula de Excel (`isWorkpaperFormula`). Prompt de `buildPreparerContent`: instruye a Claude a emitir fórmulas A1 en celdas derivadas (totales/subtotales/diferencias/tie-outs) y montos base como números. | `git revert bf8d77d` |
 
 > Si las fórmulas dan referencias mal calculadas y preferís volver al comportamiento anterior (solo texto, sin fórmulas), revertí `bf8d77d`. El resto de los fixes (datos 2025 correctos) quedan intactos.
+
+### Fix de fórmulas (continuación)
+
+Síntoma del output 20: los totales aparecían VACÍOS y no había fórmulas en el archivo.
+Causa: SheetJS **descarta** las celdas que tienen fórmula pero no tienen valor cacheado
+(`v`) al escribir el xlsx. El frontend creaba las celdas fórmula sin `v`, así que cada
+total se perdía.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| `d8956e4` | app.js + server.js | `evaluateWorkpaperFormula` + `safeEvalArithmetic` calculan el valor de las fórmulas SUM/aritmética y lo guardan como `v` (sino SheetJS las descarta). Prompt reducido: fórmulas SOLO en subtotales/totales (SUM). | `git revert d8956e4` |
+
+Verificado: subtotal `=SUM(B2:B5)` y total `=B6+B7` sobreviven al round-trip
+write→read con los valores correctos y siguen siendo fórmulas vivas (editás un monto y
+Excel recalcula).
