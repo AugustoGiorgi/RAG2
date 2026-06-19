@@ -181,3 +181,24 @@ conexión (`openDriveForZone`). Además `refreshDriveStatus` re-ejecuta `setupDr
 
 Secciones cubiertas: Review, Preparer, Presentation, Calculation, Estimated (zonas + reviewed
 workbook), Notice (doc + prior return), Diagnostics, Knowledge, Examples, Deliverable.
+
+---
+
+## 2026-06-18 — Fix: review volcaba JSON crudo y no detectaba errores (truncamiento)
+
+Síntoma: el review dejó de armar el Word formateado y copiaba el JSON crudo; no mostraba
+issues. Causa real (verificada): la respuesta de Claude se **truncaba** — `REVIEW_MAX_TOKENS`
+era 8000, y un review grande (Creative Child Care: 7 archivos, 1120 + Texas) generó ~28.000
+caracteres y se cortó a la mitad ("Unterminated string"). El JSON incompleto no parseaba →
+caía al rawFallback (vuelca el JSON). NO fue el feature instructionResponses (estaba vacío
+en ese review); el review es grande de por sí.
+
+Fix:
+1. `REVIEW_MAX_TOKENS` 8000 → 24000 (el heartbeat ya evita el 504 con generaciones largas).
+2. Revertido el feature `instructionResponses` (a pedido del usuario, volver a antes del
+   cambio d27c2b5): quitado del schema, prompt, `normalizeDirectReview`,
+   `normalizeReviewForExport`, el helper y la sección en `toCleanWrittenReview`.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js, app.js | Sube REVIEW_MAX_TOKENS a 24000; revierte instructionResponses. | `git revert <hash>` |
