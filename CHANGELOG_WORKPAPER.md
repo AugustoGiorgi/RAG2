@@ -201,4 +201,4 @@ Fix:
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js, app.js | Sube REVIEW_MAX_TOKENS a 24000; revierte instructionResponses. | `git revert <hash>` |
+| `689be77` | server.js, app.js | Sube REVIEW_MAX_TOKENS a 24000; revierte instructionResponses. | `git revert 689be77` |
