@@ -578,6 +578,7 @@ const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
     if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
+    if (req.method === "GET" && req.url === "/request-access") { await handleAccessRequestPage(req, res); return; }
     if (isApiRequest(req) && req.url !== "/api/login" && isRateLimited(req, "api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS)) {
       sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
       return;
@@ -3117,6 +3118,10 @@ async function handleLoginPage(_req, res) {
   sendHtml(res, 200, buildLoginPage());
 }
 
+async function handleAccessRequestPage(_req, res) {
+  sendHtml(res, 200, buildAccessRequestPage());
+}
+
 async function handleLogin(req, res) {
   const payload = await readJsonBody(req);
   const username = String(payload.username || "").trim();
@@ -5431,18 +5436,7 @@ function buildLoginPage(error = "") {
       .login-submit-btn:hover { opacity: .93; }
       .login-submit-btn:disabled { opacity: .62; cursor: not-allowed; }
       .login-access-link { margin: 14px 0 0; text-align: center; color: #64748b; font-size: 13px; }
-      .login-access-button { border: 0; background: transparent; color: #1d4ed8; font: inherit; font-weight: 800; text-decoration: underline; cursor: pointer; padding: 0; }
-      .access-request-panel {
-        margin-top: 26px; padding-top: 24px; border-top: 1px solid #e2e8f0;
-      }
-      .access-request-panel[hidden] { display: none; }
-      .access-eyebrow { margin: 0 0 8px; color: #2563eb; font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
-      .access-title { margin: 0 0 8px; color: #0f1e3d; font-size: 18px; line-height: 1.25; }
-      .access-copy { margin: 0 0 16px; color: #64748b; font-size: 13px; line-height: 1.55; }
-      .access-grid { display: grid; gap: 12px; }
-      .access-status { margin-top: 12px; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 750; line-height: 1.45; }
-      .access-status.success { border: 1px solid #86efac; background: #f0fdf4; color: #166534; }
-      .access-status.error { border: 1px solid #fca5a5; background: #fef2f2; color: #b91c1c; }
+      .login-access-link a { color: #1d4ed8; font-weight: 800; text-decoration: underline; }
       .login-version { margin-top: 24px; text-align: center; color: #94a3b8; font-size: 11px; }
       .spinner { width: 17px; height: 17px; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 7px; }
       @keyframes spin { to { transform: rotate(360deg); } }
@@ -5494,19 +5488,7 @@ function buildLoginPage(error = "") {
             </div>
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
-          <p class="login-access-link">No account yet? <button id="showAccessRequest" class="login-access-button" type="button">Request access</button></p>
-          <section id="request-access" class="access-request-panel" aria-labelledby="accessRequestTitle" hidden>
-            <p class="access-eyebrow">Tailored access</p>
-            <h3 id="accessRequestTitle" class="access-title">Get a RAG Tax AI account built around your return volume.</h3>
-            <p class="access-copy">At RAG Tax AI, every firm works differently. We create user access and proposals around the returns each team actually needs to review, prepare, and manage, so your setup matches your workflow instead of forcing you into a generic plan.</p>
-            <form id="accessRequestForm" class="access-grid">
-              <div class="login-field"><label for="accessEmail">Email</label><input id="accessEmail" type="email" autocomplete="email" placeholder="you@firm.com" required /></div>
-              <div class="login-field"><label for="accessName">Firm, company, or person</label><input id="accessName" autocomplete="organization" placeholder="Firm name or your name" required /></div>
-              <div class="login-field"><label for="accessReturns">Estimated annual filed returns</label><input id="accessReturns" type="number" min="1" step="1" inputmode="numeric" placeholder="Example: 350" required /></div>
-              <button class="login-submit-btn" id="accessSubmit" type="submit">Request proposal</button>
-              <div id="accessStatus" class="access-status" hidden></div>
-            </form>
-          </section>
+          <p class="login-access-link">No account yet? <a href="/request-access">Request access</a></p>
           <div class="login-version">RAG Tax AI v2.0 Â· Powered by Claude</div>
         </div>
       </section>
@@ -5550,12 +5532,100 @@ function buildLoginPage(error = "") {
         text.hidden = false;
         spinner.hidden = true;
       });
-      document.getElementById("showAccessRequest").addEventListener("click", () => {
-        const panel = document.getElementById("request-access");
-        panel.hidden = false;
-        document.getElementById("accessEmail").focus();
-        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
+    </script>
+  </body>
+</html>`;
+}
+
+function buildAccessRequestPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Request access - RAG Tax AI</title>
+    <meta name="description" content="Request a RAG Tax AI account and receive a proposal tailored to your estimated annual return volume." />
+    <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <style>
+      :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #f8fafc; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: #f8fafc; }
+      .access-page { min-height: 100vh; display: grid; grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr); }
+      .access-brand-panel {
+        position: relative; overflow: hidden; padding: 48px 52px; color: white;
+        background: linear-gradient(135deg, #0f1e3d 0%, #1B3A6B 48%, #2563eb 100%);
+        display: flex; flex-direction: column; justify-content: space-between;
+      }
+      .access-brand-panel::before {
+        content: ""; position: absolute; width: 480px; height: 480px; border-radius: 999px;
+        right: -160px; top: -160px; background: radial-gradient(circle, rgba(255,255,255,.17), transparent 68%);
+      }
+      .brand-lockup, .access-proof { position: relative; z-index: 1; }
+      .brand-lockup img { width: 64px; height: 64px; object-fit: contain; margin-bottom: 18px; }
+      .brand-lockup h1 { margin: 0; font-size: 42px; line-height: 1; letter-spacing: 0; }
+      .brand-lockup p { margin: 12px 0 0; color: rgba(255,255,255,.76); line-height: 1.55; max-width: 420px; }
+      .access-proof { display: grid; gap: 14px; }
+      .proof-item { display: flex; gap: 12px; align-items: center; color: rgba(255,255,255,.86); font-size: 14px; }
+      .proof-mark { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: rgba(255,255,255,.12); font-weight: 900; }
+      .access-form-panel { display: grid; place-items: center; padding: 48px 28px; }
+      .access-card { width: min(560px, 100%); }
+      .back-link { display: inline-flex; margin-bottom: 26px; color: #1d4ed8; font-size: 13px; font-weight: 800; text-decoration: none; }
+      .access-eyebrow { margin: 0 0 10px; color: #2563eb; font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+      .access-title { margin: 0 0 12px; color: #0f1e3d; font-size: 32px; line-height: 1.14; letter-spacing: 0; }
+      .access-copy { margin: 0 0 24px; color: #64748b; font-size: 15px; line-height: 1.65; }
+      .access-form { display: grid; gap: 16px; }
+      .field label { display: block; margin-bottom: 7px; color: #374151; font-size: 13px; font-weight: 800; }
+      .field input { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 12px 14px; color: #111827; font: inherit; background: white; }
+      .field input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+      .submit-btn { width: 100%; min-height: 46px; border: 0; border-radius: 8px; background: linear-gradient(135deg, #1B3A6B, #2563eb); color: white; cursor: pointer; font-size: 15px; font-weight: 900; }
+      .submit-btn:hover { opacity: .94; }
+      .submit-btn:disabled { opacity: .62; cursor: not-allowed; }
+      .access-status { border-radius: 8px; padding: 12px 14px; font-size: 13px; font-weight: 750; line-height: 1.45; }
+      .access-status.success { border: 1px solid #86efac; background: #f0fdf4; color: #166534; }
+      .access-status.error { border: 1px solid #fca5a5; background: #fef2f2; color: #b91c1c; }
+      .access-note { margin-top: 18px; color: #94a3b8; font-size: 12px; line-height: 1.5; }
+      @media (max-width: 860px) {
+        .access-page { display: block; }
+        .access-brand-panel { min-height: auto; padding: 34px 24px; gap: 34px; }
+        .brand-lockup h1 { font-size: 34px; }
+        .access-form-panel { padding: 34px 20px; place-items: start center; }
+        .access-title { font-size: 27px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="access-page">
+      <section class="access-brand-panel">
+        <div class="brand-lockup">
+          <img src="/assets/rag-r-logo.png" alt="RAG Tax AI logo" />
+          <h1>RAG Tax AI</h1>
+          <p>AI workflows for return review, workpaper preparation, client requests, and firm-ready tax operations.</p>
+        </div>
+        <div class="access-proof">
+          <div class="proof-item"><span class="proof-mark">01</span><span>Tell us your expected annual return volume.</span></div>
+          <div class="proof-item"><span class="proof-mark">02</span><span>We size the right user setup for your workflow.</span></div>
+          <div class="proof-item"><span class="proof-mark">03</span><span>You receive a proposal matched to actual usage.</span></div>
+        </div>
+      </section>
+      <section class="access-form-panel">
+        <div class="access-card">
+          <a class="back-link" href="/login">Back to sign in</a>
+          <p class="access-eyebrow">Request access</p>
+          <h2 class="access-title">Get a RAG Tax AI account built around your return volume.</h2>
+          <p class="access-copy">At RAG Tax AI, every firm works differently. We create user access and proposals around the returns each team actually needs to review, prepare, and manage, so your setup matches your workflow instead of forcing you into a generic plan.</p>
+          <form id="accessRequestForm" class="access-form">
+            <div class="field"><label for="accessEmail">Email</label><input id="accessEmail" type="email" autocomplete="email" placeholder="you@firm.com" required /></div>
+            <div class="field"><label for="accessName">Firm, company, or person</label><input id="accessName" autocomplete="organization" placeholder="Firm name or your name" required /></div>
+            <div class="field"><label for="accessReturns">Estimated annual filed returns</label><input id="accessReturns" type="number" min="1" step="1" inputmode="numeric" placeholder="Example: 350" required /></div>
+            <button class="submit-btn" id="accessSubmit" type="submit">Request proposal</button>
+            <div id="accessStatus" class="access-status" hidden></div>
+          </form>
+          <p class="access-note">After submitting, our team will contact you shortly with a proposal based on the estimates provided.</p>
+        </div>
+      </section>
+    </main>
+    <script>
       document.getElementById("accessRequestForm").addEventListener("submit", async (event) => {
         event.preventDefault();
         const submit = document.getElementById("accessSubmit");
