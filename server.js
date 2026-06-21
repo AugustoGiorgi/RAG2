@@ -14,11 +14,14 @@ const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
-const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 180000);
-const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 24000);
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 220000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 90000);
-const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 12000);
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
+const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 16000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 140000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 55000);
+const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
+const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
+const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
+const REVIEW_RETRY_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MIN_CHARS_PER_FILE || 3000);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
 const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const ROOT = __dirname;
@@ -6824,15 +6827,29 @@ async function handleReview(req, res) {
     }
 
     payload.files = annotateReviewFileRoles(payload.files || [], payload);
-    const reviewRequest = buildDirectReviewRequest(payload, req);
+    let reviewRequest = buildDirectReviewRequest(payload, req);
     const startedAt = Date.now();
     // Keep the proxy connection alive during the long model call to avoid a 504.
     startHeartbeatResponse(res);
-    const result = await callAnthropicDirectWithFallbacks(apiKey, {
+    let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
       system: reviewRequest.systemPrompt,
       messages: [{ role: "user", content: reviewRequest.userContent }],
     }, reviewModelCandidates());
+    let retriedWithCompactPackage = false;
+    if (!result.ok && isReviewTimeoutError(result)) {
+      retriedWithCompactPackage = true;
+      reviewRequest = buildDirectReviewRequest(payload, req, {
+        maxTotalChars: REVIEW_RETRY_MAX_TOTAL_CHARS,
+        maxCharsPerFile: REVIEW_RETRY_MAX_CHARS_PER_FILE,
+        minCharsPerFile: REVIEW_RETRY_MIN_CHARS_PER_FILE,
+      });
+      result = await callAnthropicDirectWithFallbacks(apiKey, {
+        max_tokens: REVIEW_MAX_TOKENS,
+        system: `${reviewRequest.systemPrompt}\n\nThe first review attempt timed out. This retry uses a tighter document extract. Prioritize high-risk findings, tie-outs, missing support, elections, inconsistencies, and items that block filing. If detail is unavailable because a file was compacted, explicitly flag the document and area for manual follow-up.`,
+        messages: [{ role: "user", content: reviewRequest.userContent }],
+      }, reviewModelCandidates());
+    }
     if (!result.ok) {
       endHeartbeatResponse(res, { error: result.error || "Claude API request failed." });
       return;
@@ -6875,6 +6892,7 @@ async function handleReview(req, res) {
       meta: reviewRequest.meta,
       documentsRead: reviewRequest.documentsRead,
       feedbackApplied: reviewRequest.feedbackApplied,
+      retriedWithCompactPackage,
       model: finalResult.data.model || finalResult.model,
       usage: finalResult.data.usage || null,
       tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
@@ -6889,7 +6907,7 @@ async function handleReview(req, res) {
   }
 }
 
-function buildDirectReviewRequest(payload = {}, req) {
+function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
   const metadata = payload.metadata || {};
   const clientName = metadata.entityName || metadata.clientName || payload.clientName || "Unnamed client";
   const returnType = metadata.returnType || payload.returnType || "Not specified";
@@ -6904,7 +6922,7 @@ function buildDirectReviewRequest(payload = {}, req) {
     extractedText: String(file.extractedText || file.text || "").trim(),
     encoding: String(file.encoding || ""),
     size: Number(file.size || 0),
-  })));
+  })), compactionLimits);
   const meta = {
     clientName,
     returnType,
@@ -6924,16 +6942,19 @@ function buildDirectReviewRequest(payload = {}, req) {
   };
 }
 
-function compactReviewDocuments(documents = []) {
+function compactReviewDocuments(documents = [], limits = {}) {
   if (!Array.isArray(documents) || documents.length === 0) return [];
+  const maxTotalChars = Number(limits.maxTotalChars || REVIEW_MAX_TOTAL_CHARS);
+  const maxCharsPerFile = Number(limits.maxCharsPerFile || REVIEW_MAX_CHARS_PER_FILE);
+  const minCharsPerFile = Number(limits.minCharsPerFile || REVIEW_MIN_CHARS_PER_FILE);
   const weights = documents.map((file) => reviewDocumentWeight(file.role));
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || documents.length;
-  const minBudget = Math.max(2000, REVIEW_MIN_CHARS_PER_FILE);
+  const minBudget = Math.max(2000, minCharsPerFile);
   return documents.map((file, index) => {
     const originalText = String(file.extractedText || "");
     if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
-    const weightedBudget = Math.floor(REVIEW_MAX_TOTAL_CHARS * (weights[index] / totalWeight));
-    const budget = Math.max(minBudget, Math.min(REVIEW_MAX_CHARS_PER_FILE, weightedBudget));
+    const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
+    const budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget));
     const compactedText = truncateMiddle(originalText, budget);
     const compacted = compactedText.length < originalText.length;
     const note = compacted
@@ -7071,6 +7092,10 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
     if (!shouldTryNextModel(lastStatus, result.error)) break;
   }
   return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
+}
+
+function isReviewTimeoutError(result) {
+  return Number(result?.status) === 504 || /timed out|abort/i.test(String(result?.error || ""));
 }
 
 function reviewModelCandidates() {
