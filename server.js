@@ -5626,6 +5626,10 @@ function buildAccessRequestPage() {
       </section>
     </main>
     <script>
+      let accessSuccessRedirect = null;
+      document.querySelector(".back-link").addEventListener("click", () => {
+        if (accessSuccessRedirect) clearTimeout(accessSuccessRedirect);
+      });
       document.getElementById("accessRequestForm").addEventListener("submit", async (event) => {
         event.preventDefault();
         const submit = document.getElementById("accessSubmit");
@@ -5649,6 +5653,10 @@ function buildAccessRequestPage() {
           status.classList.add("success");
           status.textContent = "Thanks. We received your request and will contact you shortly with a proposal based on the estimates provided.";
           event.target.reset();
+          if (accessSuccessRedirect) clearTimeout(accessSuccessRedirect);
+          accessSuccessRedirect = setTimeout(() => {
+            window.location.href = "/login";
+          }, 10000);
         } else {
           status.classList.add("error");
           status.textContent = payload.error || "We could not send the request. Please try again.";
