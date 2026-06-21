@@ -5431,11 +5431,11 @@ function buildLoginPage(error = "") {
       .login-submit-btn:hover { opacity: .93; }
       .login-submit-btn:disabled { opacity: .62; cursor: not-allowed; }
       .login-access-link { margin: 14px 0 0; text-align: center; color: #64748b; font-size: 13px; }
-      .login-access-link a { color: #1d4ed8; font-weight: 800; text-decoration: none; }
-      .login-access-link a:hover { text-decoration: underline; }
+      .login-access-button { border: 0; background: transparent; color: #1d4ed8; font: inherit; font-weight: 800; text-decoration: underline; cursor: pointer; padding: 0; }
       .access-request-panel {
         margin-top: 26px; padding-top: 24px; border-top: 1px solid #e2e8f0;
       }
+      .access-request-panel[hidden] { display: none; }
       .access-eyebrow { margin: 0 0 8px; color: #2563eb; font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
       .access-title { margin: 0 0 8px; color: #0f1e3d; font-size: 18px; line-height: 1.25; }
       .access-copy { margin: 0 0 16px; color: #64748b; font-size: 13px; line-height: 1.55; }
@@ -5494,8 +5494,8 @@ function buildLoginPage(error = "") {
             </div>
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
-          <p class="login-access-link">No account yet? <a href="#request-access">Request access</a></p>
-          <section id="request-access" class="access-request-panel" aria-labelledby="accessRequestTitle">
+          <p class="login-access-link">No account yet? <button id="showAccessRequest" class="login-access-button" type="button">Request access</button></p>
+          <section id="request-access" class="access-request-panel" aria-labelledby="accessRequestTitle" hidden>
             <p class="access-eyebrow">Tailored access</p>
             <h3 id="accessRequestTitle" class="access-title">Get a RAG Tax AI account built around your return volume.</h3>
             <p class="access-copy">At RAG Tax AI, every firm works differently. We create user access and proposals around the returns each team actually needs to review, prepare, and manage, so your setup matches your workflow instead of forcing you into a generic plan.</p>
@@ -5549,6 +5549,12 @@ function buildLoginPage(error = "") {
         submit.disabled = false;
         text.hidden = false;
         spinner.hidden = true;
+      });
+      document.getElementById("showAccessRequest").addEventListener("click", () => {
+        const panel = document.getElementById("request-access");
+        panel.hidden = false;
+        document.getElementById("accessEmail").focus();
+        panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
       });
       document.getElementById("accessRequestForm").addEventListener("submit", async (event) => {
         event.preventDefault();
