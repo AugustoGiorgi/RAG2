@@ -202,3 +202,28 @@ Fix:
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
 | `689be77` | server.js, app.js | Sube REVIEW_MAX_TOKENS a 24000; revierte instructionResponses. | `git revert 689be77` |
+
+---
+
+## 2026-06-18 — Feature: favicon (Google) + fix meta description
+
+Tarea 1: favicon para que aparezca en Google. Tarea 2: el snippet de Google mostraba
+"AIAI-powered... WPAutomated..." porque NO había meta description y Google scrapeaba el
+texto visible de la login (badges de íconos "AI"/"WP" + label pegados).
+
+Favicons generados desde `assets/rag-r-logo.png` (220x220) con Pillow → `assets/icons/`:
+favicon-48/96/144/192.png (cuadrados, múltiplos de 48), apple-touch-icon.png (180, sin
+transparencia), favicon.ico (16/32/48). Servidos en rutas raíz estables y PÚBLICAS
+(`/favicon-48.png`, `/favicon.ico`, `/apple-touch-icon.png`, etc.) vía `serveFavicon` antes
+del gate de auth, para que el crawler de Google los pueda leer sin login.
+
+Fix meta: agregado `<meta name="description">` limpio + Open Graph en el `<head>` de la
+login page (server.js `buildLoginPage`) e `index.html`. No había JSON-LD. Title ya estaba
+limpio. No hay robots.txt que bloquee.
+
+| Commit | Archivo | Qué cambió | Cómo revertir |
+|---|---|---|---|
+| _(pendiente)_ | server.js, index.html, assets/icons/* | Rutas públicas de favicon + tags en head + meta description/OG. | `git revert <hash>` |
+
+Verificado con server local: los 6 favicons devuelven 200 sin auth; login page tiene el
+meta description y los link tags.
