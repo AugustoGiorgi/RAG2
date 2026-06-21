@@ -5,6 +5,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
+const net = require("node:net");
+const tls = require("node:tls");
 const { buildPresentation } = require("./lib/pptx-builder");
 const { QBOConnector }     = require("./qbo-connector");
 
@@ -36,6 +38,7 @@ const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
 const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
+const ACCESS_REQUESTS_PATH = path.join(DATA_DIR, "access_requests.json");
 const CLIENT_FILES_DIR = path.join(DATA_DIR, "client_files");
 const LOCAL_SECRETS_PATH = path.join(DATA_DIR, "local-secrets.json");
 const LOCAL_SECRETS = loadLocalSecrets();
@@ -580,6 +583,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/access-request") { await handleAccessRequest(req, res); return; }
     if (req.method === "POST" && req.url === "/api/logout") { await handleLogout(req, res); return; }
     if (req.method === "GET" && req.url === "/api/auth/status") { await handleAuthStatus(req, res); return; }
     if (requestUrl.pathname === "/api/auth/change-password" && req.method === "POST") { await handleChangePassword(req, res); return; }
@@ -3137,6 +3141,53 @@ async function handleLogin(req, res) {
   sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
 }
 
+async function handleAccessRequest(req, res) {
+  const payload = await readJsonBody(req);
+  const email = String(payload.email || "").trim().toLowerCase();
+  const contactName = String(payload.contactName || payload.name || "").trim();
+  const annualReturns = Number(String(payload.annualReturns || "").replace(/[^0-9.]/g, ""));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    sendJson(res, 400, { error: "Please enter a valid email address." });
+    return;
+  }
+  if (contactName.length < 2) {
+    sendJson(res, 400, { error: "Please enter your firm, company, or personal name." });
+    return;
+  }
+  if (!Number.isFinite(annualReturns) || annualReturns <= 0) {
+    sendJson(res, 400, { error: "Please enter the estimated annual filed returns." });
+    return;
+  }
+  if (annualReturns > 1000000) {
+    sendJson(res, 400, { error: "Please enter a realistic annual return estimate." });
+    return;
+  }
+
+  const request = {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    email,
+    contactName,
+    annualReturns: Math.round(annualReturns),
+    ip: clientIp(req),
+    userAgent: String(req.headers["user-agent"] || "").slice(0, 240),
+    mailStatus: "pending",
+  };
+  saveAccessRequest(request);
+  const mailResult = await notifyAccessRequest(request).catch((error) => ({ ok: false, error: error.message || "Mail notification failed." }));
+  updateAccessRequestMailStatus(request.id, mailResult);
+  appendAuditLog(req, "access_request.created", {
+    email,
+    contactName,
+    annualReturns: request.annualReturns,
+    mailOk: Boolean(mailResult.ok),
+  });
+  sendJson(res, 200, {
+    ok: true,
+    message: "Thanks. We received your request and will contact you shortly with a proposal based on your estimated filed returns.",
+  });
+}
+
 async function handleLogout(req, res) {
   appendAuditLog(req, "auth.logout", {});
   res.setHeader("set-cookie", clearSessionCookie());
@@ -3538,6 +3589,7 @@ function ensureDatabase() {
   if (!fsSync.existsSync(FEEDBACK_PATH)) writeJsonFile(FEEDBACK_PATH, { entries: [] });
   if (!fsSync.existsSync(COST_LOG_PATH)) writeJsonFile(COST_LOG_PATH, { entries: [] });
   if (!fsSync.existsSync(AUDIT_LOG_PATH)) writeJsonFile(AUDIT_LOG_PATH, { entries: [] });
+  if (!fsSync.existsSync(ACCESS_REQUESTS_PATH)) writeJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
 }
 
 function readJsonFile(filePath, fallback) {
@@ -3643,6 +3695,145 @@ function appendAuditLog(reqOrUser, action, details = {}) {
   } catch (error) {
     console.warn("Could not write audit log:", error.message);
   }
+}
+
+function saveAccessRequest(request) {
+  const store = readJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
+  const entries = Array.isArray(store.entries) ? store.entries : [];
+  entries.push(request);
+  writeJsonFile(ACCESS_REQUESTS_PATH, { entries: entries.slice(-2000) });
+}
+
+function updateAccessRequestMailStatus(id, mailResult) {
+  const store = readJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
+  const entries = Array.isArray(store.entries) ? store.entries : [];
+  const entry = entries.find((item) => item.id === id);
+  if (!entry) return;
+  entry.mailStatus = mailResult?.ok ? "sent" : "failed";
+  entry.mailError = mailResult?.ok ? "" : String(mailResult?.error || "Notification not sent.").slice(0, 500);
+  entry.mailUpdatedAt = new Date().toISOString();
+  writeJsonFile(ACCESS_REQUESTS_PATH, { entries });
+}
+
+async function notifyAccessRequest(request) {
+  const to = String(process.env.ACCESS_REQUEST_NOTIFY_EMAIL || "ramiroflores@ragtax-ia.com").trim();
+  const from = String(process.env.ACCESS_REQUEST_FROM_EMAIL || "no-reply@ragtax-ia.com").trim();
+  const subject = `New RAG Tax AI access request - ${request.contactName}`;
+  const bodyText = [
+    "A new access request was submitted from the RAG Tax AI login page.",
+    "",
+    `Name / firm: ${request.contactName}`,
+    `Email: ${request.email}`,
+    `Estimated annual filed returns: ${request.annualReturns.toLocaleString("en-US")}`,
+    `Submitted at: ${request.createdAt}`,
+    `IP: ${request.ip || "unknown"}`,
+    "",
+    "Follow up with a proposal based on their estimated return volume.",
+  ].join("\n");
+  if (!smtpConfigured()) return { ok: false, error: "SMTP is not configured. Lead was saved locally." };
+  await sendSmtpMail({ from, to, subject, bodyText });
+  return { ok: true };
+}
+
+function smtpConfigured() {
+  return Boolean(String(process.env.ACCESS_REQUEST_SMTP_HOST || "").trim());
+}
+
+async function sendSmtpMail({ from, to, subject, bodyText }) {
+  const host = String(process.env.ACCESS_REQUEST_SMTP_HOST || "").trim();
+  const port = Number(process.env.ACCESS_REQUEST_SMTP_PORT || 587);
+  const secure = String(process.env.ACCESS_REQUEST_SMTP_SECURE || "false").toLowerCase() === "true" || port === 465;
+  const user = String(process.env.ACCESS_REQUEST_SMTP_USER || "").trim();
+  const pass = String(process.env.ACCESS_REQUEST_SMTP_PASS || "");
+  const state = { socket: await openSmtpSocket(host, port, secure), buffer: "" };
+  try {
+    await smtpRead(state);
+    await smtpCommand(state, `EHLO ${smtpHostname()}`, [250]);
+    if (!secure && String(process.env.ACCESS_REQUEST_SMTP_STARTTLS || "true").toLowerCase() !== "false") {
+      await smtpCommand(state, "STARTTLS", [220]);
+      state.socket = tls.connect({ socket: state.socket, servername: host });
+      state.buffer = "";
+      await new Promise((resolve, reject) => {
+        state.socket.once("secureConnect", resolve);
+        state.socket.once("error", reject);
+      });
+      await smtpCommand(state, `EHLO ${smtpHostname()}`, [250]);
+    }
+    if (user && pass) {
+      await smtpCommand(state, "AUTH LOGIN", [334]);
+      await smtpCommand(state, Buffer.from(user, "utf8").toString("base64"), [334]);
+      await smtpCommand(state, Buffer.from(pass, "utf8").toString("base64"), [235]);
+    }
+    await smtpCommand(state, `MAIL FROM:<${from}>`, [250]);
+    await smtpCommand(state, `RCPT TO:<${to}>`, [250, 251]);
+    await smtpCommand(state, "DATA", [354]);
+    state.socket.write(`${buildSimpleEmailMessage({ from, to, subject, bodyText })}\r\n.\r\n`);
+    await smtpRead(state, [250]);
+    await smtpCommand(state, "QUIT", [221]).catch(() => {});
+  } finally {
+    state.socket.end();
+  }
+}
+
+function openSmtpSocket(host, port, secure) {
+  return new Promise((resolve, reject) => {
+    const socket = secure ? tls.connect({ host, port, servername: host }) : net.connect({ host, port });
+    socket.setTimeout(Number(process.env.ACCESS_REQUEST_SMTP_TIMEOUT_MS || 15000));
+    socket.once(secure ? "secureConnect" : "connect", () => resolve(socket));
+    socket.once("timeout", () => {
+      socket.destroy();
+      reject(new Error("SMTP connection timed out."));
+    });
+    socket.once("error", reject);
+  });
+}
+
+async function smtpCommand(state, command, expectedCodes) {
+  state.socket.write(`${command}\r\n`);
+  return smtpRead(state, expectedCodes);
+}
+
+function smtpRead(state, expectedCodes = [220]) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk) => {
+      state.buffer += chunk.toString("utf8");
+      const lines = state.buffer.split(/\r?\n/).filter(Boolean);
+      const last = lines[lines.length - 1] || "";
+      if (!/^\d{3} /.test(last)) return;
+      const code = Number(last.slice(0, 3));
+      state.buffer = "";
+      cleanup();
+      if (!expectedCodes.includes(code)) reject(new Error(`SMTP command failed: ${last}`));
+      else resolve(lines.join("\n"));
+    };
+    const cleanup = () => {
+      state.socket.off("data", onData);
+      state.socket.off("error", onError);
+    };
+    state.socket.on("data", onData);
+    state.socket.once("error", onError);
+  });
+}
+
+function buildSimpleEmailMessage({ from, to, subject, bodyText }) {
+  return [
+    `From: ${from}`,
+    `To: ${to}`,
+    `Subject: ${encodeMimeHeader(subject)}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(bodyText || "", "utf8").toString("base64")),
+  ].join("\r\n");
+}
+
+function smtpHostname() {
+  return String(process.env.ACCESS_REQUEST_SMTP_HELO || "ragtax-ia.com").replace(/[^a-zA-Z0-9.-]/g, "") || "ragtax-ia.com";
 }
 
 function readAuditEntries(limit = 200) {
@@ -5239,6 +5430,19 @@ function buildLoginPage(error = "") {
       .login-submit-btn { width: 100%; min-height: 44px; border: 0; border-radius: 8px; background: linear-gradient(135deg, #1B3A6B, #2563eb); color: white; cursor: pointer; font-size: 15px; font-weight: 800; display: grid; place-items: center; }
       .login-submit-btn:hover { opacity: .93; }
       .login-submit-btn:disabled { opacity: .62; cursor: not-allowed; }
+      .login-access-link { margin: 14px 0 0; text-align: center; color: #64748b; font-size: 13px; }
+      .login-access-link a { color: #1d4ed8; font-weight: 800; text-decoration: none; }
+      .login-access-link a:hover { text-decoration: underline; }
+      .access-request-panel {
+        margin-top: 26px; padding-top: 24px; border-top: 1px solid #e2e8f0;
+      }
+      .access-eyebrow { margin: 0 0 8px; color: #2563eb; font-size: 11px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+      .access-title { margin: 0 0 8px; color: #0f1e3d; font-size: 18px; line-height: 1.25; }
+      .access-copy { margin: 0 0 16px; color: #64748b; font-size: 13px; line-height: 1.55; }
+      .access-grid { display: grid; gap: 12px; }
+      .access-status { margin-top: 12px; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-weight: 750; line-height: 1.45; }
+      .access-status.success { border: 1px solid #86efac; background: #f0fdf4; color: #166534; }
+      .access-status.error { border: 1px solid #fca5a5; background: #fef2f2; color: #b91c1c; }
       .login-version { margin-top: 24px; text-align: center; color: #94a3b8; font-size: 11px; }
       .spinner { width: 17px; height: 17px; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 7px; }
       @keyframes spin { to { transform: rotate(360deg); } }
@@ -5290,6 +5494,19 @@ function buildLoginPage(error = "") {
             </div>
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
+          <p class="login-access-link">No account yet? <a href="#request-access">Request access</a></p>
+          <section id="request-access" class="access-request-panel" aria-labelledby="accessRequestTitle">
+            <p class="access-eyebrow">Tailored access</p>
+            <h3 id="accessRequestTitle" class="access-title">Get a RAG Tax AI account built around your return volume.</h3>
+            <p class="access-copy">At RAG Tax AI, every firm works differently. We create user access and proposals around the returns each team actually needs to review, prepare, and manage, so your setup matches your workflow instead of forcing you into a generic plan.</p>
+            <form id="accessRequestForm" class="access-grid">
+              <div class="login-field"><label for="accessEmail">Email</label><input id="accessEmail" type="email" autocomplete="email" placeholder="you@firm.com" required /></div>
+              <div class="login-field"><label for="accessName">Firm, company, or person</label><input id="accessName" autocomplete="organization" placeholder="Firm name or your name" required /></div>
+              <div class="login-field"><label for="accessReturns">Estimated annual filed returns</label><input id="accessReturns" type="number" min="1" step="1" inputmode="numeric" placeholder="Example: 350" required /></div>
+              <button class="login-submit-btn" id="accessSubmit" type="submit">Request proposal</button>
+              <div id="accessStatus" class="access-status" hidden></div>
+            </form>
+          </section>
           <div class="login-version">RAG Tax AI v2.0 Â· Powered by Claude</div>
         </div>
       </section>
@@ -5332,6 +5549,36 @@ function buildLoginPage(error = "") {
         submit.disabled = false;
         text.hidden = false;
         spinner.hidden = true;
+      });
+      document.getElementById("accessRequestForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submit = document.getElementById("accessSubmit");
+        const status = document.getElementById("accessStatus");
+        submit.disabled = true;
+        submit.textContent = "Sending request...";
+        status.hidden = true;
+        status.className = "access-status";
+        const response = await fetch("/api/access-request", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            email: document.getElementById("accessEmail").value,
+            contactName: document.getElementById("accessName").value,
+            annualReturns: document.getElementById("accessReturns").value,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        status.hidden = false;
+        if (response.ok) {
+          status.classList.add("success");
+          status.textContent = "Thanks. We received your request and will contact you shortly with a proposal based on the estimates provided.";
+          event.target.reset();
+        } else {
+          status.classList.add("error");
+          status.textContent = payload.error || "We could not send the request. Please try again.";
+        }
+        submit.disabled = false;
+        submit.textContent = "Request proposal";
       });
     </script>
   </body>
