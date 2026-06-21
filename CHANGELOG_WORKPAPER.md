@@ -223,7 +223,7 @@ limpio. No hay robots.txt que bloquee.
 
 | Commit | Archivo | Qué cambió | Cómo revertir |
 |---|---|---|---|
-| _(pendiente)_ | server.js, index.html, assets/icons/* | Rutas públicas de favicon + tags en head + meta description/OG. | `git revert <hash>` |
+| `f1b82e2` | server.js, index.html, assets/icons/* | Rutas públicas de favicon + tags en head + meta description/OG. | `git revert f1b82e2` |
 
 Verificado con server local: los 6 favicons devuelven 200 sin auth; login page tiene el
 meta description y los link tags.
