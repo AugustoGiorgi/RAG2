@@ -596,6 +596,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/healthz") { await handleHealth(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/assets/")) { await serveStatic(req, res); return; }
     if (req.method === "GET" && FAVICON_ROUTES[requestUrl.pathname]) { await serveFavicon(res, FAVICON_ROUTES[requestUrl.pathname]); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/privacy") { servePrivacyPolicy(res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/eula") { serveEula(res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
@@ -12426,6 +12428,94 @@ const FAVICON_ROUTES = {
   "/favicon-192.png": "favicon-192.png",
   "/apple-touch-icon.png": "apple-touch-icon.png",
 };
+
+function serveLegalPage(res, title, bodyHtml) {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — RAG Tax AI</title><style>body{font-family:system-ui,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#222;line-height:1.6}h1{font-size:1.6rem;margin-bottom:4px}h2{font-size:1.1rem;margin-top:2rem}p,li{font-size:.95rem}a{color:#1a73e8}footer{margin-top:3rem;font-size:.8rem;color:#666;border-top:1px solid #eee;padding-top:1rem}</style></head><body>${bodyHtml}<footer><p>RAG Tax AI &mdash; <a href="/privacy">Privacy Policy</a> &mdash; <a href="/eula">EULA</a></p></footer></body></html>`;
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=86400" });
+  res.end(html);
+}
+
+function servePrivacyPolicy(res) {
+  serveLegalPage(res, "Privacy Policy", `
+    <h1>Privacy Policy</h1>
+    <p><strong>Last updated: June 22, 2025</strong></p>
+    <p>RAG Tax AI ("we", "our", or "the app") is an internal tool operated by a licensed CPA firm. This Privacy Policy explains how we collect, use, and protect information when you use RAG Tax AI.</p>
+
+    <h2>1. Who uses this app</h2>
+    <p>RAG Tax AI is an internal application used exclusively by authorized staff of the CPA firm. It is not a public consumer application.</p>
+
+    <h2>2. Information we collect</h2>
+    <ul>
+      <li><strong>Authentication data:</strong> Username and hashed password for internal login.</li>
+      <li><strong>Financial data from QuickBooks Online:</strong> With your explicit authorization, we access financial reports (Profit &amp; Loss, Balance Sheet, Trial Balance) from your QuickBooks Online account to assist with tax preparation workflows.</li>
+      <li><strong>Uploaded documents:</strong> Tax documents, financial statements, and workpapers uploaded by staff for AI-assisted processing.</li>
+      <li><strong>Usage logs:</strong> Action logs for audit and security purposes.</li>
+    </ul>
+
+    <h2>3. How we use your data</h2>
+    <ul>
+      <li>To generate tax workpapers, reviews, and client deliverables using AI assistance.</li>
+      <li>To retrieve financial reports from connected accounting software (QuickBooks Online, Xero).</li>
+      <li>For internal audit and security logging.</li>
+    </ul>
+    <p>We do <strong>not</strong> sell, share, or transfer your data to third parties, except to AI processing services (Anthropic Claude API) strictly for generating the requested outputs.</p>
+
+    <h2>4. QuickBooks Online data</h2>
+    <p>When you connect QuickBooks Online, we request access to accounting data only for the purpose of retrieving financial reports used in tax preparation. We store only OAuth access tokens (encrypted) and do not permanently store your QuickBooks financial data on our servers.</p>
+
+    <h2>5. Data retention</h2>
+    <p>Uploaded documents are processed in memory and are not permanently stored on our servers beyond the active session. OAuth tokens are stored securely on the server and can be revoked at any time from within the app.</p>
+
+    <h2>6. Security</h2>
+    <p>All data is transmitted over HTTPS. Access to the application requires authentication. OAuth tokens are stored server-side and never exposed to the browser.</p>
+
+    <h2>7. Your rights</h2>
+    <p>Authorized users may request deletion of their account and associated tokens by contacting the system administrator.</p>
+
+    <h2>8. Contact</h2>
+    <p>For questions about this Privacy Policy, contact us at <a href="mailto:ramiro.f.linkedin@gmail.com">ramiro.f.linkedin@gmail.com</a>.</p>
+  `);
+}
+
+function serveEula(res) {
+  serveLegalPage(res, "End-User License Agreement", `
+    <h1>End-User License Agreement (EULA)</h1>
+    <p><strong>Last updated: June 22, 2025</strong></p>
+    <p>This End-User License Agreement ("Agreement") is a legal agreement between you and the CPA firm operating RAG Tax AI ("we", "our") for the use of the RAG Tax AI application ("the App").</p>
+
+    <h2>1. License grant</h2>
+    <p>We grant you a limited, non-exclusive, non-transferable license to use RAG Tax AI solely for internal tax preparation and review purposes within your organization.</p>
+
+    <h2>2. Restrictions</h2>
+    <ul>
+      <li>You may not distribute, sell, sublicense, or transfer the App to any third party.</li>
+      <li>You may not reverse-engineer, decompile, or disassemble the App.</li>
+      <li>You may not use the App for any unlawful purpose.</li>
+      <li>Access is restricted to authorized personnel only.</li>
+    </ul>
+
+    <h2>3. Data and privacy</h2>
+    <p>Use of the App is subject to our <a href="/privacy">Privacy Policy</a>, which is incorporated into this Agreement by reference.</p>
+
+    <h2>4. Third-party services</h2>
+    <p>The App integrates with third-party services including Anthropic Claude (AI processing), QuickBooks Online, and Xero. Your use of these services is subject to their respective terms of service.</p>
+
+    <h2>5. Disclaimer of warranties</h2>
+    <p>The App is provided "as is" without warranty of any kind. AI-generated outputs (workpapers, reviews, estimates) are for assistance purposes only and must be reviewed and verified by a qualified tax professional before use.</p>
+
+    <h2>6. Limitation of liability</h2>
+    <p>To the maximum extent permitted by applicable law, we shall not be liable for any indirect, incidental, or consequential damages arising from your use of the App.</p>
+
+    <h2>7. Termination</h2>
+    <p>We reserve the right to terminate your access to the App at any time for violation of this Agreement.</p>
+
+    <h2>8. Governing law</h2>
+    <p>This Agreement is governed by the laws of the jurisdiction in which the CPA firm operates.</p>
+
+    <h2>9. Contact</h2>
+    <p>For questions about this Agreement, contact us at <a href="mailto:ramiro.f.linkedin@gmail.com">ramiro.f.linkedin@gmail.com</a>.</p>
+  `);
+}
 
 async function serveFavicon(res, fileName) {
   try {
