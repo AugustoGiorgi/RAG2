@@ -26,6 +26,7 @@ const estimatedTaxesState = {
   plPeriod: null,
   balanceSheetFile: null,
   taxReturnFiles: [],
+  additionalFiles: [],
   reviewedWorkpaper: null,
 };
 const presentationState = { files: [], lastResult: null };
@@ -309,6 +310,9 @@ const els = {
   estTaxReturnsDropzone: document.getElementById("estTaxReturnsDropzone"),
   estTaxReturnFiles: document.getElementById("estTaxReturnFiles"),
   estTaxReturnsStatus: document.getElementById("estTaxReturnsStatus"),
+  estAdditionalDropzone: document.getElementById("estAdditionalDropzone"),
+  estAdditionalFiles: document.getElementById("estAdditionalFiles"),
+  estAdditionalStatus: document.getElementById("estAdditionalStatus"),
   estFederalExtensionPayment: document.getElementById("estFederalExtensionPayment"),
   estStateExtensionPayment: document.getElementById("estStateExtensionPayment"),
   estStatePtePayment: document.getElementById("estStatePtePayment"),
@@ -1078,6 +1082,7 @@ function setupEstimatedTaxesEvents() {
   setupEstimatedUploadZone("pl", els.estPlDropzone, els.estPlFile);
   setupEstimatedUploadZone("balanceSheet", els.estBalanceSheetDropzone, els.estBalanceSheetFile);
   setupEstimatedUploadZone("taxReturns", els.estTaxReturnsDropzone, els.estTaxReturnFiles);
+  setupEstimatedUploadZone("additional", els.estAdditionalDropzone, els.estAdditionalFiles);
   els.estAddStatePayment?.addEventListener("click", () => showToast("Additional state columns are next. For now, run one state at a time.", "info"));
   els.estAddDriveFiles?.addEventListener("click", openEstimatedDrivePicker);
   els.estDownloadBlankTemplate?.addEventListener("click", downloadEstimatedBlankTemplate);
@@ -1237,6 +1242,12 @@ function setEstimatedZoneFiles(zone, files) {
       if (!existing.has(fileKey(file))) estimatedTaxesState.taxReturnFiles.push(file);
     });
   }
+  if (zone === "additional") {
+    const existing = new Set(estimatedTaxesState.additionalFiles.map(fileKey));
+    files.forEach((file) => {
+      if (!existing.has(fileKey(file))) estimatedTaxesState.additionalFiles.push(file);
+    });
+  }
   renderEstimatedTaxFiles();
   updateEstimatedEntityType(estimatedTaxesState.entityType);
   updateEstimatedCalculateAvailability();
@@ -1270,15 +1281,23 @@ function addEstimatedDriveFiles(files) {
     } else if (!estimatedTaxesState.balanceSheetFile && /(balance|bs|statement of financial position)/.test(name)) {
       estimatedTaxesState.balanceSheetFile = file;
       placed += 1;
+    } else if (/(w-?2|1099|notice|cp\d|letter)/.test(name)) {
+      const existing = new Set(estimatedTaxesState.additionalFiles.map(fileKey));
+      if (!existing.has(fileKey(file))) estimatedTaxesState.additionalFiles.push(file);
+      placed += 1;
     } else if (/(return|1040|1120|1065|990|form)/.test(name) || /\.pdf$/i.test(name)) {
       const existing = new Set(estimatedTaxesState.taxReturnFiles.map(fileKey));
       if (!existing.has(fileKey(file))) estimatedTaxesState.taxReturnFiles.push(file);
+      placed += 1;
+    } else {
+      const existing = new Set(estimatedTaxesState.additionalFiles.map(fileKey));
+      if (!existing.has(fileKey(file))) estimatedTaxesState.additionalFiles.push(file);
       placed += 1;
     }
   }
   renderEstimatedTaxFiles();
   updateEstimatedCalculateAvailability();
-  showToast(placed ? `${placed} Drive file(s) added to Estimates.` : "No selected Drive files matched an Estimates zone. Rename or upload manually.", placed ? "success" : "warning");
+  showToast(placed ? `${placed} Drive file(s) added to Estimates.` : "No Drive files were selected.", placed ? "success" : "warning");
 }
 
 async function detectEstimatedPlPeriod(file) {
@@ -1378,6 +1397,22 @@ function renderEstimatedTaxFiles() {
     });
   }
   els.estTaxReturnsDropzone?.classList.toggle("filled", estimatedTaxesState.taxReturnFiles.length > 0);
+  if (els.estAdditionalStatus) {
+    els.estAdditionalStatus.innerHTML = estimatedTaxesState.additionalFiles.length
+      ? estimatedTaxesState.additionalFiles.map((file, index) => `
+        <span class="est-zone-file">${escapeHtml(displayFileName(file))} <button type="button" data-est-additional-remove="${index}">Remove</button></span>
+      `).join("")
+      : "No additional documents uploaded.";
+    els.estAdditionalStatus.querySelectorAll("[data-est-additional-remove]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        estimatedTaxesState.additionalFiles.splice(Number(button.dataset.estAdditionalRemove), 1);
+        renderEstimatedTaxFiles();
+        updateEstimatedCalculateAvailability();
+      });
+    });
+  }
+  els.estAdditionalDropzone?.classList.toggle("filled", estimatedTaxesState.additionalFiles.length > 0);
 }
 
 function renderEstimatedZoneStatus(zone, file, statusEl, dropzone, emptyText) {
@@ -1479,6 +1514,8 @@ async function collectEstimatedTaxesPayload() {
   const balanceSheetFile = estimatedTaxesState.balanceSheetFile ? await prepareEstimatedZoneFilePayload(estimatedTaxesState.balanceSheetFile, "current_year_balance_sheet") : null;
   const taxReturnFiles = [];
   for (const file of estimatedTaxesState.taxReturnFiles) taxReturnFiles.push(await prepareEstimatedZoneFilePayload(file, "prior_year_return"));
+  const additionalFiles = [];
+  for (const file of estimatedTaxesState.additionalFiles) additionalFiles.push(await prepareEstimatedZoneFilePayload(file, "supporting_document"));
   const plMonthsOverride = Number(estFieldValue("estPlMonthsOverride") || 0) || null;
   return {
     clientName: estFieldValue("estClientName") || "Client",
@@ -1514,7 +1551,8 @@ async function collectEstimatedTaxesPayload() {
     plMonthsOverride,
     balanceSheetFile,
     taxReturnFiles,
-    files: [customTemplateFile, plFile, balanceSheetFile, ...taxReturnFiles].filter(Boolean),
+    additionalFiles,
+    files: [customTemplateFile, plFile, balanceSheetFile, ...taxReturnFiles, ...additionalFiles].filter(Boolean),
     plDetection: estimatedTaxesState.plPeriod,
     notes: estFieldValue("estAdditionalNotes"),
   };
