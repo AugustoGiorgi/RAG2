@@ -63,6 +63,15 @@ const els = {
   adminNavButton: document.getElementById("adminNavButton"),
   adminDashboard: document.getElementById("admin-dashboard"),
   closeAdminDashboardButton: document.getElementById("closeAdminDashboardButton"),
+  adminCreateUserForm: document.getElementById("adminCreateUserForm"),
+  adminRefreshUsers: document.getElementById("adminRefreshUsers"),
+  adminUsersList: document.getElementById("adminUsersList"),
+  adminUserMessage: document.getElementById("adminUserMessage"),
+  adminNewUsername: document.getElementById("adminNewUsername"),
+  adminNewDisplayName: document.getElementById("adminNewDisplayName"),
+  adminNewPassword: document.getElementById("adminNewPassword"),
+  adminNewSpendLimit: document.getElementById("adminNewSpendLimit"),
+  adminNewRole: document.getElementById("adminNewRole"),
   apiStatus: document.getElementById("apiStatus"),
   webSearchStatus: document.getElementById("webSearchStatus"),
   webSearchPolicy: document.getElementById("webSearchPolicy"),
@@ -603,6 +612,8 @@ function init() {
   els.qboFetchBtn?.addEventListener("click", fetchQBOReports);
   els.adminNavButton?.addEventListener("click", openAdminDashboard);
   els.closeAdminDashboardButton?.addEventListener("click", closeAdminDashboard);
+  els.adminRefreshUsers?.addEventListener("click", loadAdminUsers);
+  els.adminCreateUserForm?.addEventListener("submit", createAdminUser);
   document.querySelectorAll("[data-qbo-preset]").forEach((button) => button.addEventListener("click", () => setQBOPreset(button.dataset.qboPreset, button)));
   setupEstimatedTaxesEvents();
   setupTrackerEvents();
@@ -3897,9 +3908,15 @@ async function loadAuthStatus() {
       role: payload.role || "user",
       displayName: payload.displayName || payload.username || "",
     };
+    document.body.classList.toggle("admin-mode", currentUser.role === "admin");
     document.querySelectorAll(".admin-only").forEach((element) => {
       element.hidden = currentUser.role !== "admin";
     });
+    if (currentUser.role === "admin") {
+      els.userStatus.textContent = currentUser.displayName ? `Admin: ${currentUser.displayName}` : "Admin";
+      openAdminDashboard();
+      return;
+    }
     els.userStatus.textContent = currentUser.displayName ? `Signed in: ${currentUser.displayName}` : "Signed in";
     if (!els.deliverablePreparerName.value.trim()) els.deliverablePreparerName.value = currentUsername;
   } catch (_) {
@@ -3921,13 +3938,192 @@ function showCostEstimateBanner(estimate, onConfirm, onCancel) {
   onConfirm?.();
 }
 
-function openAdminDashboard() {
+async function openAdminDashboard() {
   if (currentUser.role !== "admin") return;
   els.adminDashboard.hidden = false;
+  await loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error"));
 }
 
 function closeAdminDashboard() {
+  if (currentUser.role === "admin") {
+    els.adminDashboard.hidden = false;
+    return;
+  }
   els.adminDashboard.hidden = true;
+}
+
+function showAdminUserMessage(message, type = "success") {
+  if (!els.adminUserMessage) return;
+  els.adminUserMessage.hidden = false;
+  els.adminUserMessage.textContent = message;
+  els.adminUserMessage.classList.toggle("success", type !== "error");
+  els.adminUserMessage.classList.toggle("error", type === "error");
+}
+
+async function loadAdminUsers() {
+  if (!els.adminUsersList) return [];
+  els.adminUsersList.innerHTML = `<div class="admin-user-row">Loading users...</div>`;
+  const response = await fetch(`${API_BASE_URL}/api/admin/users`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Could not load users.");
+  renderAdminUsers(payload.users || []);
+  return payload.users || [];
+}
+
+function renderAdminUsers(users) {
+  if (!els.adminUsersList) return;
+  if (!users.length) {
+    els.adminUsersList.innerHTML = `<div class="admin-user-row">No users created yet.</div>`;
+    return;
+  }
+  els.adminUsersList.innerHTML = users.map((user) => {
+    const username = user.username || "";
+    const limit = user.spendLimitUsd ?? "";
+    const used = formatUsd(user.spendUsedUsd || 0);
+    const budgetText = user.spendHasLimit
+      ? `Used ${used} / Limit ${formatUsd(user.spendLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)}`
+      : `Used ${used} / No limit`;
+    return `
+      <article class="admin-user-row" data-admin-user="${escapeHtml(username)}">
+        <div class="admin-user-identity">
+          <strong>${escapeHtml(username)}</strong>
+          <span>${escapeHtml(user.displayName || "")}</span>
+          <span class="admin-user-spend">${escapeHtml(budgetText)}</span>
+        </div>
+        <label>
+          <span>Display</span>
+          <input data-admin-display="${escapeHtml(username)}" value="${escapeHtml(user.displayName || "")}" />
+        </label>
+        <label>
+          <span>Role</span>
+          <select data-admin-role="${escapeHtml(username)}">
+            <option value="user"${user.role === "user" ? " selected" : ""}>User</option>
+            <option value="admin"${user.role === "admin" ? " selected" : ""}>Admin</option>
+          </select>
+        </label>
+        <label>
+          <span>Status</span>
+          <select data-admin-active="${escapeHtml(username)}">
+            <option value="true"${user.active === false ? "" : " selected"}>Active</option>
+            <option value="false"${user.active === false ? " selected" : ""}>Disabled</option>
+          </select>
+        </label>
+        <label>
+          <span>Budget USD</span>
+          <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" />
+        </label>
+        <div class="admin-user-actions">
+          <button class="ghost-button small-button" type="button" data-admin-save="${escapeHtml(username)}">Save</button>
+          <button class="ghost-button small-button" type="button" data-admin-password="${escapeHtml(username)}">Password</button>
+          <button class="admin-danger-button" type="button" data-admin-delete="${escapeHtml(username)}">Delete</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+  bindAdminUserActions();
+}
+
+function bindAdminUserActions() {
+  els.adminUsersList?.querySelectorAll("[data-admin-save]").forEach((button) => {
+    button.addEventListener("click", () => updateAdminUser(button.dataset.adminSave));
+  });
+  els.adminUsersList?.querySelectorAll("[data-admin-password]").forEach((button) => {
+    button.addEventListener("click", () => resetAdminUserPassword(button.dataset.adminPassword));
+  });
+  els.adminUsersList?.querySelectorAll("[data-admin-delete]").forEach((button) => {
+    button.addEventListener("click", () => deleteAdminUser(button.dataset.adminDelete));
+  });
+}
+
+async function createAdminUser(event) {
+  event.preventDefault();
+  const username = els.adminNewUsername.value.trim();
+  const password = els.adminNewPassword.value;
+  const spendLimitUsd = els.adminNewSpendLimit.value;
+  if (!username || !password) {
+    showAdminUserMessage("Username and password are required.", "error");
+    return;
+  }
+  const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username,
+      password,
+      displayName: els.adminNewDisplayName.value.trim(),
+      role: els.adminNewRole.value || "user",
+      spendLimitUsd,
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showAdminUserMessage(payload.error || "Could not create user.", "error");
+    return;
+  }
+  els.adminCreateUserForm.reset();
+  if (els.adminNewRole) els.adminNewRole.value = "user";
+  showAdminUserMessage(`User ${username} created.`);
+  await loadAdminUsers();
+}
+
+async function updateAdminUser(username) {
+  if (!username) return;
+  const displayName = els.adminUsersList?.querySelector(`[data-admin-display="${cssEscape(username)}"]`)?.value || "";
+  const role = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`)?.value || "user";
+  const active = els.adminUsersList?.querySelector(`[data-admin-active="${cssEscape(username)}"]`)?.value !== "false";
+  const spendLimitUsd = els.adminUsersList?.querySelector(`[data-admin-limit="${cssEscape(username)}"]`)?.value ?? "";
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ displayName, role, active, spendLimitUsd }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showAdminUserMessage(payload.error || "Could not update user.", "error");
+    return;
+  }
+  showAdminUserMessage(`User ${username} updated.`);
+  await loadAdminUsers();
+}
+
+async function resetAdminUserPassword(username) {
+  if (!username) return;
+  const password = window.prompt(`New password for ${username}`);
+  if (!password) return;
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}/password`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showAdminUserMessage(payload.error || "Could not reset password.", "error");
+    return;
+  }
+  showAdminUserMessage(`Password updated for ${username}.`);
+}
+
+async function deleteAdminUser(username) {
+  if (!username) return;
+  if (!window.confirm(`Delete user ${username}? This cannot be undone.`)) return;
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showAdminUserMessage(payload.error || "Could not delete user.", "error");
+    return;
+  }
+  showAdminUserMessage(`User ${username} deleted.`);
+  await loadAdminUsers();
+}
+
+function formatUsd(value) {
+  const number = Number(value || 0);
+  return `$${number.toFixed(2)}`;
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 

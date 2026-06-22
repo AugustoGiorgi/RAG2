@@ -76,9 +76,31 @@
       <div id="admin-dashboard" class="admin-dashboard" hidden>
         <div class="admin-dashboard-header">
           <div>
-            <h2>Admin Dashboard</h2>
+            <h2>User Administration</h2>
+            <p>Create users, assign token budgets, increase limits, and remove access.</p>
           </div>
           <button id="closeAdminDashboardButton" type="button">Close</button>
+        </div>
+        <div class="admin-users-shell">
+          <section class="admin-users-panel">
+            <h3>Create User</h3>
+            <div id="adminUserMessage" class="admin-user-message" hidden></div>
+            <form id="adminCreateUserForm" class="admin-user-form">
+              <label><span>Username</span><input id="adminNewUsername" autocomplete="off" required /></label>
+              <label><span>Display name</span><input id="adminNewDisplayName" autocomplete="off" /></label>
+              <label><span>Password</span><input id="adminNewPassword" type="text" autocomplete="off" minlength="12" required /></label>
+              <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="Example: 25.00" required /></label>
+              <label><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="admin">Administrator</option></select></label>
+              <button class="primary-button small-button" type="submit">Create User</button>
+            </form>
+          </section>
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <h3>Users</h3>
+              <button id="adminRefreshUsers" class="ghost-button small-button" type="button">Refresh</button>
+            </div>
+            <div id="adminUsersList" class="admin-users-list"></div>
+          </section>
         </div>
       </div>
 

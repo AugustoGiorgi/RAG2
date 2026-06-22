@@ -5228,6 +5228,136 @@ h1 {
   color: white;
 }
 
+.admin-users-shell {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  padding: 28px 32px;
+}
+
+.admin-users-panel {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.admin-users-panel h3,
+.admin-users-list-header h3 {
+  color: #0f1e3d;
+  font-size: 15px;
+  margin: 0 0 16px;
+}
+
+.admin-user-form {
+  display: grid;
+  gap: 13px;
+}
+
+.admin-user-form label,
+.admin-user-row label {
+  color: #374151;
+  display: grid;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 6px;
+}
+
+.admin-user-form input,
+.admin-user-form select,
+.admin-user-row input,
+.admin-user-row select {
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  color: #111827;
+  font: inherit;
+  padding: 9px 10px;
+}
+
+.admin-user-message {
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 750;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+}
+
+.admin-user-message.success {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  color: #166534;
+}
+
+.admin-user-message.error {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+}
+
+.admin-users-list-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.admin-users-list {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-user-row {
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1.1fr .8fr .75fr .75fr .75fr auto;
+  padding: 14px;
+}
+
+.admin-user-identity strong {
+  color: #0f1e3d;
+  display: block;
+  font-size: 14px;
+}
+
+.admin-user-identity span,
+.admin-user-spend {
+  color: #64748b;
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.admin-user-actions {
+  align-items: end;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.admin-danger-button {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 6px;
+  color: #be123c;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+
+body.admin-mode .app-shell > :not(.topbar):not(#admin-dashboard) {
+  display: none !important;
+}
+
+body.admin-mode #admin-dashboard {
+  display: block;
+}
+
+body.admin-mode #adminNavButton {
+  display: none;
+}
+
 .cost-summary-cards {
   display: grid;
   gap: 16px;
@@ -5398,6 +5528,11 @@ h1 {
 @media (max-width: 900px) {
   .cost-summary-cards,
   .cost-breakdown-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-users-shell,
+  .admin-user-row {
     grid-template-columns: 1fr;
   }
 

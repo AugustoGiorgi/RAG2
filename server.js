@@ -597,6 +597,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname.startsWith("/assets/")) { await serveStatic(req, res); return; }
     if (req.method === "GET" && FAVICON_ROUTES[requestUrl.pathname]) { await serveFavicon(res, FAVICON_ROUTES[requestUrl.pathname]); return; }
     if (!requireAuthenticated(req, res)) return;
+    if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
     if (req.method === "DELETE" && req.url === "/api/research/chat") { await handleResearchClear(req, res); return; }
@@ -3261,6 +3262,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       passwordHash: createPasswordHash(password),
       role: payload.role === "admin" ? "admin" : "user",
       displayName: String(payload.displayName || username).trim(),
+      spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
       active: payload.active !== false,
       createdAt: now,
       updatedAt: now,
@@ -3280,10 +3282,23 @@ async function handleAdminUsersApi(req, res, requestUrl) {
     if (payload.role !== undefined) user.role = payload.role === "admin" ? "admin" : "user";
     if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
     if (payload.active !== undefined) user.active = Boolean(payload.active);
+    if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
     user.updatedAt = new Date().toISOString();
     writeUserStore(store);
-    appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false });
+    appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd });
     sendJson(res, 200, { user: publicUser(user) });
+    return;
+  }
+  if (parts.length === 4 && req.method === "DELETE") {
+    const username = decodeURIComponent(parts[3]);
+    const index = store.users.findIndex((item) => item.username === username);
+    if (index < 0) { sendJson(res, 404, { error: "User not found." }); return; }
+    const user = store.users[index];
+    if (user.username === req.user?.username) { sendJson(res, 400, { error: "You cannot delete your own admin account." }); return; }
+    store.users.splice(index, 1);
+    writeUserStore(store);
+    appendAuditLog(req, "admin.user_deleted", { username, role: user.role });
+    sendJson(res, 200, { ok: true });
     return;
   }
   if (parts.length === 5 && parts[4] === "password" && req.method === "PUT") {
@@ -3453,6 +3468,7 @@ function getAuthUsers() {
       ...user,
       role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
       displayName: String(user.displayName || user.username),
+      spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
     }));
 }
 
@@ -3482,6 +3498,7 @@ function parseAuthUsersJson() {
         ...user,
         role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
         displayName: String(user.displayName || user.username),
+        spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
         active: user.active !== false,
         createdAt: user.createdAt || new Date().toISOString(),
       }));
@@ -3491,15 +3508,38 @@ function parseAuthUsersJson() {
 }
 
 function publicUser(user) {
+  const budget = userSpendBudget(user.username);
   return {
     username: user.username,
     role: user.role === "admin" ? "admin" : "user",
     displayName: user.displayName || user.username,
     active: user.active !== false,
+    spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
+    spendUsedUsd: budget.usedUsd,
+    spendRemainingUsd: budget.remainingUsd,
+    spendHasLimit: budget.hasLimit,
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
     lastPasswordChangeAt: user.lastPasswordChangeAt || "",
   };
+}
+
+function sanitizeSpendLimit(value) {
+  if (value === null || value === "" || value === undefined) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return null;
+  return roundMoney(number);
+}
+
+function userSpendBudget(username) {
+  const user = readUserStore().users.find((item) => item.username === username);
+  const limitUsd = user?.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd);
+  const usedUsd = roundMoney((readCostLog().entries || [])
+    .filter((entry) => entry.username === username)
+    .reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0));
+  const hasLimit = limitUsd !== null;
+  const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
+  return { hasLimit, limitUsd, usedUsd, remainingUsd };
 }
 
 function createPasswordHash(password) {
@@ -5172,6 +5212,51 @@ function isApiRequest(req) {
   return req.url.startsWith("/api/");
 }
 
+function isTokenConsumingRoute(req, requestUrl) {
+  if (req.method !== "POST") return false;
+  const pathName = requestUrl.pathname;
+  return [
+    "/api/research/chat",
+    "/api/review",
+    "/api/review/respond",
+    "/api/prepare-workpaper",
+    "/api/preparation/data-entry-guide",
+    "/api/preparation/drake-ui-load",
+    "/api/estimated-taxes/calculate",
+    "/api/presentations/generate",
+    "/api/calculations/run",
+    "/api/notices",
+    "/api/diagnostics",
+    "/api/organizer",
+    "/api/deliverable",
+    "/api/deliverable/email-draft",
+    "/api/deliverable/generate-draft",
+    "/api/requests/generate-email",
+  ].includes(pathName);
+}
+
+function requireUserSpendBudget(req, res) {
+  const session = req.user || getSession(req);
+  if (session?.role === "admin") {
+    sendJson(res, 403, {
+      code: "ADMIN_APP_ACCESS_DISABLED",
+      error: "Administrator accounts can only manage users. Sign in with a user account to run app actions.",
+    });
+    return false;
+  }
+  const budget = userSpendBudget(session?.username);
+  if (!budget.hasLimit) return true;
+  if (budget.remainingUsd > 0) return true;
+  sendJson(res, 402, {
+    code: "USER_SPEND_LIMIT_REACHED",
+    error: "Action limit reached for this account. Ask an administrator to increase your token budget before running more AI actions.",
+    spendLimitUsd: budget.limitUsd,
+    spendUsedUsd: budget.usedUsd,
+    remainingUsd: budget.remainingUsd,
+  });
+  return false;
+}
+
 async function handleCostApi(req, res, requestUrl) {
   if (req.method === "GET" && requestUrl.pathname === "/api/cost/estimate") {
     sendJson(res, 200, estimateCost({
@@ -5431,9 +5516,6 @@ function buildLoginPage(error = "") {
       .login-form-container { width: min(400px, 100%); }
       .login-form-title { margin: 0 0 4px; color: #0f1e3d; font-size: 28px; }
       .login-form-subtitle { margin: 0 0 28px; color: #64748b; font-size: 14px; }
-      .login-role-selector { display: flex; gap: 8px; padding: 4px; margin-bottom: 24px; border-radius: 10px; background: #e2e8f0; }
-      .login-role-btn { flex: 1; border: 0; border-radius: 8px; padding: 9px 12px; background: transparent; color: #64748b; font-weight: 700; cursor: pointer; }
-      .login-role-btn.active { background: white; color: #0f1e3d; box-shadow: 0 1px 4px rgba(15,23,42,.12); }
       .login-field { margin-bottom: 16px; }
       .login-field label { display: block; margin-bottom: 6px; color: #374151; font-size: 13px; font-weight: 750; }
       .login-field input { width: 100%; border: 1px solid #d1d5db; border-radius: 8px; padding: 11px 14px; color: #111827; font: inherit; background: white; }
@@ -5481,10 +5563,6 @@ function buildLoginPage(error = "") {
         <div class="login-form-container">
           <h2 class="login-form-title">Welcome back</h2>
           <p class="login-form-subtitle">Sign in to your account</p>
-          <div class="login-role-selector" aria-label="Role selector">
-            <button class="login-role-btn active" data-role="user" type="button">User</button>
-            <button class="login-role-btn" data-role="admin" type="button">Administrator</button>
-          </div>
           ${error ? `<div class="login-error">${escapeHtml(error)}</div>` : '<div id="error" class="login-error" hidden></div>'}
           <form id="loginForm">
             <div class="login-field"><label for="username">Username</label><input id="username" autocomplete="username" placeholder="Enter your username" required /></div>
@@ -5503,11 +5581,6 @@ function buildLoginPage(error = "") {
       </section>
     </main>
     <script>
-      document.querySelectorAll(".login-role-btn").forEach((button) => {
-        button.addEventListener("click", () => {
-          document.querySelectorAll(".login-role-btn").forEach((item) => item.classList.toggle("active", item === button));
-        });
-      });
       document.getElementById("showPasswordButton").addEventListener("click", () => {
         const input = document.getElementById("password");
         input.type = input.type === "password" ? "text" : "password";
