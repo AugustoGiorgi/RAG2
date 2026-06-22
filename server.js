@@ -1465,7 +1465,7 @@ async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
     maxTokens: 16000,
     webSearch: false,
     models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
-    thinking: { type: "enabled", budget_tokens: 10000 },
+    thinking: { type: "enabled", budget_tokens: 6000 },
     system: [{
       type: "text",
       text: withDatabaseContext([
@@ -2298,7 +2298,16 @@ function buildEstimatedTaxFileContext(files = []) {
     const type = String(file.type || mimeFromName(name) || "").toLowerCase();
     const content = String(file.content || file.contentBase64 || "");
     if (content && (type.includes("pdf") || /\.pdf$/i.test(name))) {
-      documents.push({ name, content, role: file.estimatedRole || String(file.role || "financial_report") });
+      // COST: a PDF sent as a document block is processed as page images (~1500-3000 tokens
+      // per page). The same PDF's extracted text is ALREADY included in the prompt via
+      // buildEstimatedDocumentBlocks, so attaching the image block too just doubles the input
+      // cost. Only attach it when the text could not be extracted (scanned / image-only PDF),
+      // where the model genuinely needs to read the pages visually.
+      const extractedText = String(file.text || "").trim();
+      const textIsWeak = extractedText.length < 300;
+      if (textIsWeak) {
+        documents.push({ name, content, role: file.estimatedRole || String(file.role || "financial_report") });
+      }
     }
   }
   return {
