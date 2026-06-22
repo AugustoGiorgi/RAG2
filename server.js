@@ -1465,7 +1465,7 @@ async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
     maxTokens: 16000,
     webSearch: false,
     models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
-    thinking: { type: "enabled", budget_tokens: 6000 },
+    thinking: { type: "enabled", budget_tokens: 10000 },
     system: [{
       type: "text",
       text: withDatabaseContext([
