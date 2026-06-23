@@ -41,6 +41,10 @@ body {
   font-family: Inter, Arial, sans-serif;
 }
 
+body.auth-loading .app-shell {
+  visibility: hidden;
+}
+
 button,
 input,
 select,

@@ -3952,13 +3952,16 @@ async function loadAuthStatus() {
     });
     if (currentUser.role === "admin") {
       els.userStatus.textContent = currentUser.displayName ? `Admin: ${currentUser.displayName}` : "Admin";
+      document.body.classList.remove("auth-loading");
       openAdminDashboard();
       return;
     }
     els.userStatus.textContent = currentUser.displayName ? `Signed in: ${currentUser.displayName}` : "Signed in";
     if (!els.deliverablePreparerName.value.trim()) els.deliverablePreparerName.value = currentUsername;
+    document.body.classList.remove("auth-loading");
   } catch (_) {
     els.userStatus.textContent = "Auth unknown";
+    document.body.classList.remove("auth-loading");
   }
 }
 
@@ -3984,7 +3987,7 @@ async function openAdminDashboard() {
 
 function closeAdminDashboard() {
   if (currentUser.role === "admin") {
-    els.adminDashboard.hidden = false;
+    logout();
     return;
   }
   els.adminDashboard.hidden = true;
