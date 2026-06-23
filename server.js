@@ -4337,10 +4337,16 @@ async function fetchQboReport(username, realmId, reportSpec = {}) {
   const params = {};
   if (reportSpec.startDate) params.start_date = reportSpec.startDate;
   if (reportSpec.endDate) params.end_date = reportSpec.endDate;
-  // QBO's Reports API has NO `as_of_date` parameter. Point-in-time reports (Balance
-  // Sheet, agings) use `end_date` as the "as of" date. Sending as_of_date is silently
-  // ignored by QBO, which then returns the report as of today. Map it to end_date.
-  if (reportSpec.asOfDate && !params.end_date) params.end_date = reportSpec.asOfDate;
+  // QBO's Reports API has NO `as_of_date` parameter. Point-in-time reports use the
+  // as-of date under DIFFERENT param names depending on the report family:
+  //   - Balance Sheet / Inventory Valuation -> `end_date`
+  //   - A/R & A/P aging, Customer/Vendor balance -> `report_date`
+  // QBO silently ignores params that don't apply to a given report, so setting both
+  // is safe and guarantees the as-of date is honored instead of defaulting to today.
+  if (reportSpec.asOfDate) {
+    if (!params.end_date) params.end_date = reportSpec.asOfDate;
+    params.report_date = reportSpec.asOfDate;
+  }
   if (reportSpec.comparative) params.summarize_column_by = "Year";
   if (reportSpec.summarizeColumnsBy) params.summarize_column_by = reportSpec.summarizeColumnsBy;
   if (reportSpec.accountingMethod) params.accounting_method = reportSpec.accountingMethod;
