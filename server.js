@@ -594,10 +594,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo/callback") { await handleQboCallback(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/auth/accounting/")) { await handleAccountingAuthRoute(req, res, requestUrl); return; }
     if (req.method === "GET" && req.url === "/healthz") { await handleHealth(req, res); return; }
-    if (req.method === "GET" && requestUrl.pathname.startsWith("/assets/")) { await serveStatic(req, res); return; }
-    if (req.method === "GET" && FAVICON_ROUTES[requestUrl.pathname]) { await serveFavicon(res, FAVICON_ROUTES[requestUrl.pathname]); return; }
+    if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname.startsWith("/assets/")) { await serveStatic(req, res); return; }
+    if ((req.method === "GET" || req.method === "HEAD") && FAVICON_ROUTES[requestUrl.pathname]) { await serveFavicon(req, res, FAVICON_ROUTES[requestUrl.pathname]); return; }
     if (req.method === "GET" && requestUrl.pathname === "/privacy") { servePrivacyPolicy(res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/eula") { serveEula(res); return; }
+    if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
@@ -5474,16 +5475,39 @@ function buildLoginPage(error = "") {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sign in - RAG Tax AI</title>
     <meta name="description" content="AI-powered tax return review, automated workpaper preparation, and direct accounting software integration for CPA firms." />
+    <link rel="canonical" href="https://ragtax-ia.com/login" />
     <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png" />
     <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png" />
     <link rel="icon" type="image/png" sizes="144x144" href="/favicon-144.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <meta property="og:title" content="RAG Tax AI" />
     <meta property="og:description" content="AI-powered tax return review, automated workpaper preparation, and direct accounting software integration for CPA firms." />
     <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ragtax-ia.com/login" />
     <meta property="og:image" content="https://ragtax-ia.com/favicon-192.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "RAG Tax AI",
+        "url": "https://ragtax-ia.com/",
+        "description": "AI-powered tax return review, automated workpaper preparation, and direct accounting software integration for CPA firms.",
+        "publisher": {
+          "@type": "Organization",
+          "name": "RAG Tax AI",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://ragtax-ia.com/favicon-512.png",
+            "width": 512,
+            "height": 512
+          }
+        }
+      }
+    </script>
     <style>
       :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #f8fafc; }
       * { box-sizing: border-box; }
@@ -5629,8 +5653,17 @@ function buildAccessRequestPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Request access - RAG Tax AI</title>
     <meta name="description" content="Request a RAG Tax AI account and receive a proposal tailored to your estimated annual return volume." />
+    <link rel="canonical" href="https://ragtax-ia.com/request-access" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta property="og:title" content="Request access - RAG Tax AI" />
+    <meta property="og:description" content="Request a RAG Tax AI account and receive a proposal tailored to your estimated annual return volume." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://ragtax-ia.com/request-access" />
+    <meta property="og:image" content="https://ragtax-ia.com/favicon-192.png" />
     <style>
       :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #0f172a; background: #f8fafc; }
       * { box-sizing: border-box; }
@@ -12426,6 +12459,7 @@ const FAVICON_ROUTES = {
   "/favicon-96.png": "favicon-96.png",
   "/favicon-144.png": "favicon-144.png",
   "/favicon-192.png": "favicon-192.png",
+  "/favicon-512.png": "favicon-512.png",
   "/apple-touch-icon.png": "apple-touch-icon.png",
 };
 
@@ -12517,14 +12551,40 @@ function serveEula(res) {
   `);
 }
 
-async function serveFavicon(res, fileName) {
+async function serveFavicon(req, res, fileName) {
   try {
     const file = await fs.readFile(path.join(ROOT, "assets", "icons", fileName));
     const ext = path.extname(fileName).toLowerCase();
     const contentType = ext === ".ico" ? "image/x-icon" : (mimeTypes[ext] || "application/octet-stream");
-    res.writeHead(200, { "content-type": contentType, "cache-control": "public, max-age=604800" });
+    res.writeHead(200, { "content-type": contentType, "cache-control": "public, max-age=604800", "content-length": file.length });
+    if (req.method === "HEAD") { res.end(); return; }
     res.end(file);
   } catch (_) { sendText(res, 404, "Not found"); }
+}
+
+async function serveWebManifest(req, res) {
+  const manifest = {
+    name: "RAG Tax AI",
+    short_name: "RAG Tax AI",
+    description: "AI-powered tax return review and workpaper preparation for CPA firms.",
+    start_url: "/login",
+    scope: "/",
+    display: "standalone",
+    background_color: "#f8fafc",
+    theme_color: "#164a92",
+    icons: [
+      { src: "/favicon-192.png", sizes: "192x192", type: "image/png" },
+      { src: "/favicon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  };
+  const body = JSON.stringify(manifest);
+  res.writeHead(200, {
+    "content-type": "application/manifest+json; charset=utf-8",
+    "cache-control": "public, max-age=604800",
+    "content-length": Buffer.byteLength(body),
+  });
+  if (req.method === "HEAD") { res.end(); return; }
+  res.end(body);
 }
 
 async function serveStatic(req, res) {
