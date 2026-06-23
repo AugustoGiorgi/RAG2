@@ -4337,7 +4337,10 @@ async function fetchQboReport(username, realmId, reportSpec = {}) {
   const params = {};
   if (reportSpec.startDate) params.start_date = reportSpec.startDate;
   if (reportSpec.endDate) params.end_date = reportSpec.endDate;
-  if (reportSpec.asOfDate) params.as_of_date = reportSpec.asOfDate;
+  // QBO's Reports API has NO `as_of_date` parameter. Point-in-time reports (Balance
+  // Sheet, agings) use `end_date` as the "as of" date. Sending as_of_date is silently
+  // ignored by QBO, which then returns the report as of today. Map it to end_date.
+  if (reportSpec.asOfDate && !params.end_date) params.end_date = reportSpec.asOfDate;
   if (reportSpec.comparative) params.summarize_column_by = "Year";
   if (reportSpec.summarizeColumnsBy) params.summarize_column_by = reportSpec.summarizeColumnsBy;
   if (reportSpec.accountingMethod) params.accounting_method = reportSpec.accountingMethod;
@@ -4762,6 +4765,8 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
       const query = new URLSearchParams();
       if (spec.startDate) query.set("fromDate", spec.startDate);
       if (spec.endDate) query.set("toDate", spec.endDate);
+      // Xero point-in-time reports (BalanceSheet, agings) use `date` as the as-of date.
+      if (spec.asOfDate) query.set("date", spec.asOfDate);
       query.set("reportingBasis", spec.cash ? "CASH" : "ACCRUAL");
       return accountingApiFetch(`https://api.xero.com/api.xro/2.0/Reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, tok, { headers: { "xero-tenant-id": companyId } });
     }
@@ -4769,7 +4774,7 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
       const map = { ProfitAndLoss: "profitandloss", BalanceSheet: "balancesheet", TrialBalance: "trial_balance", CashFlow: "cashflow", GeneralLedger: "generalledger", AgedReceivables: "aging/receivables", AgedPayables: "aging/payables" };
       const query = new URLSearchParams({ organization_id: companyId });
       if (spec.startDate) query.set("from_date", spec.startDate);
-      if (spec.endDate) query.set("to_date", spec.endDate);
+      if (spec.endDate || spec.asOfDate) query.set("to_date", spec.endDate || spec.asOfDate);
       if (spec.cash) query.set("cash_basis", "true");
       return accountingApiFetch(`https://www.zohoapis.com/books/v3/reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, tok);
     }
@@ -4777,7 +4782,7 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
       const map = { ProfitAndLoss: "profitloss", BalanceSheet: "balancesheet", TaxSummary: "taxsummary", ExpenseReport: "expenses_report" };
       const query = new URLSearchParams();
       if (spec.startDate) query.set("date_from", spec.startDate);
-      if (spec.endDate) query.set("date_to", spec.endDate);
+      if (spec.endDate || spec.asOfDate) query.set("date_to", spec.endDate || spec.asOfDate);
       return accountingApiFetch(`https://api.freshbooks.com/accounting/account/${companyId}/reports/${map[spec.reportId] || "profitloss"}?${query.toString()}`, tok);
     }
     if (softwareId === "wave") {
