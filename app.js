@@ -3335,17 +3335,35 @@ function updateQBOFetchButton() {
 
 async function fetchQBOReports() {
   const reportIds = Array.from(qboState.selectedReports);
+  // Snapshot the download parameters ONCE so every selected report is pulled with
+  // identical dates and accounting method. Period reports (P&L, Trial Balance) use the
+  // full date range; point-in-time reports (Balance Sheet, agings) use the SAME period
+  // end as their "as of" date. This guarantees a P&L for 1/1-12/31 and its matching
+  // Balance Sheet as of 12/31 always line up — no drift between separate report types.
   const method = document.querySelector('input[name="qbo-method"]:checked')?.value || "Accrual";
+  const comparative = Boolean(els.qboComparative?.checked);
+  const params = { startDate: qboState.startDate, endDate: qboState.endDate, accountingMethod: method, cash: method === "Cash", comparative };
+  if (!params.startDate || !params.endDate) {
+    showToast("Set a date range before pulling reports.", "error");
+    return;
+  }
   els.qboFetchBtn.disabled = true;
   els.qboFetchStatus.hidden = false;
-  els.qboFetchStatus.innerHTML = reportIds.map((id) => `<div class="qbo-progress-item" id="qbo-progress-${escapeHtml(id)}"><span>...</span>${escapeHtml(qboReportName(id))}</div>`).join("");
+  const resolvedDateLabel = (reportId) => {
+    const info = qboState.availableReports.find((report) => report.id === reportId) || {};
+    if (info.asOfDate) return `as of ${params.endDate}`;
+    if (info.dateRange) return `${params.startDate} → ${params.endDate}`;
+    return "no date filter";
+  };
+  els.qboFetchStatus.innerHTML = `<div class="qbo-fetch-params">Applying to all: <strong>${escapeHtml(params.startDate)} → ${escapeHtml(params.endDate)}</strong> · <strong>${escapeHtml(method)}</strong> basis${comparative ? " · comparative" : ""}</div>`
+    + reportIds.map((id) => `<div class="qbo-progress-item" id="qbo-progress-${escapeHtml(id)}"><span>...</span>${escapeHtml(qboReportName(id))} <small class="muted-note">(${escapeHtml(resolvedDateLabel(id))})</small></div>`).join("");
   try {
     const payload = {
       softwareId: qboState.activeSoftwareId,
       companyId: qboState.selectedRealmId,
       reports: reportIds.map((reportId) => {
         const info = qboState.availableReports.find((report) => report.id === reportId) || {};
-        return { reportId, startDate: info.dateRange ? qboState.startDate : "", endDate: info.dateRange ? qboState.endDate : "", asOfDate: info.asOfDate ? qboState.endDate : "", comparative: Boolean(info.supportsComparative && els.qboComparative.checked), accountingMethod: method, cash: method === "Cash" };
+        return { reportId, startDate: info.dateRange ? params.startDate : "", endDate: info.dateRange ? params.endDate : "", asOfDate: info.asOfDate ? params.endDate : "", comparative: Boolean(info.supportsComparative && comparative), accountingMethod: params.accountingMethod, cash: params.cash };
       }),
       outputFormat: "csv",
     };

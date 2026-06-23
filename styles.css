@@ -3718,6 +3718,16 @@ h1 {
   padding: 9px;
 }
 
+.qbo-fetch-params {
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #1e40af;
+  font-size: 0.86rem;
+  padding: 8px 10px;
+  border: 1px solid #c7d7fe;
+}
+
 .qbo-badge {
   display: inline-block;
   margin-left: 6px;
