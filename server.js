@@ -4331,6 +4331,11 @@ function csvLine(values) {
   return values.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(",");
 }
 
+// QBO point-in-time reports whose as-of date is the `report_date` param (not `end_date`).
+// Sending `end_date` to these, or `report_date` to the Balance Sheet family, can make QBO
+// return an empty report — so each family must get exactly its own param.
+const QBO_REPORT_DATE_REPORTS = new Set(["AgedReceivables", "AgedPayables", "CustomerBalance", "VendorBalance"]);
+
 async function fetchQboReport(username, realmId, reportSpec = {}) {
   const reportId = String(reportSpec.reportId || "");
   if (!reportId) throw new Error("Missing QBO report id.");
@@ -4338,14 +4343,13 @@ async function fetchQboReport(username, realmId, reportSpec = {}) {
   if (reportSpec.startDate) params.start_date = reportSpec.startDate;
   if (reportSpec.endDate) params.end_date = reportSpec.endDate;
   // QBO's Reports API has NO `as_of_date` parameter. Point-in-time reports use the
-  // as-of date under DIFFERENT param names depending on the report family:
+  // as-of date under DIFFERENT param names depending on the report family, and sending
+  // the WRONG param can make QBO return an empty report (it does not always ignore it):
   //   - Balance Sheet / Inventory Valuation -> `end_date`
   //   - A/R & A/P aging, Customer/Vendor balance -> `report_date`
-  // QBO silently ignores params that don't apply to a given report, so setting both
-  // is safe and guarantees the as-of date is honored instead of defaulting to today.
   if (reportSpec.asOfDate) {
-    if (!params.end_date) params.end_date = reportSpec.asOfDate;
-    params.report_date = reportSpec.asOfDate;
+    if (QBO_REPORT_DATE_REPORTS.has(reportId)) params.report_date = reportSpec.asOfDate;
+    else if (!params.end_date) params.end_date = reportSpec.asOfDate;
   }
   if (reportSpec.comparative) params.summarize_column_by = "Year";
   if (reportSpec.summarizeColumnsBy) params.summarize_column_by = reportSpec.summarizeColumnsBy;
