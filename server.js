@@ -88,9 +88,12 @@ const MODEL_COSTS = {
   "claude-3-5-sonnet-20241022": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-3-5-sonnet-latest": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-opus-4-20250514": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-opus-4-7": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-opus-4-6": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-haiku-4-5-20251001": { inputPerMTok: 0.8, outputPerMTok: 4, cacheWritePerMTok: 1, cacheReadPerMTok: 0.08 },
+  "claude-opus-4-1": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
+  "claude-opus-4-5": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-haiku-4-5-20251001": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
 };
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || LOCAL_SECRETS.anthropicApiKey || "").trim();
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.googleClientId || "").trim();
@@ -3534,12 +3537,34 @@ function sanitizeSpendLimit(value) {
   return roundMoney(number);
 }
 
+function normalizedCostEntry(entry = {}) {
+  const usage = {
+    input_tokens: entry.inputTokens,
+    output_tokens: entry.outputTokens,
+    cache_creation_input_tokens: entry.cacheCreationTokens,
+    cache_read_input_tokens: entry.cacheReadTokens,
+  };
+  const hasTokenUsage = Object.values(usage).some((value) => Number(value || 0) > 0);
+  if (!hasTokenUsage) return { ...entry, totalCost: roundMoney(Number(entry.totalCost || 0)) };
+  const cost = calculateCost(usage, entry.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514");
+  const originalTotalCost = roundMoney(Number(entry.totalCost || 0));
+  return {
+    ...entry,
+    ...cost,
+    originalTotalCost: Math.abs(originalTotalCost - cost.totalCost) >= 0.0001 ? originalTotalCost : undefined,
+  };
+}
+
+function entryTotalCost(entry = {}) {
+  return normalizedCostEntry(entry).totalCost;
+}
+
 function userSpendBudget(username) {
   const user = readUserStore().users.find((item) => item.username === username);
   const limitUsd = user?.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd);
   const usedUsd = roundMoney((readCostLog().entries || [])
     .filter((entry) => entry.username === username)
-    .reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0));
+    .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
   const hasLimit = limitUsd !== null;
   const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
   return { hasLimit, limitUsd, usedUsd, remainingUsd };
@@ -5290,10 +5315,11 @@ async function handleCostApi(req, res, requestUrl) {
   if (!requireAdmin(req, res)) return;
 
   if (req.method === "GET" && requestUrl.pathname === "/api/cost/log") {
-    const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams);
+    const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams)
+      .map((entry) => normalizedCostEntry(entry));
     sendJson(res, 200, {
       entries,
-      total: roundMoney(entries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+      total: roundMoney(entries.reduce((sum, entry) => sum + entryTotalCost(entry), 0)),
       calls: entries.length,
       grouped: groupCostEntries(entries, requestUrl.searchParams.get("groupBy") || "action"),
     });
@@ -5434,9 +5460,10 @@ function filterCostEntries(entries, params) {
 function groupCostEntries(entries, groupBy) {
   const grouped = new Map();
   entries.forEach((entry) => {
+    const normalized = normalizedCostEntry(entry);
     const key = String(entry[groupBy] || entry.action || "unknown");
     const current = grouped.get(key) || { key, total: 0, calls: 0 };
-    current.total += Number(entry.totalCost || 0);
+    current.total += normalized.totalCost;
     current.calls += 1;
     grouped.set(key, current);
   });
@@ -5448,11 +5475,13 @@ function buildCostSummary(entries) {
   const thisWeek = isoWeekKey(new Date());
   const thisMonth = today.slice(0, 7);
   const summarize = (filtered) => ({
-    total: roundMoney(filtered.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+    total: roundMoney(filtered.reduce((sum, entry) => sum + entryTotalCost(entry), 0)),
     calls: filtered.length,
     byAction: Object.fromEntries(groupCostEntries(filtered, "action").map((item) => [item.key, item])),
   });
-  const sorted = entries.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+  const sorted = entries.slice()
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .map((entry) => normalizedCostEntry(entry));
   return {
     today: summarize(entries.filter((entry) => entry.date === today)),
     thisWeek: summarize(entries.filter((entry) => entry.week === thisWeek)),
@@ -5473,7 +5502,7 @@ function buildDailyCostTrend(entries, days) {
     d.setDate(now.getDate() - index);
     const date = d.toISOString().slice(0, 10);
     const dayEntries = entries.filter((entry) => entry.date === date);
-    output.push({ date, total: roundMoney(dayEntries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)), calls: dayEntries.length });
+    output.push({ date, total: roundMoney(dayEntries.reduce((sum, entry) => sum + entryTotalCost(entry), 0)), calls: dayEntries.length });
   }
   return output;
 }
