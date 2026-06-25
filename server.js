@@ -628,6 +628,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/planning/opportunities") { await handlePlanningOpportunities(req, res); return; }
     if (req.method === "POST" && req.url === "/api/planning/deck") { await handlePlanningDeck(req, res); return; }
     if (requestUrl.pathname.startsWith("/api/planning/templates")) { await handlePlanningTemplatesApi(req, res, requestUrl); return; }
+    if (req.method === "POST" && req.url === "/api/planning/generate") { await handlePlanningGenerate(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/quarterly") { await handlePlanningQuarterly(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/deck-html") { await handlePlanningDeckHtml(req, res); return; }
+    if (requestUrl.pathname === "/api/planning/saved" || requestUrl.pathname.startsWith("/api/planning/saved/")) { await handlePlanningSaved(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/presentations/generate") { await handlePresentationsGenerate(req, res); return; }
     if (req.method === "POST" && req.url === "/api/calculations/run") { await handleCalculationsRun(req, res); return; }
     if (req.method === "POST" && req.url === "/api/notices") { await handleNotices(req, res); return; }
@@ -1401,6 +1405,7 @@ function sanitizePlanningAdjustments(adjustments) {
 
 function buildPlanningBaseScenario(profile, year) {
   const taxCalc = planningTax.computeScenarioTax(profile, [], year);
+  const taxCalcNext = planningTax.computeScenarioTax(profile, [], year + 1);
   return {
     id: "base",
     name: "Base (current)",
@@ -1408,6 +1413,7 @@ function buildPlanningBaseScenario(profile, year) {
     isBase: true,
     adjustments: [],
     taxCalc,
+    taxCalcNext,
     savingsVsBase: { dollars: 0, percentage: 0 },
   };
 }
@@ -1415,6 +1421,7 @@ function buildPlanningBaseScenario(profile, year) {
 function finalizePlanningScenario(profile, def, baseTotal, year, index) {
   const adjustments = sanitizePlanningAdjustments(def.adjustments);
   const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+  const taxCalcNext = planningTax.computeScenarioTax(profile, adjustments, year + 1);
   const dollars = planningRound((baseTotal || 0) - taxCalc.total);
   const percentage = baseTotal > 0 ? planningRound((dollars / baseTotal) * 100) : 0;
   return {
@@ -1423,6 +1430,7 @@ function finalizePlanningScenario(profile, def, baseTotal, year, index) {
     description: String(def.description || "").slice(0, 600),
     adjustments,
     taxCalc,
+    taxCalcNext,
     savingsVsBase: { dollars, percentage },
   };
 }
@@ -1465,27 +1473,16 @@ async function callPlanningClaude(req, content, systemText, action, payload, max
 
 async function handlePlanningAnalyze(req, res) {
   const payload = await readJsonBody(req);
-  const instructions = String(payload.instructions || "").slice(0, 8000);
+  const instructions = String(payload.instructions || "").slice(0, 6000);
   const prompt = [
-    "You are a senior CPA preparing a tax-planning base profile for a client.",
-    "Read the uploaded documents (workpapers, prior returns, K-1s, statements) and the CPA's instructions.",
+    "Extract a tax-planning profile from the uploaded documents and CPA instructions. Return facts only — do NOT compute taxes.",
     "",
-    "CPA INSTRUCTIONS:",
-    instructions || "(none provided)",
+    "CPA INSTRUCTIONS: " + (instructions || "(none)"),
     "",
-    "EXTRACTED DOCUMENT TEXT:",
-    "__FILE_TEXT__",
+    "DOCUMENT TEXT: __FILE_TEXT__",
     "",
-    "Return ONLY JSON inside ```json``` fences with this exact shape (numbers only, no $ or commas):",
-    "{",
-    '  "clientName": string, "entityType": string, "taxYear": number,',
-    '  "filingStatus": "Single"|"MFJ"|"MFS"|"HOH", "state": string (2-letter), "dependents": number,',
-    '  "wages": number, "netSEIncome": number, "otherIncome": number,',
-    '  "longTermGains": number, "shortTermGains": number,',
-    '  "deductions": number (total itemized; 0 if standard), "qbi": number, "w2Wages": number,',
-    '  "keyObservations": [string]  // up to 5 short notes',
-    "}",
-    "Report only FACTS extracted from the documents. Do NOT compute taxes — that is done separately.",
+    'Return ONLY JSON in ```json``` fences (numbers only, no $ signs):',
+    '{"clientName":string,"entityType":string,"taxYear":number,"filingStatus":"Single"|"MFJ"|"MFS"|"HOH","state":string,"dependents":number,"wages":number,"netSEIncome":number,"otherIncome":number,"longTermGains":number,"shortTermGains":number,"deductions":number,"qbi":number,"w2Wages":number,"keyObservations":[string]}',
   ].join("\n");
 
   const { content, hasInput } = planningFileContent(payload.files, prompt);
@@ -1493,7 +1490,7 @@ async function handlePlanningAnalyze(req, res) {
     sendJson(res, 400, { error: "Upload at least one document or provide instructions before analyzing." });
     return;
   }
-  const result = await callPlanningClaude(req, content, "You extract tax facts and return only valid JSON. Never invent tax liability numbers.", "planning_analyze", payload);
+  const result = await callPlanningClaude(req, content, "Extract tax facts from documents. Return only valid JSON. Never compute or invent tax liability numbers.", "planning_analyze", payload, 4000);
   if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
 
   const profile = normalizePlanningProfile(result.data);
@@ -1654,6 +1651,195 @@ async function handlePlanningDeck(req, res) {
   } catch (error) {
     sendJson(res, 502, { error: `Could not generate the planning deck: ${error.message || "unknown error"}` });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Merged generate: scenarios + opportunities in one AI call.
+// ---------------------------------------------------------------------------
+async function handlePlanningGenerate(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const instructions = String(payload.instructions || "").slice(0, 4000);
+  const base = buildPlanningBaseScenario(profile, year);
+
+  const prompt = [
+    "Client tax profile: " + JSON.stringify(profile),
+    "Base tax (system-computed): $" + Math.round(base.taxCalc.total).toLocaleString(),
+    "CPA instructions: " + (instructions || "(none)"),
+    "",
+    "Task 1 — Propose 3-5 planning scenarios as field ADJUSTMENTS only (no tax numbers).",
+    "Allowed fields: " + PLANNING_FIELDS.join(", "),
+    "Good levers: max SEP-IRA/Solo-401k (retirementContribution), Sec 179 purchase (sec179), S-corp salary split (wages+netSEIncome), defer income (otherIncome), bunch deductions.",
+    "",
+    "Task 2 — List top savings opportunities (use scenario names, not computed $; the system will fill in real savings).",
+    "Categories: Retirement Planning, Business Deductions, Entity Structure, Income Timing, Investment Strategy, Credits & Incentives, Estate & Gift, State Tax.",
+    "",
+    'Return ONLY JSON in ```json``` fences:',
+    '{"scenarios":[{"id":string,"name":string,"description":string,"adjustments":[{"field":string,"newValue":number,"rationale":string}]}],"opportunities":[{"id":string,"title":string,"category":string,"estimatedSavings":{"min":number,"max":number},"deadline":string|null,"complexity":"Simple"|"Moderate"|"Complex","description":string,"cpaNote":string,"requiresAction":boolean,"actionDeadline":string|null}]}',
+  ].join("\n") + styleProfilePromptBlock(activeStyleProfile(req));
+
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "Design tax-planning scenarios as field adjustments and surface savings opportunities. Return only valid JSON. Never compute tax numbers.", "planning_generate", payload, 8000);
+  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
+
+  const defs = Array.isArray(result.data.scenarios) ? result.data.scenarios.slice(0, 5) : [];
+  const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
+
+  // Anchor opportunity savings to system-computed scenario savings where a name match exists.
+  const savingsMap = {};
+  scenarios.forEach((s) => { if (!s.isBase) savingsMap[s.name.toLowerCase()] = s.savingsVsBase?.dollars || 0; });
+  const rawOpps = Array.isArray(result.data.opportunities) ? result.data.opportunities : [];
+  const opportunities = rawOpps.slice(0, 12).map((o, i) => {
+    const key = String(o.title || "").toLowerCase();
+    const matched = savingsMap[key] || 0;
+    const min = matched ? Math.round(matched * 0.7) : planningNum(o?.estimatedSavings?.min);
+    const max = matched || planningNum(o?.estimatedSavings?.max);
+    return {
+      id: String(o.id || `opp-${i + 1}`),
+      title: String(o.title || "Opportunity").slice(0, 160),
+      category: String(o.category || "Other").slice(0, 60),
+      estimatedSavings: { min, max },
+      deadline: o.deadline ? String(o.deadline).slice(0, 80) : null,
+      complexity: ["Simple", "Moderate", "Complex"].includes(o.complexity) ? o.complexity : "Moderate",
+      description: String(o.description || "").slice(0, 400),
+      cpaNote: String(o.cpaNote || "").slice(0, 400),
+      requiresAction: Boolean(o.requiresAction),
+      actionDeadline: o.actionDeadline ? String(o.actionDeadline).slice(0, 80) : null,
+    };
+  });
+
+  sendJson(res, 200, { scenarios, opportunities });
+}
+
+// ---------------------------------------------------------------------------
+// Quarterly estimated tax payments — deterministic, no AI.
+// ---------------------------------------------------------------------------
+async function handlePlanningQuarterly(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const adjustments = sanitizePlanningAdjustments(payload.adjustments || []);
+  const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+  const annual = taxCalc.total;
+  const q = Math.ceil(annual / 4);
+  const quarters = [
+    { quarter: "Q1", label: `April 15, ${year}`, amount: q },
+    { quarter: "Q2", label: `June 16, ${year}`, amount: q },
+    { quarter: "Q3", label: `September 15, ${year}`, amount: q },
+    { quarter: "Q4", label: `January 15, ${year + 1}`, amount: Math.max(0, annual - q * 3) },
+  ];
+  sendJson(res, 200, {
+    annual,
+    quarters,
+    taxCalc,
+    note: "Quarterly estimates based on 100% of projected current-year liability. Actual amounts may vary based on withholding and safe-harbor rules.",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// HTML deck — standalone print-to-PDF page, no external deps.
+// ---------------------------------------------------------------------------
+async function handlePlanningDeckHtml(req, res) {
+  const payload = await readJsonBody(req);
+  const clientName = String(payload.clientName || payload?.baseData?.clientName || "Client");
+  const year = String(payload.year || payload?.baseData?.taxYear || new Date().getFullYear());
+  const scenarios = Array.isArray(payload.scenarios) ? payload.scenarios : [];
+  const opportunities = Array.isArray(payload.opportunities) ? payload.opportunities : [];
+  const nextSteps = Array.isArray(payload.nextSteps) ? payload.nextSteps : [];
+  const profile = activeStyleProfile(req);
+  const disclaimer = payload.disclaimer || profile?.combinedSummary?.disclaimer
+    || "Prepared for planning purposes only. Figures are estimates based on information provided and current tax law. Consult your tax advisor before taking action.";
+
+  const base = scenarios.find((s) => s.isBase) || scenarios[0] || {};
+  const baseCalc = base.taxCalc || {};
+  const fmt = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("en-US");
+  const fmtPct = (n) => { const v = Number(n) || 0; return ((Math.abs(v) <= 1 ? v * 100 : v).toFixed(1)) + "%"; };
+
+  const scenarioRows = scenarios.map((s) => {
+    const c = s.taxCalc || {};
+    const sav = s?.savingsVsBase?.dollars || 0;
+    const isBest = !s.isBase && sav > 0;
+    return `<tr${isBest ? ' class="best"' : ""}><td>${s.name || ""}${isBest ? " ★" : ""}</td><td>${fmt(c.federalTax)}</td><td>${fmt(c.stateTax)}</td><td>${fmt(c.seTax)}</td><td><strong>${fmt(c.total)}</strong></td><td>${sav > 0 ? `<strong>${fmt(sav)}</strong>` : "—"}</td><td>${fmtPct(c.effectiveRate)}</td></tr>`;
+  }).join("");
+
+  const oppCards = [...opportunities]
+    .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
+    .slice(0, 8)
+    .map((o) => {
+      const min = Number(o?.estimatedSavings?.min) || 0;
+      const max = Number(o?.estimatedSavings?.max) || 0;
+      return `<div class="opp"><h3>${o.title || ""}</h3><p class="range">${max ? `${fmt(min)}–${fmt(max)} potential savings` : ""}</p><p class="cat">${o.category || ""} · ${o.complexity || "Moderate"}</p><p>${o.description || ""}</p></div>`;
+    }).join("");
+
+  const stepsHtml = nextSteps.length
+    ? `<div class="page"><h2>Next Steps</h2><ol>${nextSteps.map((s) => `<li><strong>${s.action || ""}</strong>${s.deadline ? ` — by ${s.deadline}` : ""}<span class="owner">${s.owner || ""}</span></li>`).join("")}</ol></div>`
+    : "";
+
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Tax Planning — ${clientName} ${year}</title><style>@page{size:letter;margin:1in}*{box-sizing:border-box}body{font-family:Georgia,serif;color:#1a1a2e;font-size:12pt}h1{font-size:24pt;margin-bottom:4pt}h2{font-size:16pt;border-bottom:1px solid #ddd;padding-bottom:4pt;margin-top:24pt}.page{page-break-after:always}.cover{text-align:center;padding-top:2in}.hero{display:flex;gap:24pt;margin:20pt 0}.hero div{text-align:center;flex:1;background:#f5f5f5;padding:12pt;border-radius:4pt}.num{display:block;font-size:20pt;font-weight:bold}label{font-size:9pt;color:#555}table{width:100%;border-collapse:collapse;margin-top:12pt;font-size:10pt}th{background:#1a1a2e;color:#fff;padding:6pt 8pt;text-align:left}td{padding:5pt 8pt;border-bottom:1px solid #eee}tr.best td{background:#f0fff4;font-weight:bold}.opps{display:grid;grid-template-columns:1fr 1fr;gap:12pt;margin-top:12pt}.opp{border:1px solid #ddd;border-radius:4pt;padding:10pt}.opp h3{margin:0 0 4pt;font-size:11pt}.range{color:#16a34a;font-weight:bold;font-size:10pt;margin:2pt 0}.cat{color:#666;font-size:9pt;margin:2pt 0}ol li{margin-bottom:8pt}.owner{margin-left:8pt;color:#666;font-size:10pt}footer{font-size:8pt;color:#888;border-top:1px solid #ddd;padding-top:8pt;margin-top:24pt}.tip{margin-top:24pt;font-size:10pt;background:#f0f9ff;padding:10pt;border-radius:4pt}@media print{.tip{display:none}}</style></head><body>
+<div class="page cover"><h1>Tax Planning Analysis</h1><p style="color:#555">${clientName}</p><p style="color:#555">Tax Year ${year}</p><p style="margin-top:12pt;color:#999;font-size:10pt">Prepared ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</p><p class="tip">To save as PDF: Press <strong>Ctrl+P</strong> (Windows) or <strong>Cmd+P</strong> (Mac) → choose <strong>Save as PDF</strong>.</p></div>
+<div class="page"><h2>Current Situation</h2><div class="hero"><div><span class="num">${fmt(baseCalc.total)}</span><label>Total tax</label></div><div><span class="num">${fmtPct(baseCalc.effectiveRate)}</span><label>Effective rate</label></div><div><span class="num">${fmt(baseCalc.taxableIncome)}</span><label>Taxable income</label></div></div><h2>Scenario Comparison</h2><table><thead><tr><th>Scenario</th><th>Federal</th><th>State</th><th>SE Tax</th><th>Total</th><th>Savings</th><th>Eff. Rate</th></tr></thead><tbody>${scenarioRows}</tbody></table></div>
+${oppCards ? `<div class="page"><h2>Recommended Opportunities</h2><div class="opps">${oppCards}</div></div>` : ""}
+${stepsHtml}
+<footer>${disclaimer}</footer></body></html>`;
+
+  sendJson(res, 200, { html, filename: `TaxPlanning_${safeFileName(clientName)}_${year}.html` });
+}
+
+// ---------------------------------------------------------------------------
+// Saved analyses — per-user CRUD, no AI.
+// ---------------------------------------------------------------------------
+const PLANNING_SAVED_PATH = path.join(DATA_DIR, "planning_saved.json");
+function readPlanningSaved() { return readJsonFile(PLANNING_SAVED_PATH, {}); }
+function writePlanningSaved(store) { writeJsonFile(PLANNING_SAVED_PATH, store); }
+
+async function handlePlanningSaved(req, res, requestUrl) {
+  const key = planningUserKey(req);
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const id = parts[3];
+
+  if (req.method === "GET" && !id) {
+    const store = readPlanningSaved();
+    const list = Array.isArray(store[key]) ? store[key] : [];
+    sendJson(res, 200, { saved: list.map(({ id: eid, clientName, taxYear, savedAt }) => ({ id: eid, clientName, taxYear, savedAt })) });
+    return;
+  }
+  if (req.method === "GET" && id) {
+    const store = readPlanningSaved();
+    const entry = (store[key] || []).find((e) => e.id === id);
+    if (!entry) { sendJson(res, 404, { error: "Not found." }); return; }
+    sendJson(res, 200, { entry });
+    return;
+  }
+  if (req.method === "POST" && !id) {
+    const payload = await readJsonBody(req);
+    const store = readPlanningSaved();
+    if (!Array.isArray(store[key])) store[key] = [];
+    if (store[key].length >= 20) store[key].shift();
+    const entry = {
+      id: crypto.randomUUID(),
+      clientName: String(payload.clientName || "").slice(0, 120),
+      taxYear: Number(payload.taxYear) || new Date().getFullYear(),
+      savedAt: new Date().toISOString(),
+      baseData: payload.baseData || {},
+      scenarios: Array.isArray(payload.scenarios) ? payload.scenarios : [],
+      opportunities: Array.isArray(payload.opportunities) ? payload.opportunities : [],
+    };
+    store[key].push(entry);
+    writePlanningSaved(store);
+    sendJson(res, 200, { id: entry.id, savedAt: entry.savedAt });
+    return;
+  }
+  if (req.method === "DELETE" && id) {
+    const store = readPlanningSaved();
+    if (!Array.isArray(store[key])) { sendJson(res, 404, { error: "Not found." }); return; }
+    const idx = store[key].findIndex((e) => e.id === id);
+    if (idx === -1) { sendJson(res, 404, { error: "Not found." }); return; }
+    store[key].splice(idx, 1);
+    writePlanningSaved(store);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+  sendJson(res, 405, { error: "Method not allowed." });
 }
 
 // ---------------------------------------------------------------------------
@@ -5810,6 +5996,7 @@ function isTokenConsumingRoute(req, requestUrl) {
     "/api/deliverable/generate-draft",
     "/api/requests/generate-email",
     "/api/planning/analyze",
+    "/api/planning/generate",
     "/api/planning/scenarios",
     "/api/planning/scenario",
     "/api/planning/opportunities",

@@ -1262,7 +1262,20 @@
                 <label class="field"><span>Instructions for the AI</span>
                   <textarea id="planningInstructions" rows="4" placeholder="e.g. Client wants to buy an $80K truck in December. S-Corp. Analyze with and without Sec 179. Bracket is 37%, prioritize deferral."></textarea>
                 </label>
-                <button id="planningAnalyzeBtn" class="primary-button" type="button">Analyze documents</button>
+                <div class="planning-chips" aria-label="Quick instruction suggestions">
+                  <button type="button" class="planning-chip" data-chip="Maximize retirement contributions (SEP-IRA or Solo 401k). Find the maximum allowed deduction.">Maximize retirement</button>
+                  <button type="button" class="planning-chip" data-chip="Evaluate S-Corp election. Model the salary/distribution split that minimizes SE tax while maintaining reasonable compensation.">Evaluate S-Corp</button>
+                  <button type="button" class="planning-chip" data-chip="Year of asset sale — analyze income timing and capital gains strategies to minimize tax on the sale.">Asset sale year</button>
+                  <button type="button" class="planning-chip" data-chip="Reduce taxable income through deductions, deferrals, and entity-level strategies. Focus on the highest-ROI moves.">Reduce income</button>
+                </div>
+                <div id="planningSavedSection" class="planning-saved-section" hidden>
+                  <p class="planning-saved-label">Saved analyses</p>
+                  <div id="planningSavedList" class="planning-saved-list"></div>
+                </div>
+                <div class="planning-actions">
+                  <button id="planningLoadBtn" class="ghost-button small-button" type="button">Load saved</button>
+                  <button id="planningAnalyzeBtn" class="primary-button" type="button">Analyze documents</button>
+                </div>
               </article>
             </div>
 
@@ -1273,9 +1286,11 @@
             <div id="planningConfirm" class="planning-state" hidden>
               <article class="request-step-card">
                 <h3 class="request-step-title">2. Confirm what the AI understood</h3>
-                <p class="muted-note">Review and correct before generating scenarios — garbage in, garbage out. Tax figures are computed by the app, not the AI.</p>
+                <p class="muted-note">Review and correct before generating scenarios. Tax figures are computed by the app, not the AI.</p>
                 <div id="planningObservations" class="planning-observations"></div>
-                <div id="planningConfirmFields" class="form-grid"></div>
+                <div id="planningConfirmFields" class="form-grid planning-confirm-basic"></div>
+                <button type="button" class="planning-advanced-toggle link-button" id="planningAdvancedToggle">Show advanced fields ▾</button>
+                <div id="planningConfirmAdvanced" class="form-grid planning-confirm-adv" hidden></div>
                 <div class="planning-actions">
                   <button id="planningBackToUpload" class="ghost-button small-button" type="button">Back</button>
                   <button id="planningGenerateBtn" class="primary-button" type="button">Confirm &amp; generate scenarios</button>
@@ -1292,11 +1307,17 @@
                 <div class="planning-results-header">
                   <h3 class="request-step-title">3. Scenarios &amp; opportunities</h3>
                   <div class="planning-actions">
+                    <button id="planningSaveBtn" class="ghost-button small-button" type="button">Save analysis</button>
                     <button id="planningPresentBtn" class="ghost-button small-button" type="button">Present to client</button>
+                    <button id="planningPdfBtn" class="ghost-button small-button" type="button">Download PDF</button>
                     <button id="planningDeckBtn" class="primary-button small-button" type="button">Download deck</button>
                   </div>
                 </div>
+                <div class="planning-multiyear-toggle">
+                  <label><input type="checkbox" id="planningMultiYearCheck" /> Compare next year side-by-side</label>
+                </div>
                 <div id="planningComparison" class="planning-comparison"></div>
+                <div id="planningQuarterly" class="planning-quarterly" hidden></div>
                 <div class="planning-custom">
                   <label class="field"><span>Add a custom scenario</span>
                     <input id="planningCustomInput" type="text" placeholder="e.g. Contribute $50K to a SEP-IRA" />
@@ -1305,6 +1326,10 @@
                 </div>
                 <h4 class="planning-subhead">Opportunities</h4>
                 <div id="planningOpportunities" class="planning-opportunities"></div>
+                <h4 class="planning-subhead">Next steps
+                  <span class="planning-nextsteps-hint muted-note"> — edit before presenting or exporting</span>
+                </h4>
+                <div id="planningNextStepsEditor" class="planning-nextsteps-editor"></div>
               </article>
             </div>
 

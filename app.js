@@ -9957,6 +9957,9 @@ const planningStudio = {
   templates: [],
   styleProfile: null,
   editingId: null,
+  nextSteps: null,       // null = auto-derived; array = user-edited
+  showMultiYear: false,
+  savedList: [],
 };
 
 const PLANNING_FILING_STATUSES = ["Single", "MFJ", "MFS", "HOH"];
@@ -9965,15 +9968,16 @@ const PLANNING_CONFIRM_FIELDS = [
   { key: "entityType", label: "Entity type", type: "text" },
   { key: "taxYear", label: "Tax year", type: "number" },
   { key: "filingStatus", label: "Filing status", type: "select" },
-  { key: "state", label: "State", type: "text" },
+  { key: "state", label: "State (2-letter)", type: "text" },
   { key: "wages", label: "W-2 wages", type: "money" },
   { key: "netSEIncome", label: "Net SE / business income", type: "money" },
-  { key: "otherIncome", label: "Other income", type: "money" },
-  { key: "longTermGains", label: "Long-term cap gains", type: "money" },
-  { key: "shortTermGains", label: "Short-term cap gains", type: "money" },
-  { key: "deductions", label: "Itemized deductions (0 = standard)", type: "money" },
-  { key: "qbi", label: "QBI", type: "money" },
-  { key: "w2Wages", label: "Business W-2 wages (QBI limit)", type: "money" },
+  // Advanced fields below
+  { key: "otherIncome", label: "Other income", type: "money", advanced: true },
+  { key: "longTermGains", label: "Long-term cap gains", type: "money", advanced: true },
+  { key: "shortTermGains", label: "Short-term cap gains", type: "money", advanced: true },
+  { key: "deductions", label: "Itemized deductions (0 = standard)", type: "money", advanced: true },
+  { key: "qbi", label: "QBI", type: "money", advanced: true },
+  { key: "w2Wages", label: "Business W-2 wages (QBI limit)", type: "money", advanced: true },
 ];
 
 const PLANNING_FIELD_LABELS = {
@@ -10057,8 +10061,29 @@ function initPlanningStudio() {
   document.getElementById("planningCustomBtn")?.addEventListener("click", planningAddCustomScenario);
   document.getElementById("planningCustomInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); planningAddCustomScenario(); } });
   document.getElementById("planningDeckBtn")?.addEventListener("click", planningDownloadDeck);
+  document.getElementById("planningPdfBtn")?.addEventListener("click", planningDownloadPdf);
+  document.getElementById("planningSaveBtn")?.addEventListener("click", planningSaveAnalysis);
+  document.getElementById("planningLoadBtn")?.addEventListener("click", () => {
+    const section = document.getElementById("planningSavedSection");
+    if (section) section.hidden = !section.hidden;
+  });
+  document.getElementById("planningMultiYearCheck")?.addEventListener("change", (e) => {
+    planningStudio.showMultiYear = e.target.checked;
+    planningRenderComparison();
+  });
   document.getElementById("planningPresentBtn")?.addEventListener("click", () => planningTogglePresent(true));
   document.getElementById("planningExitPresent")?.addEventListener("click", () => planningTogglePresent(false));
+
+  // Instruction suggestion chips
+  document.querySelectorAll(".planning-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const ta = document.getElementById("planningInstructions");
+      if (ta) { ta.value = chip.dataset.chip || ""; ta.focus(); }
+    });
+  });
+
+  // Load saved analyses list on init
+  planningLoadAnalysisList();
 
   // Library sub-view
   document.getElementById("planningTabAnalysis")?.addEventListener("click", () => planningShowView("analysis"));
@@ -10267,6 +10292,18 @@ async function planningAnalyze() {
   }
 }
 
+function planningFieldHtml(f, baseData) {
+  const raw = baseData[f.key];
+  const val = raw == null ? "" : raw;
+  if (f.type === "select") {
+    const opts = PLANNING_FILING_STATUSES.map((s) => `<option value="${s}" ${s === val ? "selected" : ""}>${s}</option>`).join("");
+    return `<label class="field"><span>${escapeHtml(f.label)}</span><select id="planning-f-${f.key}">${opts}</select></label>`;
+  }
+  const inputType = f.type === "text" ? "text" : "number";
+  const v = f.type === "money" || f.type === "number" ? (Number(val) || 0) : escapeHtml(String(val));
+  return `<label class="field"><span>${escapeHtml(f.label)}</span><input id="planning-f-${f.key}" type="${inputType}" value="${v}" /></label>`;
+}
+
 function planningRenderConfirm(baseData, observations) {
   const obs = document.getElementById("planningObservations");
   if (obs) {
@@ -10274,19 +10311,20 @@ function planningRenderConfirm(baseData, observations) {
       ? `<strong>AI observations</strong><ul>${observations.map((o) => `<li>${escapeHtml(String(o))}</li>`).join("")}</ul>`
       : "";
   }
-  const wrap = document.getElementById("planningConfirmFields");
-  if (!wrap) return;
-  wrap.innerHTML = PLANNING_CONFIRM_FIELDS.map((f) => {
-    const raw = baseData[f.key];
-    const val = raw == null ? "" : raw;
-    if (f.type === "select") {
-      const opts = PLANNING_FILING_STATUSES.map((s) => `<option value="${s}" ${s === val ? "selected" : ""}>${s}</option>`).join("");
-      return `<label class="field"><span>${escapeHtml(f.label)}</span><select id="planning-f-${f.key}">${opts}</select></label>`;
-    }
-    const inputType = f.type === "text" ? "text" : "number";
-    const v = f.type === "money" || f.type === "number" ? (Number(val) || 0) : escapeHtml(String(val));
-    return `<label class="field"><span>${escapeHtml(f.label)}</span><input id="planning-f-${f.key}" type="${inputType}" value="${v}" /></label>`;
-  }).join("");
+  const basic = PLANNING_CONFIRM_FIELDS.filter((f) => !f.advanced);
+  const advanced = PLANNING_CONFIRM_FIELDS.filter((f) => f.advanced);
+  const basicWrap = document.getElementById("planningConfirmFields");
+  const advWrap = document.getElementById("planningConfirmAdvanced");
+  if (basicWrap) basicWrap.innerHTML = basic.map((f) => planningFieldHtml(f, baseData)).join("");
+  if (advWrap) advWrap.innerHTML = advanced.map((f) => planningFieldHtml(f, baseData)).join("");
+  const toggle = document.getElementById("planningAdvancedToggle");
+  if (toggle) {
+    toggle.onclick = () => {
+      const hidden = advWrap?.hidden;
+      if (advWrap) advWrap.hidden = !hidden;
+      toggle.textContent = hidden ? "Hide advanced fields ▴" : "Show advanced fields ▾";
+    };
+  }
 }
 
 function planningCollectConfirm() {
@@ -10295,7 +10333,7 @@ function planningCollectConfirm() {
     const el = document.getElementById(`planning-f-${f.key}`);
     if (!el) return;
     if (f.type === "money" || f.type === "number") base[f.key] = Number(el.value) || 0;
-    else base[f.key] = el.value;
+    else base[f.key] = el.value.trim();
   });
   return base;
 }
@@ -10305,27 +10343,20 @@ async function planningGenerateScenarios() {
   planningStudio.baseData = planningCollectConfirm();
   const instructions = document.getElementById("planningInstructions")?.value || "";
   planningStudio.busy = true;
+  planningStudio.nextSteps = null; // reset editable next steps
   planningShowState("building");
-  planningSetStatus("Building scenarios…");
+  planningSetStatus("Building scenarios & opportunities…");
   try {
     const year = Number(planningStudio.baseData.taxYear) || new Date().getFullYear();
-    const sres = await fetch(`${API_BASE_URL}/api/planning/scenarios`, {
+    const res = await fetch(`${API_BASE_URL}/api/planning/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ baseData: planningStudio.baseData, year, instructions }),
     });
-    const sdata = await sres.json();
-    if (!sres.ok) throw new Error(sdata.error || "Scenario generation failed.");
-    planningStudio.scenarios = Array.isArray(sdata.scenarios) ? sdata.scenarios : [];
-
-    document.getElementById("planningBuildingText").textContent = "Identifying opportunities…";
-    const ores = await fetch(`${API_BASE_URL}/api/planning/opportunities`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios }),
-    });
-    const odata = await ores.json();
-    planningStudio.opportunities = ores.ok && Array.isArray(odata.opportunities) ? odata.opportunities : [];
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Generation failed.");
+    planningStudio.scenarios = Array.isArray(data.scenarios) ? data.scenarios : [];
+    planningStudio.opportunities = Array.isArray(data.opportunities) ? data.opportunities : [];
 
     planningRenderResults();
     planningShowState("results");
@@ -10353,6 +10384,8 @@ function planningBestScenarioId() {
 function planningRenderResults() {
   planningRenderComparison();
   planningRenderOpportunities();
+  planningRenderNextSteps();
+  planningRenderQuarterly();
 }
 
 function planningRenderComparison() {
@@ -10360,11 +10393,17 @@ function planningRenderComparison() {
   if (!wrap) return;
   if (!planningStudio.scenarios.length) { wrap.innerHTML = "<p class=\"muted-note\">No scenarios yet.</p>"; return; }
   const bestId = planningBestScenarioId();
+  const year = Number(planningStudio.baseData?.taxYear) || new Date().getFullYear();
+  const my = planningStudio.showMultiYear;
+
   const rows = planningStudio.scenarios.map((s) => {
     const c = s.taxCalc || {};
+    const cn = s.taxCalcNext || {};
     const savings = s?.savingsVsBase?.dollars || 0;
     const isBest = s.id === bestId && savings > 0;
     const editBtn = s.isBase ? "" : `<button type="button" class="link-button planning-edit-btn" data-planning-edit="${s.id}">Edit</button>`;
+    const colspan = my ? 10 : 8;
+    const nextCols = my ? `<td>${planningFmtMoney(cn.total)}</td><td>${planningFmtPct(cn.effectiveRate)}</td>` : "";
     const main = `<tr class="${isBest ? "planning-row-best" : ""}">
       <td>${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""} ${editBtn}</td>
       <td>${planningFmtMoney(c.taxableIncome)}</td>
@@ -10374,6 +10413,7 @@ function planningRenderComparison() {
       <td><strong>${planningFmtMoney(c.total)}</strong></td>
       <td class="${savings > 0 ? "planning-pos" : ""}">${savings > 0 ? planningFmtMoney(savings) : "—"}</td>
       <td>${planningFmtPct(c.effectiveRate)}</td>
+      ${nextCols}
     </tr>`;
     if (planningStudio.editingId !== s.id) return main;
     const adjs = Array.isArray(s.adjustments) ? s.adjustments : [];
@@ -10382,7 +10422,7 @@ function planningRenderComparison() {
       const val = a.newValue != null ? a.newValue : (a.delta != null ? a.delta : 0);
       return `<label class="planning-edit-field"><span>${escapeHtml(label)}</span><input type="number" data-planning-adj-field="${escapeHtml(a.field)}" value="${Number(val) || 0}" /></label>`;
     }).join("");
-    const editor = `<tr class="planning-editor-row"><td colspan="8">
+    const editor = `<tr class="planning-editor-row"><td colspan="${colspan}">
       <div class="planning-editor">
         <strong>Edit assumptions</strong>
         <div class="planning-edit-grid">${editorFields}</div>
@@ -10393,19 +10433,32 @@ function planningRenderComparison() {
       </div></td></tr>`;
     return main + editor;
   }).join("");
+
   const anyEstimated = planningStudio.scenarios.some((s) => s?.taxCalc?.stateEstimated);
+  const nextYearCols = my ? `<th>${year + 1} Total</th><th>${year + 1} Rate</th>` : "";
+
+  // Quarterly buttons for each scenario
+  const qBtns = planningStudio.scenarios.map((s) =>
+    `<button type="button" class="link-button planning-qbtn" data-qscenario="${escapeHtml(s.id)}" title="Show quarterly payments for ${escapeHtml(s.name)}">Q estimates</button>`
+  ).join(" ");
+
   wrap.innerHTML = `
     <table class="planning-table">
       <thead><tr>
-        <th>Scenario</th><th>Taxable income</th><th>Federal</th><th>State</th><th>SE tax</th><th>Total tax</th><th>Savings vs. base</th><th>Eff. rate</th>
+        <th>Scenario</th><th>Taxable income</th><th>Federal</th><th>State</th><th>SE tax</th><th>${year} Total</th><th>Savings vs. base</th><th>${year} Rate</th>${nextYearCols}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    ${anyEstimated ? '<p class="muted-note">* State tax uses an estimated rate; confirm against the actual state return.</p>' : ""}`;
+    ${anyEstimated ? '<p class="muted-note">* State tax uses an estimated rate.</p>' : ""}
+    <p class="planning-qbtns-row">${qBtns}</p>`;
 
   wrap.querySelectorAll("[data-planning-edit]").forEach((b) => b.addEventListener("click", () => { planningStudio.editingId = b.dataset.planningEdit; planningRenderComparison(); }));
   wrap.querySelector("[data-planning-edit-cancel]")?.addEventListener("click", () => { planningStudio.editingId = null; planningRenderComparison(); });
   wrap.querySelector("[data-planning-edit-apply]")?.addEventListener("click", (e) => planningApplyScenarioEdit(e.currentTarget.dataset.planningEditApply));
+  wrap.querySelectorAll("[data-qscenario]").forEach((b) => b.addEventListener("click", () => {
+    const s = planningStudio.scenarios.find((sc) => sc.id === b.dataset.qscenario);
+    planningShowQuarterly(s);
+  }));
 }
 
 async function planningApplyScenarioEdit(id) {
@@ -10487,6 +10540,8 @@ async function planningAddCustomScenario() {
 
 // Derive concrete next steps from the opportunities the AI surfaced (what / when / who).
 function planningDeriveNextSteps() {
+  // Use edited version if the CPA has customized it.
+  if (Array.isArray(planningStudio.nextSteps)) return planningStudio.nextSteps;
   return [...planningStudio.opportunities]
     .filter((o) => o.requiresAction || o.actionDeadline || o.deadline)
     .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
@@ -10498,8 +10553,187 @@ function planningDeriveNextSteps() {
     });
 }
 
+function planningRenderNextSteps() {
+  const wrap = document.getElementById("planningNextStepsEditor");
+  if (!wrap) return;
+  const steps = planningDeriveNextSteps();
+  if (!steps.length) { wrap.innerHTML = '<p class="muted-note">No action items derived yet.</p>'; return; }
+  wrap.innerHTML = `<div class="planning-nextsteps-list">
+    ${steps.map((s, i) => `<div class="planning-nextstep-row" data-ns-idx="${i}">
+      <input class="planning-ns-action" type="text" value="${escapeHtml(s.action)}" placeholder="Action" />
+      <input class="planning-ns-owner" type="text" value="${escapeHtml(s.owner)}" placeholder="Owner" />
+      <input class="planning-ns-deadline" type="text" value="${escapeHtml(s.deadline)}" placeholder="Deadline" />
+      <button type="button" class="planning-ns-del link-button" data-ns-del="${i}" title="Remove">✕</button>
+    </div>`).join("")}
+    <button type="button" class="ghost-button small-button" id="planningNsAdd">+ Add step</button>
+  </div>`;
+  wrap.querySelectorAll("[data-ns-del]").forEach((btn) => btn.addEventListener("click", () => {
+    const s = planningDeriveNextSteps().filter((_, i) => i !== Number(btn.dataset.nsDel));
+    planningStudio.nextSteps = s;
+    planningRenderNextSteps();
+  }));
+  wrap.querySelectorAll(".planning-nextstep-row input").forEach((inp) => inp.addEventListener("change", () => {
+    planningStudio.nextSteps = Array.from(wrap.querySelectorAll(".planning-nextstep-row")).map((row) => ({
+      action: row.querySelector(".planning-ns-action")?.value || "",
+      owner: row.querySelector(".planning-ns-owner")?.value || "",
+      deadline: row.querySelector(".planning-ns-deadline")?.value || "",
+    }));
+  }));
+  wrap.querySelector("#planningNsAdd")?.addEventListener("click", () => {
+    const s = planningDeriveNextSteps();
+    planningStudio.nextSteps = [...s, { action: "", owner: "CPA", deadline: "" }];
+    planningRenderNextSteps();
+  });
+}
+
+function planningRenderQuarterly() {
+  const wrap = document.getElementById("planningQuarterly");
+  if (!wrap) return;
+  wrap.hidden = true; // rendered on demand
+}
+
+async function planningShowQuarterly(scenario) {
+  const wrap = document.getElementById("planningQuarterly");
+  if (!wrap) return;
+  if (!planningStudio.baseData) return;
+  const year = Number(planningStudio.baseData.taxYear) || new Date().getFullYear();
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/quarterly`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, adjustments: scenario?.adjustments || [], year }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed.");
+    const rows = data.quarters.map((q) => `<tr><td>${q.quarter}</td><td>${q.label}</td><td><strong>${planningFmtMoney(q.amount)}</strong></td></tr>`).join("");
+    wrap.innerHTML = `<div class="planning-quarterly-inner">
+      <div class="planning-quarterly-head">
+        <strong>Estimated quarterly payments — ${escapeHtml(scenario?.name || "Base")}</strong>
+        <button type="button" class="link-button" id="planningQuarterlyClose">Close</button>
+      </div>
+      <p class="muted-note">${escapeHtml(data.note || "")}</p>
+      <table class="planning-table"><thead><tr><th>Quarter</th><th>Due date</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table>
+      <p class="planning-quarterly-annual">Annual total: <strong>${planningFmtMoney(data.annual)}</strong></p>
+    </div>`;
+    wrap.hidden = false;
+    wrap.querySelector("#planningQuarterlyClose")?.addEventListener("click", () => { wrap.hidden = true; });
+  } catch (err) {
+    showToast(err.message || "Could not compute quarterly estimates.", "error");
+  }
+}
+
+async function planningSaveAnalysis() {
+  if (!planningStudio.baseData || !planningStudio.scenarios.length) return;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/saved`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientName: planningStudio.baseData.clientName,
+        taxYear: planningStudio.baseData.taxYear,
+        baseData: planningStudio.baseData,
+        scenarios: planningStudio.scenarios,
+        opportunities: planningStudio.opportunities,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Save failed.");
+    showToast("Analysis saved.", "success");
+    planningLoadAnalysisList();
+  } catch (err) {
+    showToast(err.message || "Could not save.", "error");
+  }
+}
+
+async function planningLoadAnalysisList() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/saved`);
+    const data = await res.json();
+    planningStudio.savedList = Array.isArray(data.saved) ? data.saved : [];
+    const section = document.getElementById("planningSavedSection");
+    const listEl = document.getElementById("planningSavedList");
+    if (!section || !listEl) return;
+    if (!planningStudio.savedList.length) { section.hidden = true; return; }
+    section.hidden = false;
+    listEl.innerHTML = planningStudio.savedList.map((s) => `
+      <div class="planning-saved-item">
+        <span>${escapeHtml(s.clientName || "Unknown")} · ${s.taxYear || ""}</span>
+        <span class="planning-saved-date">${s.savedAt ? new Date(s.savedAt).toLocaleDateString() : ""}</span>
+        <button type="button" class="link-button" data-load-id="${escapeHtml(s.id)}">Load</button>
+        <button type="button" class="link-button planning-del-saved" data-del-id="${escapeHtml(s.id)}" title="Delete">✕</button>
+      </div>`).join("");
+    listEl.querySelectorAll("[data-load-id]").forEach((btn) => btn.addEventListener("click", () => planningLoadAnalysis(btn.dataset.loadId)));
+    listEl.querySelectorAll("[data-del-id]").forEach((btn) => btn.addEventListener("click", () => planningDeleteAnalysis(btn.dataset.delId)));
+  } catch (_) { /* silently ignore */ }
+}
+
+async function planningLoadAnalysis(id) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/saved/${id}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Not found.");
+    const e = data.entry;
+    planningStudio.baseData = e.baseData;
+    planningStudio.scenarios = Array.isArray(e.scenarios) ? e.scenarios : [];
+    planningStudio.opportunities = Array.isArray(e.opportunities) ? e.opportunities : [];
+    planningStudio.nextSteps = null;
+    planningRenderResults();
+    planningShowState("results");
+    planningSetStatus("Loaded — " + (e.clientName || ""));
+  } catch (err) {
+    showToast(err.message || "Could not load.", "error");
+  }
+}
+
+async function planningDeleteAnalysis(id) {
+  try {
+    await fetch(`${API_BASE_URL}/api/planning/saved/${id}`, { method: "DELETE" });
+    planningLoadAnalysisList();
+  } catch (_) { /* silently ignore */ }
+}
+
+async function planningDownloadPdf() {
+  if (planningStudio.busy) return;
+  planningStudio.busy = true;
+  planningSetStatus("Generating PDF…");
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/deck-html`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientName: planningStudio.baseData?.clientName || "Client",
+        year: planningStudio.baseData?.taxYear,
+        baseData: planningStudio.baseData,
+        scenarios: planningStudio.scenarios,
+        opportunities: planningStudio.opportunities,
+        nextSteps: planningDeriveNextSteps(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed.");
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(data.html); w.document.close(); }
+    else showToast("Allow pop-ups to open the PDF preview.", "error");
+    planningSetStatus("Ready to present");
+  } catch (err) {
+    showToast(err.message || "PDF generation failed.", "error");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
 async function planningDownloadDeck() {
   if (planningStudio.busy) return;
+  // Snapshot any in-progress edits to next steps before exporting
+  const wrap = document.getElementById("planningNextStepsEditor");
+  if (wrap && !planningStudio.nextSteps) {
+    planningStudio.nextSteps = Array.from(wrap.querySelectorAll(".planning-nextstep-row")).map((row) => ({
+      action: row.querySelector(".planning-ns-action")?.value || "",
+      owner: row.querySelector(".planning-ns-owner")?.value || "",
+      deadline: row.querySelector(".planning-ns-deadline")?.value || "",
+    })).filter((s) => s.action.trim());
+    if (!planningStudio.nextSteps.length) planningStudio.nextSteps = null;
+  }
   planningStudio.busy = true;
   planningSetStatus("Building deck…");
   try {
@@ -10578,7 +10812,7 @@ function planningRenderPresentation() {
       const items = steps.map((s) => `<li><strong>${escapeHtml(s.action)}</strong>${s.deadline ? ` — by ${escapeHtml(s.deadline)}` : ""} <span class="planning-step-owner">${escapeHtml(s.owner)}</span></li>`).join("");
       return `<h2>Next steps</h2><ol class="planning-present-steps">${items}</ol>`;
     })()}
-    <footer class="planning-present-footer">Prepared for planning purposes. Figures are estimates based on the information provided and current tax law. Consult your CPA before acting.</footer>`;
+    <footer class="planning-present-footer">${escapeHtml(planningStudio.styleProfile?.combinedSummary?.disclaimer || "Prepared for planning purposes. Figures are estimates based on the information provided and current tax law. Consult your CPA before acting.")}</footer>`;
 }
 
 init();

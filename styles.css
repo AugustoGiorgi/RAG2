@@ -7901,3 +7901,105 @@ body.admin-mode #adminNavButton {
   color: var(--muted);
   margin-left: 6px;
 }
+
+/* ── Instruction suggestion chips ── */
+.planning-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 12px;
+}
+.planning-chip {
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.planning-chip:hover { background: var(--accent-soft, #e8f0fe); }
+
+/* ── Confirm step: basic / advanced ── */
+.planning-advanced-toggle {
+  font-size: 0.82rem;
+  margin: 8px 0 4px;
+  color: var(--accent);
+}
+.planning-confirm-adv { margin-top: 8px; }
+
+/* ── Saved analyses ── */
+.planning-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.planning-saved-section { margin-top: 12px; }
+.planning-saved-label { font-size: 0.8rem; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+.planning-saved-list { display: flex; flex-direction: column; gap: 4px; }
+.planning-saved-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--soft);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.83rem;
+}
+.planning-saved-item span:first-child { flex: 1; font-weight: 500; }
+.planning-saved-date { color: var(--muted); font-size: 0.78rem; }
+.planning-del-saved { color: var(--muted); font-size: 0.82rem; }
+.planning-del-saved:hover { color: var(--error, #dc2626); }
+
+/* ── Multi-year toggle ── */
+.planning-multiyear-toggle {
+  font-size: 0.83rem;
+  color: var(--muted);
+  margin: 8px 0 4px;
+}
+.planning-multiyear-toggle input { margin-right: 5px; }
+
+/* ── Quarterly estimates panel ── */
+.planning-quarterly { margin: 12px 0; }
+.planning-quarterly-inner {
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.planning-quarterly-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.planning-quarterly-annual {
+  text-align: right;
+  font-size: 0.88rem;
+  margin-top: 8px;
+}
+.planning-qbtns-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+.planning-qbtn { font-size: 0.78rem; color: var(--accent); }
+
+/* ── Editable next steps ── */
+.planning-nextsteps-hint { font-weight: 400; }
+.planning-nextsteps-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.planning-nextstep-row {
+  display: grid;
+  grid-template-columns: 1fr 0.55fr 0.55fr 24px;
+  gap: 6px;
+  align-items: center;
+}
+.planning-nextstep-row input {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  background: var(--bg);
+  color: var(--text);
+}
+.planning-ns-del { color: var(--muted); font-size: 0.82rem; text-align: center; }
+.planning-ns-del:hover { color: var(--error, #dc2626); }
