@@ -8004,6 +8004,106 @@ body.admin-mode #adminNavButton {
 .planning-ns-del { color: var(--muted); font-size: 0.82rem; text-align: center; }
 .planning-ns-del:hover { color: var(--error, #dc2626); }
 
+/* ── Planning setup card (type + year) ── */
+.planning-setup-card {
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.planning-setup-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.planning-setup-label {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--muted);
+  min-width: 140px;
+  flex-shrink: 0;
+}
+.planning-year-input {
+  width: 100px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.9rem;
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 600;
+}
+.planning-type-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.planning-type-btn {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+  transition: all 0.12s;
+}
+.planning-type-btn:hover { border-color: var(--accent); color: var(--accent); }
+.planning-type-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.planning-setup-error {
+  font-size: 0.82rem;
+  color: var(--error, #dc2626);
+  margin: 0;
+}
+/* Linked entity section */
+.planning-linked-entity {
+  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.planning-linked-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 0.83rem;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.planning-linked-detail {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-left: 22px;
+}
+.planning-linked-input {
+  flex: 1;
+  min-width: 160px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  background: var(--bg);
+  color: var(--text);
+}
+.planning-linked-select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  background: var(--bg);
+  color: var(--text);
+}
+/* Reset button */
+.planning-reset-btn { color: var(--muted); }
+.planning-reset-btn:hover { color: var(--error, #dc2626); border-color: var(--error, #dc2626); }
+
 /* ── Planning — Accounting import section ── */
 .planning-acct-details {
   border: 1px solid var(--border);

@@ -1474,8 +1474,18 @@ async function callPlanningClaude(req, content, systemText, action, payload, max
 async function handlePlanningAnalyze(req, res) {
   const payload = await readJsonBody(req);
   const instructions = String(payload.instructions || "").slice(0, 6000);
+  const clientType = String(payload.clientType || "").slice(0, 20);
+  const planYear = Number(payload.planYear) || new Date().getFullYear() + 1;
+  const linkedEntities = Array.isArray(payload.linkedEntities) ? payload.linkedEntities.slice(0, 3) : [];
+
+  const linkedNote = linkedEntities.length
+    ? `Linked entities: ${linkedEntities.map((e) => `${e.type}${e.name ? ` (${e.name})` : ""}`).join(", ")}.`
+    : "";
+
   const prompt = [
-    "Extract a tax-planning profile from the uploaded documents and CPA instructions. Return facts only — do NOT compute taxes.",
+    `Extract a tax-planning profile. Return type: ${clientType || "unspecified"}. Planning year: ${planYear}. ${linkedNote}`,
+    "Documents are prior-year source material — extract facts about income, deductions, and entity structure.",
+    "Return facts only — do NOT compute taxes.",
     "",
     "CPA INSTRUCTIONS: " + (instructions || "(none)"),
     "",
@@ -1494,7 +1504,9 @@ async function handlePlanningAnalyze(req, res) {
   if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
 
   const profile = normalizePlanningProfile(result.data);
-  const year = profile.taxYear;
+  // Override taxYear with the explicitly chosen plan year
+  profile.taxYear = planYear;
+  const year = planYear;
   const currentTax = planningTax.computeScenarioTax(profile, [], year);
   sendJson(res, 200, {
     baseData: { ...profile, currentTax },
@@ -1661,11 +1673,29 @@ async function handlePlanningGenerate(req, res) {
   const profile = normalizePlanningProfile(payload.baseData);
   const year = Number(payload.year) || profile.taxYear;
   const instructions = String(payload.instructions || "").slice(0, 4000);
+  const clientType = String(payload.clientType || "").slice(0, 20);
+  const linkedEntities = Array.isArray(payload.linkedEntities) ? payload.linkedEntities.slice(0, 3) : [];
   const base = buildPlanningBaseScenario(profile, year);
 
+  const typeHints = {
+    "1040":  "Focus on individual: retirement (SEP-IRA/Solo-401k/Defined Benefit), S-corp election, QBI, capital gains harvesting, NIIT, deduction bunching.",
+    "1120S": "Focus on S-corp: reasonable salary optimization (wages vs distributions), retirement plan, Sec 179/bonus depreciation, QBID, shareholder basis.",
+    "1065":  "Focus on partnership: guaranteed payments vs distributions, self-employment tax on GPs, basis planning, section 754 election, retirement for partners.",
+    "1120":  "Focus on C-corp: accumulated earnings, salary vs dividend, fiscal year selection, Sec 179/bonus depreciation, deferred compensation, NOL planning.",
+    "990":   "Focus on exempt org: UBIT exposure, compensation reasonableness, endowment investment policy, state registration compliance.",
+  };
+  const typeContext = clientType
+    ? `Return type: ${clientType}. ${typeHints[clientType] || ""}`
+    : "";
+  const linkedNote = linkedEntities.length
+    ? `Linked entities in scope: ${linkedEntities.map((e) => `${e.type}${e.name ? ` (${e.name})` : ""}`).join(", ")}.`
+    : "";
+
   const prompt = [
-    "Client tax profile: " + JSON.stringify(profile),
+    `Client tax profile (${clientType || "unknown"}, planning year ${year}): ` + JSON.stringify(profile),
     "Base tax (system-computed): $" + Math.round(base.taxCalc.total).toLocaleString(),
+    typeContext,
+    linkedNote,
     "CPA instructions: " + (instructions || "(none)"),
     "",
     "Propose 3-5 tax-planning scenarios as field ADJUSTMENTS only. No tax numbers — the system computes them.",

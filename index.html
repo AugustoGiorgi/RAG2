@@ -1250,7 +1250,29 @@
 
             <div id="planningEmpty" class="planning-state">
               <article class="request-step-card active">
-                <h3 class="request-step-title">1. Upload client information</h3>
+                <h3 class="request-step-title">1. Client &amp; year</h3>
+
+                <div class="planning-setup-card">
+                  <div class="planning-setup-row">
+                    <label class="planning-setup-label" for="planningPlanYear">Tax year being planned</label>
+                    <input type="number" id="planningPlanYear" class="planning-year-input" min="2020" max="2035" />
+                  </div>
+                  <div class="planning-setup-row">
+                    <span class="planning-setup-label">Client / return type</span>
+                    <div class="planning-type-grid" id="planningTypeGrid">
+                      <button type="button" class="planning-type-btn" data-type="1040">1040</button>
+                      <button type="button" class="planning-type-btn" data-type="1065">1065</button>
+                      <button type="button" class="planning-type-btn" data-type="1120S">1120S</button>
+                      <button type="button" class="planning-type-btn" data-type="1120">1120</button>
+                      <button type="button" class="planning-type-btn" data-type="990">990</button>
+                      <button type="button" class="planning-type-btn" data-type="Other">Other</button>
+                    </div>
+                  </div>
+                  <div id="planningLinkedEntity" class="planning-linked-entity" hidden></div>
+                  <p id="planningSetupError" class="planning-setup-error" hidden>Select a return type before continuing.</p>
+                </div>
+
+                <h3 class="request-step-title" style="margin-top:16px">2. Upload client information</h3>
                 <p class="muted-note">Prior-year return, K-1s, statements, the Excel workpaper, photos of documents — or just notes. Multiple files supported.</p>
                 <div id="planningDropzone" class="est-upload-zone" role="button" tabindex="0">
                   <strong>Drop client files here</strong>
@@ -1318,6 +1340,7 @@
                 <div class="planning-results-header">
                   <h3 class="request-step-title">3. Scenarios &amp; opportunities</h3>
                   <div class="planning-actions">
+                    <button id="planningResetBtn" class="ghost-button small-button planning-reset-btn" type="button">↺ New analysis</button>
                     <button id="planningSaveBtn" class="ghost-button small-button" type="button">Save analysis</button>
                     <button id="planningPresentBtn" class="ghost-button small-button" type="button">Present to client</button>
                     <button id="planningPdfBtn" class="ghost-button small-button" type="button">Download PDF</button>

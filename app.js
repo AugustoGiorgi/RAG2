@@ -9957,9 +9957,12 @@ const planningStudio = {
   templates: [],
   styleProfile: null,
   editingId: null,
-  nextSteps: null,       // null = auto-derived; array = user-edited
+  nextSteps: null,
   showMultiYear: false,
   savedList: [],
+  clientType: "",          // "1040" | "1065" | "1120S" | "1120" | "990" | "Other"
+  linkedEntities: [],      // [{type, name}] — e.g. 1040 + linked 1120S
+  planYear: new Date().getFullYear() + 1,
 };
 
 const PLANNING_FILING_STATUSES = ["Single", "MFJ", "MFS", "HOH"];
@@ -10056,6 +10059,7 @@ function initPlanningStudio() {
   input?.addEventListener("change", () => { planningAddFiles(input.files); input.value = ""; });
 
   document.getElementById("planningAnalyzeBtn")?.addEventListener("click", planningAnalyze);
+  document.getElementById("planningResetBtn")?.addEventListener("click", planningReset);
   document.getElementById("planningBackToUpload")?.addEventListener("click", () => planningShowState("empty"));
   document.getElementById("planningGenerateBtn")?.addEventListener("click", planningGenerateScenarios);
   document.getElementById("planningCustomBtn")?.addEventListener("click", planningAddCustomScenario);
@@ -10073,6 +10077,25 @@ function initPlanningStudio() {
   });
   document.getElementById("planningPresentBtn")?.addEventListener("click", () => planningTogglePresent(true));
   document.getElementById("planningExitPresent")?.addEventListener("click", () => planningTogglePresent(false));
+
+  // Plan year input — default to next year
+  const planYearInput = document.getElementById("planningPlanYear");
+  if (planYearInput) {
+    planYearInput.value = planningStudio.planYear;
+    planYearInput.addEventListener("change", () => {
+      planningStudio.planYear = Number(planYearInput.value) || new Date().getFullYear() + 1;
+    });
+  }
+
+  // Client type grid
+  document.querySelectorAll(".planning-type-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      planningStudio.clientType = btn.dataset.type || "";
+      document.querySelectorAll(".planning-type-btn").forEach((b) => b.classList.toggle("active", b === btn));
+      document.getElementById("planningSetupError")?.setAttribute("hidden", "");
+      planningRenderLinkedEntity();
+    });
+  });
 
   // Instruction suggestion chips
   document.querySelectorAll(".planning-chip").forEach((chip) => {
@@ -10267,13 +10290,101 @@ function planningRenderFileList() {
   });
 }
 
+function planningRenderLinkedEntity() {
+  const wrap = document.getElementById("planningLinkedEntity");
+  if (!wrap) return;
+  const t = planningStudio.clientType;
+
+  if (t === "1040") {
+    wrap.hidden = false;
+    wrap.innerHTML = `<label class="planning-linked-check">
+      <input type="checkbox" id="planningLinkedCheck" />
+      This individual also has a pass-through entity (1120S / 1065) — include it in the analysis
+    </label>
+    <div id="planningLinkedDetail" class="planning-linked-detail" hidden>
+      <input type="text" id="planningLinkedName" class="planning-linked-input" placeholder="Entity name (optional, e.g. Smith Consulting LLC)" />
+      <select id="planningLinkedType" class="planning-linked-select">
+        <option value="1120S">1120S (S-Corp)</option>
+        <option value="1065">1065 (Partnership)</option>
+      </select>
+    </div>`;
+    wrap.querySelector("#planningLinkedCheck")?.addEventListener("change", (e) => {
+      const detail = document.getElementById("planningLinkedDetail");
+      if (detail) detail.hidden = !e.target.checked;
+      planningStudio.linkedEntities = e.target.checked ? [{ type: document.getElementById("planningLinkedType")?.value || "1120S", name: "" }] : [];
+    });
+    wrap.querySelector("#planningLinkedType")?.addEventListener("change", (e) => {
+      if (planningStudio.linkedEntities[0]) planningStudio.linkedEntities[0].type = e.target.value;
+    });
+    wrap.querySelector("#planningLinkedName")?.addEventListener("input", (e) => {
+      if (planningStudio.linkedEntities[0]) planningStudio.linkedEntities[0].name = e.target.value.trim();
+    });
+  } else if (t === "1120S" || t === "1065") {
+    wrap.hidden = false;
+    wrap.innerHTML = `<label class="planning-linked-check">
+      <input type="checkbox" id="planningLinkedCheck" />
+      Also model the individual owner's 1040 impact (flow-through to personal return)
+    </label>`;
+    wrap.querySelector("#planningLinkedCheck")?.addEventListener("change", (e) => {
+      planningStudio.linkedEntities = e.target.checked ? [{ type: "1040", name: "Owner individual return" }] : [];
+    });
+  } else {
+    wrap.hidden = true;
+    wrap.innerHTML = "";
+    planningStudio.linkedEntities = [];
+  }
+}
+
+function planningReset() {
+  if (planningStudio.busy) return;
+  // Clear all analysis state
+  planningStudio.files = [];
+  planningStudio.baseData = null;
+  planningStudio.scenarios = [];
+  planningStudio.opportunities = [];
+  planningStudio.editingId = null;
+  planningStudio.nextSteps = null;
+  planningStudio.showMultiYear = false;
+  planningStudio.clientType = "";
+  planningStudio.linkedEntities = [];
+  planningStudio.planYear = new Date().getFullYear() + 1;
+
+  // Reset form fields
+  const instrEl = document.getElementById("planningInstructions");
+  if (instrEl) instrEl.value = "";
+  const planYearEl = document.getElementById("planningPlanYear");
+  if (planYearEl) planYearEl.value = planningStudio.planYear;
+  document.querySelectorAll(".planning-type-btn").forEach((b) => b.classList.remove("active"));
+  const linkedWrap = document.getElementById("planningLinkedEntity");
+  if (linkedWrap) { linkedWrap.hidden = true; linkedWrap.innerHTML = ""; }
+  const myCheck = document.getElementById("planningMultiYearCheck");
+  if (myCheck) myCheck.checked = false;
+
+  planningRenderFileList();
+  planningShowState("empty");
+  planningSetStatus("Ready");
+}
+
 async function planningAnalyze() {
   if (planningStudio.busy) return;
   const instructions = document.getElementById("planningInstructions")?.value || "";
+
+  // Validate required setup fields
+  if (!planningStudio.clientType) {
+    const errEl = document.getElementById("planningSetupError");
+    if (errEl) errEl.removeAttribute("hidden");
+    document.getElementById("planningTypeGrid")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   if (!planningStudio.files.length && !instructions.trim()) {
     showToast("Upload at least one document or write some instructions.", "error");
     return;
   }
+
+  // Capture plan year from input (may have been typed manually)
+  const planYearEl = document.getElementById("planningPlanYear");
+  if (planYearEl) planningStudio.planYear = Number(planYearEl.value) || planningStudio.planYear;
+
   planningStudio.busy = true;
   planningShowState("loading");
   planningSetStatus("Analyzing…");
@@ -10281,7 +10392,13 @@ async function planningAnalyze() {
     const res = await fetch(`${API_BASE_URL}/api/planning/analyze`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ files: planningStudio.files, instructions }),
+      body: JSON.stringify({
+        files: planningStudio.files,
+        instructions,
+        clientType: planningStudio.clientType,
+        linkedEntities: planningStudio.linkedEntities,
+        planYear: planningStudio.planYear,
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Analysis failed.");
@@ -10357,7 +10474,13 @@ async function planningGenerateScenarios() {
     const sres = await fetch(`${API_BASE_URL}/api/planning/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ baseData: planningStudio.baseData, year, instructions }),
+      body: JSON.stringify({
+        baseData: planningStudio.baseData,
+        year,
+        instructions,
+        clientType: planningStudio.clientType,
+        linkedEntities: planningStudio.linkedEntities,
+      }),
     });
     const sdata = await sres.json();
     if (!sres.ok) throw new Error(sdata.error || "Scenario generation failed.");
