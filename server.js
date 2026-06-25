@@ -90,9 +90,12 @@ const MODEL_COSTS = {
   "claude-3-5-sonnet-20241022": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-3-5-sonnet-latest": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-opus-4-20250514": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-opus-4-7": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-opus-4-6": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
-  "claude-haiku-4-5-20251001": { inputPerMTok: 0.8, outputPerMTok: 4, cacheWritePerMTok: 1, cacheReadPerMTok: 0.08 },
+  "claude-opus-4-1": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
+  "claude-opus-4-5": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-6": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-7": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-opus-4-8": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-haiku-4-5-20251001": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
 };
 const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || LOCAL_SECRETS.anthropicApiKey || "").trim();
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.googleClientId || "").trim();
@@ -4068,12 +4071,34 @@ function sanitizeSpendLimit(value) {
   return roundMoney(number);
 }
 
+function normalizedCostEntry(entry = {}) {
+  const usage = {
+    input_tokens: entry.inputTokens,
+    output_tokens: entry.outputTokens,
+    cache_creation_input_tokens: entry.cacheCreationTokens,
+    cache_read_input_tokens: entry.cacheReadTokens,
+  };
+  const hasTokenUsage = Object.values(usage).some((value) => Number(value || 0) > 0);
+  if (!hasTokenUsage) return { ...entry, totalCost: roundMoney(Number(entry.totalCost || 0)) };
+  const cost = calculateCost(usage, entry.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514");
+  const originalTotalCost = roundMoney(Number(entry.totalCost || 0));
+  return {
+    ...entry,
+    ...cost,
+    originalTotalCost: Math.abs(originalTotalCost - cost.totalCost) >= 0.0001 ? originalTotalCost : undefined,
+  };
+}
+
+function entryTotalCost(entry = {}) {
+  return normalizedCostEntry(entry).totalCost;
+}
+
 function userSpendBudget(username) {
   const user = readUserStore().users.find((item) => item.username === username);
   const limitUsd = user?.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd);
   const usedUsd = roundMoney((readCostLog().entries || [])
     .filter((entry) => entry.username === username)
-    .reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0));
+    .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
   const hasLimit = limitUsd !== null;
   const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
   return { hasLimit, limitUsd, usedUsd, remainingUsd };
@@ -5830,10 +5855,11 @@ async function handleCostApi(req, res, requestUrl) {
   if (!requireAdmin(req, res)) return;
 
   if (req.method === "GET" && requestUrl.pathname === "/api/cost/log") {
-    const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams);
+    const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams)
+      .map((entry) => normalizedCostEntry(entry));
     sendJson(res, 200, {
       entries,
-      total: roundMoney(entries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+      total: roundMoney(entries.reduce((sum, entry) => sum + entryTotalCost(entry), 0)),
       calls: entries.length,
       grouped: groupCostEntries(entries, requestUrl.searchParams.get("groupBy") || "action"),
     });
@@ -5974,9 +6000,10 @@ function filterCostEntries(entries, params) {
 function groupCostEntries(entries, groupBy) {
   const grouped = new Map();
   entries.forEach((entry) => {
+    const normalized = normalizedCostEntry(entry);
     const key = String(entry[groupBy] || entry.action || "unknown");
     const current = grouped.get(key) || { key, total: 0, calls: 0 };
-    current.total += Number(entry.totalCost || 0);
+    current.total += normalized.totalCost;
     current.calls += 1;
     grouped.set(key, current);
   });
@@ -5988,11 +6015,13 @@ function buildCostSummary(entries) {
   const thisWeek = isoWeekKey(new Date());
   const thisMonth = today.slice(0, 7);
   const summarize = (filtered) => ({
-    total: roundMoney(filtered.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)),
+    total: roundMoney(filtered.reduce((sum, entry) => sum + entryTotalCost(entry), 0)),
     calls: filtered.length,
     byAction: Object.fromEntries(groupCostEntries(filtered, "action").map((item) => [item.key, item])),
   });
-  const sorted = entries.slice().sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+  const sorted = entries.slice()
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .map((entry) => normalizedCostEntry(entry));
   return {
     today: summarize(entries.filter((entry) => entry.date === today)),
     thisWeek: summarize(entries.filter((entry) => entry.week === thisWeek)),
@@ -6013,7 +6042,7 @@ function buildDailyCostTrend(entries, days) {
     d.setDate(now.getDate() - index);
     const date = d.toISOString().slice(0, 10);
     const dayEntries = entries.filter((entry) => entry.date === date);
-    output.push({ date, total: roundMoney(dayEntries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0)), calls: dayEntries.length });
+    output.push({ date, total: roundMoney(dayEntries.reduce((sum, entry) => sum + entryTotalCost(entry), 0)), calls: dayEntries.length });
   }
   return output;
 }
@@ -6109,6 +6138,9 @@ function buildLoginPage(error = "") {
       .login-submit-btn:disabled { opacity: .62; cursor: not-allowed; }
       .login-access-link { margin: 14px 0 0; text-align: center; color: #64748b; font-size: 13px; }
       .login-access-link a { color: #1d4ed8; font-weight: 800; text-decoration: underline; }
+      .login-legal-links { margin-top: 18px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; color: #94a3b8; font-size: 12px; }
+      .login-legal-links a { color: #64748b; text-decoration: none; font-weight: 700; }
+      .login-legal-links a:hover { color: #1d4ed8; text-decoration: underline; }
       .login-version { margin-top: 24px; text-align: center; color: #94a3b8; font-size: 11px; }
       .spinner { width: 17px; height: 17px; animation: spin .8s linear infinite; vertical-align: -3px; margin-right: 7px; }
       @keyframes spin { to { transform: rotate(360deg); } }
@@ -6138,7 +6170,7 @@ function buildLoginPage(error = "") {
           <div class="login-feature-item"><span class="login-feature-icon">QB</span><span>Direct accounting software integration</span></div>
           <div class="login-feature-item"><span class="login-feature-icon">GD</span><span>Google Drive and Gmail workflows</span></div>
         </div>
-        <div class="login-left-footer"><span>Â© 2026 RAG Tax AI</span><span>Â·</span><span>Certifai CPA</span></div>
+        <div class="login-left-footer"><span>&copy; 2026 RAG Tax AI</span><span>&middot;</span><span>Certifai CPA</span></div>
       </section>
       <section class="login-right-panel">
         <div class="login-form-container">
@@ -6157,7 +6189,8 @@ function buildLoginPage(error = "") {
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
           <p class="login-access-link">No account yet? <a href="/request-access">Request access</a></p>
-          <div class="login-version">RAG Tax AI v2.0 Â· Powered by Claude</div>
+          <div class="login-legal-links"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><span>&middot;</span><a href="/eula" target="_blank" rel="noopener">Terms of Use</a></div>
+          <div class="login-version">RAG Tax AI v2.0 &middot; Powered by Claude</div>
         </div>
       </section>
     </main>
@@ -13027,82 +13060,115 @@ function serveLegalPage(res, title, bodyHtml) {
 function servePrivacyPolicy(res) {
   serveLegalPage(res, "Privacy Policy", `
     <h1>Privacy Policy</h1>
-    <p><strong>Last updated: June 22, 2025</strong></p>
-    <p>RAG Tax AI ("we", "our", or "the app") is an internal tool operated by a licensed CPA firm. This Privacy Policy explains how we collect, use, and protect information when you use RAG Tax AI.</p>
+    <p><strong>Last updated: June 25, 2026</strong></p>
+    <p>RAG Tax AI ("RAG Tax AI", "we", "us", or "the App") provides AI-assisted tax return review, workpaper preparation, client request workflows, tax research support, document analysis, accounting software integrations, and related CPA firm productivity tools. This Privacy Policy explains what information we collect, how we use it, how we protect it, and what choices authorized users have.</p>
+    <p>This policy is written for firms and professionals using RAG Tax AI in connection with tax, accounting, and advisory work. The App is not intended for children, consumer social use, or unrelated personal data processing.</p>
 
-    <h2>1. Who uses this app</h2>
-    <p>RAG Tax AI is an internal application used exclusively by authorized staff of the CPA firm. It is not a public consumer application.</p>
-
-    <h2>2. Information we collect</h2>
+    <h2>1. Information we collect</h2>
     <ul>
-      <li><strong>Authentication data:</strong> Username and hashed password for internal login.</li>
-      <li><strong>Financial data from QuickBooks Online:</strong> With your explicit authorization, we access financial reports (Profit &amp; Loss, Balance Sheet, Trial Balance) from your QuickBooks Online account to assist with tax preparation workflows.</li>
-      <li><strong>Uploaded documents:</strong> Tax documents, financial statements, and workpapers uploaded by staff for AI-assisted processing.</li>
-      <li><strong>Usage logs:</strong> Action logs for audit and security purposes.</li>
+      <li><strong>Account and login information:</strong> usernames, display names, role assignments, hashed passwords, account status, spending limits, and session metadata needed to authenticate users and administer access.</li>
+      <li><strong>Uploaded tax and financial materials:</strong> tax returns, workpapers, organizer files, notices, trial balances, financial statements, PDFs, spreadsheets, images, and other documents users submit for review, preparation, extraction, or analysis.</li>
+      <li><strong>Client and workflow records:</strong> client names, entity details, tax years, return types, deadlines, tracker items, review findings, notes, firm library entries, generated drafts, and user-entered workflow data.</li>
+      <li><strong>Accounting software data:</strong> when authorized by a user, the App may retrieve reports and related data from connected accounting platforms such as QuickBooks Online and Xero, including profit and loss reports, balance sheets, trial balances, accounts, contacts, and other report data needed for tax workflows.</li>
+      <li><strong>Google account data:</strong> when authorized by a user, the App may access selected Google services such as Google Drive file metadata/content selected by the user, Gmail draft/compose functionality, and the user's Google email address, depending on the scopes granted.</li>
+      <li><strong>AI usage and cost data:</strong> model used, action type, token counts, estimated processing costs, timestamps, duration, and related operational metadata used for budgets, security, auditing, and service monitoring.</li>
+      <li><strong>Technical and security logs:</strong> IP-derived request information, browser and device metadata, server logs, rate-limit events, error logs, audit events, and security diagnostics.</li>
+      <li><strong>Access request data:</strong> information submitted through the "Request access" form, such as email, firm/company/person name, and estimated annual filed returns.</li>
     </ul>
 
-    <h2>3. How we use your data</h2>
+    <h2>2. How we use information</h2>
     <ul>
-      <li>To generate tax workpapers, reviews, and client deliverables using AI assistance.</li>
-      <li>To retrieve financial reports from connected accounting software (QuickBooks Online, Xero).</li>
-      <li>For internal audit and security logging.</li>
+      <li>Authenticate users, enforce role-based access, manage administrator functions, and protect accounts.</li>
+      <li>Analyze uploaded documents and accounting data to assist with tax return review, workpaper preparation, estimated tax workflows, notices, client deliverables, research, and related CPA firm operations.</li>
+      <li>Generate AI-assisted summaries, review points, issue lists, workpapers, client request drafts, calculations, and other outputs requested by users.</li>
+      <li>Connect to user-authorized third-party services such as Google Drive, Gmail, QuickBooks Online, and Xero.</li>
+      <li>Track token usage, apply user-level spending limits, prevent excessive usage, troubleshoot errors, improve reliability, and secure the App.</li>
+      <li>Respond to access requests, support questions, security issues, and administrative needs.</li>
     </ul>
-    <p>We do <strong>not</strong> sell, share, or transfer your data to third parties, except to AI processing services (Anthropic Claude API) strictly for generating the requested outputs.</p>
 
-    <h2>4. QuickBooks Online data</h2>
-    <p>When you connect QuickBooks Online, we request access to accounting data only for the purpose of retrieving financial reports used in tax preparation. We store only OAuth access tokens (encrypted) and do not permanently store your QuickBooks financial data on our servers.</p>
+    <h2>3. AI processing</h2>
+    <p>RAG Tax AI uses third-party AI model providers, including Anthropic Claude, to process prompts and user-provided materials for the requested workflows. Information submitted for AI-assisted review may be sent to those providers solely to generate the requested output. Users should review all AI-generated outputs before relying on them. The App is a professional assistance tool and does not replace qualified tax judgment, CPA review, or firm quality-control procedures.</p>
 
-    <h2>5. Data retention</h2>
-    <p>Uploaded documents are processed in memory and are not permanently stored on our servers beyond the active session. OAuth tokens are stored securely on the server and can be revoked at any time from within the app.</p>
+    <h2>4. Google API data</h2>
+    <p>If you connect a Google account, RAG Tax AI uses Google data only to provide user-facing features requested inside the App, such as selecting Drive materials for review or creating Gmail drafts. The App does not sell Google user data, does not use Google user data for advertising, and does not transfer Google user data except as necessary to provide the requested feature, comply with law, or protect the App. OAuth tokens are stored server-side and are not exposed to the browser.</p>
 
-    <h2>6. Security</h2>
-    <p>All data is transmitted over HTTPS. Access to the application requires authentication. OAuth tokens are stored server-side and never exposed to the browser.</p>
+    <h2>5. Accounting integrations</h2>
+    <p>If you connect QuickBooks Online, Xero, or another accounting platform, RAG Tax AI uses the authorized connection to retrieve accounting reports and related business data needed for tax review, workpaper preparation, reconciliation, and analysis. OAuth tokens are stored server-side. Users can revoke access from within the relevant provider account or by contacting an administrator.</p>
 
-    <h2>7. Your rights</h2>
-    <p>Authorized users may request deletion of their account and associated tokens by contacting the system administrator.</p>
+    <h2>6. How we share information</h2>
+    <p>We do not sell personal information, client tax information, Google user data, or accounting data. We may share information only with:</p>
+    <ul>
+      <li><strong>Service providers</strong> that host, secure, operate, or process the App, including AI model providers and infrastructure providers.</li>
+      <li><strong>Connected third-party platforms</strong> at the user's direction, such as Google, QuickBooks Online, or Xero.</li>
+      <li><strong>Firm administrators</strong> who manage users, budgets, access, security, and workflow operations.</li>
+      <li><strong>Legal or security recipients</strong> when required to comply with law, enforce terms, investigate abuse, protect users, or defend legal rights.</li>
+    </ul>
 
-    <h2>8. Contact</h2>
-    <p>For questions about this Privacy Policy, contact us at <a href="mailto:ramiro.f.linkedin@gmail.com">ramiro.f.linkedin@gmail.com</a>.</p>
+    <h2>7. Data retention</h2>
+    <p>Retention depends on the type of information and the purpose for which it is used. Account records, audit logs, cost logs, workflow records, access requests, and OAuth tokens may be retained while needed to operate the App, maintain security, support firm workflows, comply with legal obligations, or preserve business records. Uploaded files may be processed temporarily or retained when a workflow requires persistent storage. Administrators may request deletion or revocation of user accounts, OAuth tokens, or stored records, subject to legal, tax, accounting, backup, and security requirements.</p>
+
+    <h2>8. Security</h2>
+    <p>RAG Tax AI uses administrative, technical, and organizational safeguards designed to protect information, including authenticated access, role separation, HTTPS transport, server-side token handling, password hashing, budget enforcement, rate limiting, and audit logging. No system can guarantee absolute security, so users should avoid uploading unnecessary sensitive information and should promptly report suspected unauthorized access.</p>
+
+    <h2>9. User responsibilities</h2>
+    <p>Users are responsible for ensuring they have authority to upload, connect, or process client materials in the App. Users should review generated outputs, preserve required source documents, follow firm policies, comply with applicable tax and privacy laws, and avoid sharing credentials or unauthorized access.</p>
+
+    <h2>10. Your choices</h2>
+    <ul>
+      <li>You may disconnect Google, QuickBooks Online, Xero, or other connected services through the provider account or by contacting an administrator.</li>
+      <li>You may request deletion or correction of account information where legally and operationally permitted.</li>
+      <li>Administrators may disable accounts, reset passwords, change spending limits, or remove access.</li>
+    </ul>
+
+    <h2>11. Changes to this policy</h2>
+    <p>We may update this Privacy Policy as the App evolves, including when new integrations, workflows, vendors, or security features are added. The "Last updated" date reflects the latest version.</p>
+
+    <h2>12. Contact</h2>
+    <p>For questions about this Privacy Policy, access, data deletion, or connected accounts, contact us at <a href="mailto:ramiroflores@ragtax-ia.com">ramiroflores@ragtax-ia.com</a>.</p>
   `);
 }
 
 function serveEula(res) {
   serveLegalPage(res, "End-User License Agreement", `
     <h1>End-User License Agreement (EULA)</h1>
-    <p><strong>Last updated: June 22, 2025</strong></p>
-    <p>This End-User License Agreement ("Agreement") is a legal agreement between you and the CPA firm operating RAG Tax AI ("we", "our") for the use of the RAG Tax AI application ("the App").</p>
+    <p><strong>Last updated: June 25, 2026</strong></p>
+    <p>This End-User License Agreement ("Agreement") governs access to and use of RAG Tax AI ("the App"). By accessing the App, you agree to use it only as authorized by your organization and in accordance with this Agreement, the Privacy Policy, and applicable professional, tax, data protection, and security obligations.</p>
 
     <h2>1. License grant</h2>
-    <p>We grant you a limited, non-exclusive, non-transferable license to use RAG Tax AI solely for internal tax preparation and review purposes within your organization.</p>
+    <p>Subject to this Agreement, we grant authorized users a limited, non-exclusive, non-transferable, revocable license to use RAG Tax AI for tax return review, workpaper preparation, document analysis, client request workflows, accounting software analysis, research assistance, and related professional tax and accounting workflows.</p>
 
     <h2>2. Restrictions</h2>
     <ul>
-      <li>You may not distribute, sell, sublicense, or transfer the App to any third party.</li>
-      <li>You may not reverse-engineer, decompile, or disassemble the App.</li>
-      <li>You may not use the App for any unlawful purpose.</li>
-      <li>Access is restricted to authorized personnel only.</li>
+      <li>You may not sell, sublicense, rent, transfer, or provide unauthorized access to the App.</li>
+      <li>You may not reverse-engineer, decompile, disassemble, bypass security controls, scrape, overload, or interfere with the App.</li>
+      <li>You may not upload materials you are not authorized to process or use the App for unlawful, deceptive, or unauthorized purposes.</li>
+      <li>You may not share login credentials or allow another person to use your account.</li>
+      <li>You may not use AI outputs as final professional advice without appropriate human review and verification.</li>
     </ul>
 
     <h2>3. Data and privacy</h2>
     <p>Use of the App is subject to our <a href="/privacy">Privacy Policy</a>, which is incorporated into this Agreement by reference.</p>
 
     <h2>4. Third-party services</h2>
-    <p>The App integrates with third-party services including Anthropic Claude (AI processing), QuickBooks Online, and Xero. Your use of these services is subject to their respective terms of service.</p>
+    <p>The App integrates with third-party services including AI model providers, Google services, QuickBooks Online, Xero, and hosting or infrastructure providers. Your use of connected services may be subject to those providers' terms, privacy policies, account settings, rate limits, and authorization requirements.</p>
 
     <h2>5. Disclaimer of warranties</h2>
-    <p>The App is provided "as is" without warranty of any kind. AI-generated outputs (workpapers, reviews, estimates) are for assistance purposes only and must be reviewed and verified by a qualified tax professional before use.</p>
+    <p>The App is provided "as is" and "as available" without warranty of any kind. AI-generated outputs, summaries, calculations, workpapers, notices, research responses, and drafts are assistance tools only. They may be incomplete, inaccurate, outdated, or unsuitable for a particular client or filing position. A qualified professional must review, verify, and approve all outputs before use or reliance.</p>
 
     <h2>6. Limitation of liability</h2>
-    <p>To the maximum extent permitted by applicable law, we shall not be liable for any indirect, incidental, or consequential damages arising from your use of the App.</p>
+    <p>To the maximum extent permitted by law, we are not liable for indirect, incidental, special, consequential, exemplary, or punitive damages, including lost profits, lost data, filing errors, penalties, interest, professional liability claims, or business interruption arising from use of the App or reliance on AI-assisted outputs.</p>
 
-    <h2>7. Termination</h2>
-    <p>We reserve the right to terminate your access to the App at any time for violation of this Agreement.</p>
+    <h2>7. User accounts and budgets</h2>
+    <p>Administrators may create, disable, delete, or modify user accounts and may set spending or token-related limits. The App may block AI-powered actions when a user reaches the configured limit. Usage and cost estimates are operational controls and may differ from provider invoices due to timing, model pricing changes, retries, caching, or provider-side billing adjustments.</p>
 
-    <h2>8. Governing law</h2>
-    <p>This Agreement is governed by the laws of the jurisdiction in which the CPA firm operates.</p>
+    <h2>8. Suspension and termination</h2>
+    <p>We may suspend or terminate access at any time if we believe an account is unauthorized, insecure, abusive, non-compliant, inactive, or otherwise creates legal, security, operational, or business risk.</p>
 
-    <h2>9. Contact</h2>
-    <p>For questions about this Agreement, contact us at <a href="mailto:ramiro.f.linkedin@gmail.com">ramiro.f.linkedin@gmail.com</a>.</p>
+    <h2>9. Changes</h2>
+    <p>We may update this Agreement from time to time as the App, integrations, security controls, and business terms evolve. Continued use after an update means you accept the updated Agreement.</p>
+
+    <h2>10. Contact</h2>
+    <p>For questions about this Agreement, contact us at <a href="mailto:ramiroflores@ragtax-ia.com">ramiroflores@ragtax-ia.com</a>.</p>
   `);
 }
 
