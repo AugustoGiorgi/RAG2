@@ -10085,6 +10085,12 @@ function initPlanningStudio() {
   // Load saved analyses list on init
   planningLoadAnalysisList();
 
+  // Lazy-init the accounting import section when the user opens the details panel
+  const acctDetails = document.getElementById("planningAcctDetails");
+  acctDetails?.addEventListener("toggle", () => {
+    if (acctDetails.open && !planningAcctState.connected.length) planningAcctInit();
+  });
+
   // Library sub-view
   document.getElementById("planningTabAnalysis")?.addEventListener("click", () => planningShowView("analysis"));
   document.getElementById("planningTabLibrary")?.addEventListener("click", () => planningShowView("library"));
@@ -10698,6 +10704,258 @@ async function planningDeleteAnalysis(id) {
     await fetch(`${API_BASE_URL}/api/planning/saved/${id}`, { method: "DELETE" });
     planningLoadAnalysisList();
   } catch (_) { /* silently ignore */ }
+}
+
+// ---------------------------------------------------------------------------
+// Planning — Accounting import (QBO / Xero). Purely additive; never touches
+// qboState or any Preparation-tab variable.
+// ---------------------------------------------------------------------------
+const planningAcctState = {
+  connected: [],          // [{softwareId, name, companies}]
+  softwareId: "",
+  availableReports: [],
+  companyId: "",
+  startDate: "",
+  endDate: "",
+  method: "Accrual",
+  selected: new Set(),    // reportIds chosen by the user
+  busy: false,
+};
+
+// Tax-planning-relevant report IDs (pre-checked by default).
+const PLANNING_ACCT_DEFAULT_REPORTS = new Set([
+  "ProfitAndLoss", "profit_and_loss", "BalanceSheet", "balance_sheet",
+  "TrialBalance", "trial_balance", "GeneralLedger", "general_ledger",
+]);
+
+function planningAcctDateRange(preset) {
+  const today = new Date().toISOString().slice(0, 10);
+  const y = new Date().getFullYear();
+  const pad = (m, d) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return {
+    cy:  [`${y}-01-01`, `${y}-12-31`],
+    py:  [`${y - 1}-01-01`, `${y - 1}-12-31`],
+    ytd: [`${y}-01-01`, today],
+    q4:  [pad(10, 1), pad(12, 31)],
+    q3:  [pad(7, 1), pad(9, 30)],
+  }[preset] || [`${y}-01-01`, `${y}-12-31`];
+}
+
+async function planningAcctInit() {
+  const inner = document.getElementById("planningAcctInner");
+  if (!inner) return;
+  try {
+    const data = await fetch(`${API_BASE_URL}/api/accounting/status`).then((r) => r.json());
+    planningAcctState.connected = cloudProviders(data.connected || []);
+  } catch (_) {
+    planningAcctState.connected = [];
+  }
+  planningAcctRender();
+}
+
+function planningAcctRender() {
+  const inner = document.getElementById("planningAcctInner");
+  if (!inner) return;
+  const connected = planningAcctState.connected;
+
+  if (!connected.length) {
+    inner.innerHTML = `<p class="muted-note">No accounting software connected. Connect QuickBooks or Xero in the <strong>Preparation</strong> tab first.</p>`;
+    return;
+  }
+
+  // Software selector (only if multiple connected)
+  const softwarePicker = connected.length > 1
+    ? `<div class="planning-acct-row">
+        ${connected.map((s) => `<button type="button" class="planning-acct-sw-btn ${planningAcctState.softwareId === s.softwareId ? "active" : ""}" data-acct-sw="${escapeHtml(s.softwareId)}">${escapeHtml(s.name)}</button>`).join("")}
+       </div>`
+    : "";
+
+  // Ensure a default softwareId
+  if (!planningAcctState.softwareId && connected.length) {
+    planningAcctState.softwareId = connected[0].softwareId;
+  }
+  const activeSw = connected.find((s) => s.softwareId === planningAcctState.softwareId) || connected[0];
+  const companies = activeSw?.companies || [];
+
+  // Company selector
+  const companySelect = `<select class="planning-acct-select" id="planningAcctCompany">
+    <option value="">Select company…</option>
+    ${companies.map((c) => `<option value="${escapeHtml(c.id || c.realmId)}" ${(c.id || c.realmId) === planningAcctState.companyId ? "selected" : ""}>${escapeHtml(c.name || c.companyName || c.id)}</option>`).join("")}
+  </select>`;
+
+  // Period presets
+  const presets = ["cy", "py", "ytd", "q4", "q3"];
+  const presetLabels = { cy: "Current year", py: "Prior year", ytd: "YTD", q4: "Q4", q3: "Q3" };
+  const presetBtns = presets.map((p) => {
+    const [s, e] = planningAcctDateRange(p);
+    const active = planningAcctState.startDate === s && planningAcctState.endDate === e;
+    return `<button type="button" class="planning-acct-preset ${active ? "active" : ""}" data-acct-preset="${p}">${presetLabels[p]}</button>`;
+  }).join("");
+
+  // Method
+  const methodHtml = `<label class="planning-acct-method"><input type="radio" name="planning-acct-method" value="Accrual" ${planningAcctState.method === "Accrual" ? "checked" : ""} /> Accrual</label>
+    <label class="planning-acct-method"><input type="radio" name="planning-acct-method" value="Cash" ${planningAcctState.method === "Cash" ? "checked" : ""} /> Cash</label>`;
+
+  // Report list
+  const reports = planningAcctState.availableReports;
+  const reportListHtml = reports.length
+    ? reports.map((r) => {
+        const checked = planningAcctState.selected.has(r.id);
+        return `<label class="planning-acct-report-row">
+          <input type="checkbox" data-acct-report="${escapeHtml(r.id)}" ${checked ? "checked" : ""} />
+          <span>${escapeHtml(r.name || r.id)}</span>
+        </label>`;
+      }).join("")
+    : (planningAcctState.companyId ? `<p class="muted-note">Loading reports…</p>` : `<p class="muted-note">Select a company to see available reports.</p>`);
+
+  const canFetch = planningAcctState.companyId && planningAcctState.startDate && planningAcctState.selected.size > 0;
+
+  inner.innerHTML = `
+    ${softwarePicker}
+    <div class="planning-acct-row">${companySelect}</div>
+    <div class="planning-acct-row planning-acct-presets">${presetBtns}</div>
+    <div class="planning-acct-row">${methodHtml}</div>
+    <div class="planning-acct-reports" id="planningAcctReports">${reportListHtml}</div>
+    <div class="planning-acct-row planning-acct-actions">
+      <button type="button" class="ghost-button small-button" id="planningAcctSelectAll">Select all</button>
+      <button type="button" class="ghost-button small-button" id="planningAcctClear">Clear</button>
+      <button type="button" class="primary-button small-button" id="planningAcctFetch" ${canFetch && !planningAcctState.busy ? "" : "disabled"}>Import reports</button>
+    </div>
+    <div id="planningAcctStatus" class="planning-acct-status"></div>`;
+
+  // Wire events
+  inner.querySelectorAll("[data-acct-sw]").forEach((btn) => btn.addEventListener("click", async () => {
+    planningAcctState.softwareId = btn.dataset.acctSw;
+    planningAcctState.companyId = "";
+    planningAcctState.availableReports = [];
+    planningAcctState.selected.clear();
+    planningAcctRender();
+  }));
+
+  inner.querySelector("#planningAcctCompany")?.addEventListener("change", async (e) => {
+    planningAcctState.companyId = e.target.value;
+    if (planningAcctState.companyId) {
+      await planningAcctLoadReports();
+    }
+    planningAcctRender();
+  });
+
+  inner.querySelectorAll("[data-acct-preset]").forEach((btn) => btn.addEventListener("click", () => {
+    [planningAcctState.startDate, planningAcctState.endDate] = planningAcctDateRange(btn.dataset.acctPreset);
+    planningAcctRender();
+  }));
+
+  inner.querySelectorAll("input[name='planning-acct-method']").forEach((radio) => radio.addEventListener("change", (e) => {
+    planningAcctState.method = e.target.value;
+  }));
+
+  inner.querySelectorAll("[data-acct-report]").forEach((cb) => cb.addEventListener("change", () => {
+    if (cb.checked) planningAcctState.selected.add(cb.dataset.acctReport);
+    else planningAcctState.selected.delete(cb.dataset.acctReport);
+    const fetchBtn = inner.querySelector("#planningAcctFetch");
+    if (fetchBtn) fetchBtn.disabled = !(planningAcctState.companyId && planningAcctState.startDate && planningAcctState.selected.size > 0);
+  }));
+
+  inner.querySelector("#planningAcctSelectAll")?.addEventListener("click", () => {
+    planningAcctState.availableReports.forEach((r) => planningAcctState.selected.add(r.id));
+    planningAcctRender();
+  });
+
+  inner.querySelector("#planningAcctClear")?.addEventListener("click", () => {
+    planningAcctState.selected.clear();
+    planningAcctRender();
+  });
+
+  inner.querySelector("#planningAcctFetch")?.addEventListener("click", planningAcctFetch);
+}
+
+async function planningAcctLoadReports() {
+  if (!planningAcctState.softwareId) return;
+  try {
+    const data = await fetch(`${API_BASE_URL}/api/accounting/reports/available/${encodeURIComponent(planningAcctState.softwareId)}`).then((r) => r.json());
+    planningAcctState.availableReports = Array.isArray(data) ? data : [];
+    // Pre-select tax-planning-relevant reports
+    planningAcctState.selected.clear();
+    planningAcctState.availableReports.forEach((r) => {
+      if (PLANNING_ACCT_DEFAULT_REPORTS.has(r.id)) planningAcctState.selected.add(r.id);
+    });
+  } catch (_) {
+    planningAcctState.availableReports = [];
+  }
+}
+
+async function planningAcctFetch() {
+  if (planningAcctState.busy) return;
+  const statusEl = document.getElementById("planningAcctStatus");
+  const fetchBtn = document.getElementById("planningAcctFetch");
+  planningAcctState.busy = true;
+  if (fetchBtn) fetchBtn.disabled = true;
+  if (statusEl) statusEl.innerHTML = `<span class="muted-note">Fetching reports…</span>`;
+
+  try {
+    const reportIds = Array.from(planningAcctState.selected);
+    const payload = {
+      softwareId: planningAcctState.softwareId,
+      companyId: planningAcctState.companyId,
+      outputFormat: "csv",
+      reports: reportIds.map((reportId) => {
+        const info = planningAcctState.availableReports.find((r) => r.id === reportId) || {};
+        return {
+          reportId,
+          startDate: info.dateRange ? planningAcctState.startDate : "",
+          endDate: info.dateRange ? planningAcctState.endDate : "",
+          asOfDate: info.asOfDate ? planningAcctState.endDate : "",
+          accountingMethod: planningAcctState.method,
+          cash: planningAcctState.method === "Cash",
+          comparative: false,
+        };
+      }),
+    };
+
+    const res = await fetch(`${API_BASE_URL}/api/accounting/reports/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Fetch failed.");
+
+    const swName = accountingSoftwareById(planningAcctState.softwareId)?.name || planningAcctState.softwareId;
+    const files = (data.reports || []).map((report) => {
+      const nameParts = [report.reportName || report.reportId];
+      if (planningAcctState.startDate) nameParts.push(`${planningAcctState.startDate}${planningAcctState.endDate ? ` to ${planningAcctState.endDate}` : ""}`);
+      nameParts.push(swName);
+      return {
+        name: nameParts.join(" — ").replace(/[\\/:*?"<>|]+/g, "-") + ".csv",
+        type: "text/csv",
+        content: btoa(unescape(encodeURIComponent(report.csvContent || ""))),
+      };
+    });
+
+    // Merge into planning files (no duplicates by name)
+    files.forEach((f) => {
+      if (!planningStudio.files.some((existing) => existing.name === f.name)) {
+        planningStudio.files.push(f);
+      }
+    });
+    planningRenderFileList();
+
+    const errMsg = data.errors?.length ? ` (${data.errors.length} failed)` : "";
+    if (statusEl) statusEl.innerHTML = `<span class="planning-acct-ok">${files.length} report${files.length !== 1 ? "s" : ""} added to planning files.${errMsg}</span>`;
+    showToast(`${files.length} report${files.length !== 1 ? "s" : ""} imported.`, "success");
+
+    // Auto-close the details panel after a successful import
+    const details = document.getElementById("planningAcctDetails");
+    if (details) setTimeout(() => { details.open = false; }, 1200);
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span class="validation-error">${escapeHtml(err.message || "Import failed.")}</span>`;
+    showToast(err.message || "Import failed.", "error");
+  } finally {
+    planningAcctState.busy = false;
+    if (fetchBtn) {
+      fetchBtn.disabled = !(planningAcctState.companyId && planningAcctState.startDate && planningAcctState.selected.size > 0);
+    }
+  }
 }
 
 async function planningDownloadPdf() {

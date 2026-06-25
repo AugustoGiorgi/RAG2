@@ -1259,6 +1259,17 @@
                   <input id="planningFiles" type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.txt" hidden />
                 </div>
                 <div id="planningFileList" class="planning-file-list"></div>
+
+                <details class="planning-acct-details" id="planningAcctDetails">
+                  <summary class="planning-acct-summary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                    Import from QuickBooks or Xero
+                  </summary>
+                  <div id="planningAcctInner" class="planning-acct-inner">
+                    <p class="muted-note planning-acct-loading">Checking connections…</p>
+                  </div>
+                </details>
+
                 <label class="field"><span>Instructions for the AI</span>
                   <textarea id="planningInstructions" rows="4" placeholder="e.g. Client wants to buy an $80K truck in December. S-Corp. Analyze with and without Sec 179. Bracket is 37%, prioritize deferral."></textarea>
                 </label>
