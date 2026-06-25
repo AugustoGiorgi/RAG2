@@ -8058,6 +8058,19 @@ body.admin-mode #adminNavButton {
   margin: 0;
 }
 
+/* ── Planning — Payments card (confirm step) ── */
+.planning-payments-card {
+  grid-column: 1 / -1;
+  background: var(--soft);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 /* ── Planning — Tax breakdown panel ── */
 .planning-scenario-name-cell { display: flex; flex-direction: column; gap: 2px; }
 .planning-row-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }

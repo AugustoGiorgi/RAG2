@@ -9976,26 +9976,30 @@ const PLANNING_CONFIRM_FIELDS = [
   { key: "wages", label: "W-2 wages", type: "money" },
   // businessIncome section rendered separately (not a simple field)
   // Advanced fields below
-  { key: "otherIncome", label: "Other income", type: "money", advanced: true },
+  { key: "otherIncome", label: "Other income (dividends, interest, royalties…)", type: "money", advanced: true },
   { key: "longTermGains", label: "Long-term cap gains", type: "money", advanced: true },
   { key: "shortTermGains", label: "Short-term cap gains", type: "money", advanced: true },
   { key: "deductions", label: "Itemized deductions (0 = standard)", type: "money", advanced: true },
-  { key: "qbi", label: "QBI", type: "money", advanced: true },
-  { key: "w2Wages", label: "Business W-2 wages (QBI limit)", type: "money", advanced: true },
+  { key: "qbi", label: "QBI — qualified business income (§199A)", type: "money", advanced: true },
+  { key: "w2Wages", label: "Business W-2 wages (QBI wage limit)", type: "money", advanced: true },
+  { key: "selfEmployedHealthInsurance", label: "SE health insurance premium (above-the-line)", type: "money", advanced: true },
+  { key: "hsaContribution", label: "HSA contribution (above-the-line)", type: "money", advanced: true },
 ];
 
 const PLANNING_FIELD_LABELS = {
   wages: "W-2 wages",
-  netSEIncome: "Net SE income",
-  otherIncome: "Other income",
+  netSEIncome: "Net SE / business income",
+  otherIncome: "Other income (div/int/royalties)",
   longTermGains: "LT cap gains",
   shortTermGains: "ST cap gains",
-  deductions: "Deductions",
-  qbi: "QBI",
+  deductions: "Itemized deductions",
+  qbi: "QBI (§199A)",
   w2Wages: "Business W-2 wages",
   retirementContribution: "Retirement contribution",
   sec179: "Section 179",
   bonusDepreciation: "Bonus depreciation",
+  selfEmployedHealthInsurance: "SE health insurance",
+  hsaContribution: "HSA contribution",
 };
 
 function planningFmtMoney(n) {
@@ -10456,6 +10460,32 @@ function planningBizIncomeHtml(baseData) {
   </div>`;
 }
 
+function planningPaymentsHtml(baseData) {
+  const withholding = Number(baseData.withholding) || 0;
+  const estimated = Number(baseData.estimatedTaxPaid) || 0;
+  const prior = Number(baseData.priorYearTax) || 0;
+  return `<div class="planning-payments-card">
+    <div class="planning-biz-title">Payments &amp; withholding already made for ${escapeHtml(String(baseData.taxYear || ""))} </div>
+    <div class="planning-biz-grid">
+      <label class="field">
+        <span>W-2 federal tax withheld</span>
+        <input id="planning-pay-withholding" type="number" min="0" value="${withholding}" placeholder="0" />
+        <span class="planning-biz-hint">Box 2 of W-2 — federal income tax withheld</span>
+      </label>
+      <label class="field">
+        <span>Estimated payments made (Q1–Q3)</span>
+        <input id="planning-pay-estimated" type="number" min="0" value="${estimated}" placeholder="0" />
+        <span class="planning-biz-hint">Total federal estimated payments made so far this year</span>
+      </label>
+      <label class="field">
+        <span>Prior year total federal tax</span>
+        <input id="planning-pay-prior" type="number" min="0" value="${prior}" placeholder="0" />
+        <span class="planning-biz-hint">Form 1040 line 24 of last year — used to calculate safe harbor</span>
+      </label>
+    </div>
+  </div>`;
+}
+
 function planningRenderConfirm(baseData, observations) {
   const obs = document.getElementById("planningObservations");
   if (obs) {
@@ -10468,7 +10498,7 @@ function planningRenderConfirm(baseData, observations) {
   const basicWrap = document.getElementById("planningConfirmFields");
   const advWrap = document.getElementById("planningConfirmAdvanced");
   if (basicWrap) {
-    basicWrap.innerHTML = basic.map((f) => planningFieldHtml(f, baseData)).join("") + planningBizIncomeHtml(baseData);
+    basicWrap.innerHTML = basic.map((f) => planningFieldHtml(f, baseData)).join("") + planningBizIncomeHtml(baseData) + planningPaymentsHtml(baseData);
     // Wire live recalculation of owner's share
     const totalInp = basicWrap.querySelector("#planning-biz-total");
     const pctInp = basicWrap.querySelector("#planning-biz-pct");
@@ -10509,6 +10539,10 @@ function planningCollectConfirm() {
   base.businessIncomeTotal = bizTotal;
   base.ownershipPct = bizPct;
   base.netSEIncome = Math.round(bizTotal * bizPct / 100);
+  // Payments section
+  base.withholding = Number(document.getElementById("planning-pay-withholding")?.value) || 0;
+  base.estimatedTaxPaid = Number(document.getElementById("planning-pay-estimated")?.value) || 0;
+  base.priorYearTax = Number(document.getElementById("planning-pay-prior")?.value) || 0;
   return base;
 }
 
@@ -10609,9 +10643,29 @@ function planningBreakdownHtml(scenario, baseScenario, year) {
       </table>
     </div>` : "";
 
-  const stateLbl = c.stateEstimated ? `State tax (estimated*)` : `State tax (${escapeHtml(planningStudio.baseData?.state || "")})`;
+  const stateLbl = c.stateEstimated ? `State tax (est.*)` : `State tax (${escapeHtml(planningStudio.baseData?.state || "")})`;
   const savings = scenario.savingsVsBase?.dollars;
   const savingsPct = scenario.savingsVsBase?.percentage;
+
+  // Payments & balance section (only if any payment data present)
+  const hasPayments = c.paymentsCredits > 0 || c.priorYearTax > 0;
+  const paymentsBlock = hasPayments ? `
+    <div class="planning-bd-section">
+      <div class="planning-bd-section-title">Payments &amp; balance due</div>
+      <table class="planning-bd-table">
+        <tbody>
+          <tr><td class="planning-bd-label">Total tax liability</td><td>${planningFmtMoney(c.total)}</td></tr>
+          ${c.withholding > 0 ? `<tr><td class="planning-bd-label">W-2 withholding</td><td class="planning-bd-pos">− ${planningFmtMoney(c.withholding)}</td></tr>` : ""}
+          ${c.estimatedTaxPaid > 0 ? `<tr><td class="planning-bd-label">Estimated payments (Q1–Q3)</td><td class="planning-bd-pos">− ${planningFmtMoney(c.estimatedTaxPaid)}</td></tr>` : ""}
+          <tr class="planning-bd-divider"><td colspan="2"></td></tr>
+          <tr><td class="planning-bd-label"><strong>Balance due before Q4</strong></td><td class="${c.balanceDue > 0 ? "planning-bd-neg" : "planning-bd-pos"}"><strong>${c.balanceDue >= 0 ? planningFmtMoney(c.balanceDue) : "Refund " + planningFmtMoney(Math.abs(c.balanceDue))}</strong></td></tr>
+          ${c.priorYearTax > 0 ? `
+          <tr class="planning-bd-divider"><td colspan="2"></td></tr>
+          <tr><td class="planning-bd-label">Safe harbor (avoid penalty)${c.highIncomeRule ? " — 110% rule" : ""}</td><td>${planningFmtMoney(c.safeHarbor)}</td></tr>
+          <tr><td class="planning-bd-label"><strong>Q4 recommended payment</strong></td><td class="planning-bd-neg"><strong>${planningFmtMoney(c.q4Recommended)}</strong></td></tr>` : ""}
+        </tbody>
+      </table>
+    </div>` : "";
 
   return `<div class="planning-breakdown">
     ${adjBlock}
@@ -10623,6 +10677,8 @@ function planningBreakdownHtml(scenario, baseScenario, year) {
         </tr></thead>
         <tbody>
           ${fmtRow("Gross income", c.grossIncome, b.grossIncome)}
+          ${c.seHealthInsuranceDeduction > 0 ? fmtRow("SE health insurance deduction", -c.seHealthInsuranceDeduction, b.seHealthInsuranceDeduction > 0 ? -b.seHealthInsuranceDeduction : null) : ""}
+          ${c.hsaDeduction > 0 ? fmtRow("HSA deduction", -c.hsaDeduction, b.hsaDeduction > 0 ? -b.hsaDeduction : null) : ""}
           ${fmtRow("Taxable income", c.taxableIncome, b.taxableIncome)}
           <tr class="planning-bd-divider"><td colspan="${isBase ? 2 : 3}"></td></tr>
           ${fmtRow("Federal income tax", c.federalTax, b.federalTax)}
@@ -10637,6 +10693,7 @@ function planningBreakdownHtml(scenario, baseScenario, year) {
       </table>
       ${!isBase && savings > 0 ? `<div class="planning-bd-savings">Net savings: <strong>${planningFmtMoney(savings)}</strong> (${planningFmtPct(savingsPct)} reduction in liability)</div>` : ""}
     </div>
+    ${paymentsBlock}
   </div>`;
 }
 

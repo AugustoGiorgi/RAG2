@@ -1354,6 +1354,7 @@ const PLANNING_MODELS = ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514
 const PLANNING_FIELDS = [
   "wages", "netSEIncome", "otherIncome", "longTermGains", "shortTermGains",
   "deductions", "qbi", "w2Wages", "retirementContribution", "sec179", "bonusDepreciation",
+  "selfEmployedHealthInsurance", "hsaContribution",
 ];
 
 function planningNum(value) {
@@ -1390,6 +1391,11 @@ function normalizePlanningProfile(baseData = {}) {
     retirementContribution: planningNum(b.retirementContribution),
     sec179: planningNum(b.sec179),
     bonusDepreciation: planningNum(b.bonusDepreciation),
+    selfEmployedHealthInsurance: planningNum(b.selfEmployedHealthInsurance),
+    hsaContribution: planningNum(b.hsaContribution),
+    withholding: planningNum(b.withholding),
+    estimatedTaxPaid: planningNum(b.estimatedTaxPaid),
+    priorYearTax: planningNum(b.priorYearTax),
   };
 }
 
@@ -1513,11 +1519,19 @@ async function handlePlanningAnalyze(req, res) {
     '  "clientName":string, "entityType":string, "taxYear":number,',
     '  "filingStatus":"Single"|"MFJ"|"MFS"|"HOH", "state":string, "dependents":number,',
     '  "wages":number,',
-    '  "businessIncomeTotal":number (total entity-level ordinary income before owner\'s share; K-1 Box 1 × all partners, entity net profit, Schedule C gross profit — NOT multiplied by ownership %),',
-    '  "ownershipPct":number (owner\'s percentage 0–100; from K-1 ownership %, partnership agreement, or 100 if sole owner/sole prop),',
-    '  "netSEIncome":number (owner\'s share = businessIncomeTotal × ownershipPct / 100; also include any guaranteed payments or other SE income not captured above),',
-    '  "otherIncome":number, "longTermGains":number, "shortTermGains":number,',
-    '  "deductions":number, "qbi":number, "w2Wages":number,',
+    '  "businessIncomeTotal":number (total entity ordinary income before owner split; K-1 Box 1 aggregate, Schedule C net profit, entity net income),',
+    '  "ownershipPct":number (0-100; from K-1 percentage, partnership agreement; 100 if sole owner),',
+    '  "netSEIncome":number (= businessIncomeTotal × ownershipPct / 100, plus any guaranteed payments),',
+    '  "otherIncome":number (dividends, interest, royalties, 1099-MISC not from main business — NOT business pass-through income),',
+    '  "longTermGains":number, "shortTermGains":number,',
+    '  "deductions":number (itemized; 0 if standard deduction applies),',
+    '  "qbi":number (qualified business income for §199A — usually equals netSEIncome for pass-throughs),',
+    '  "w2Wages":number (W-2 wages paid by the business entity, for QBI W-2 wage limit),',
+    '  "selfEmployedHealthInsurance":number (SE health insurance premiums deductible above-the-line; from Sch 1 line 17 or entity K-1 footnotes),',
+    '  "hsaContribution":number (HSA contributions deductible above-the-line; from Form 8889 or payroll),',
+    '  "withholding":number (total federal income tax withheld from W-2s for the plan year; Box 2 of W-2),',
+    '  "estimatedTaxPaid":number (federal estimated tax payments already made for the plan year; Q1+Q2+Q3 if mid-year),',
+    '  "priorYearTax":number (total federal income tax from prior year return; Form 1040 line 24 or 1120S Schedule D),',
     '  "keyObservations":[string]',
     '}',
   ].join("\n");
