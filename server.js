@@ -1373,7 +1373,14 @@ function normalizePlanningProfile(baseData = {}) {
     state: String(b.state || "").trim().toUpperCase(),
     dependents: Number(b.dependents) || 0,
     wages: planningNum(b.wages != null ? b.wages : income.wages),
-    netSEIncome: planningNum(b.netSEIncome != null ? b.netSEIncome : income.grossReceipts),
+    businessIncomeTotal: planningNum(b.businessIncomeTotal),
+    ownershipPct: b.ownershipPct != null ? Math.min(100, Math.max(0, planningNum(b.ownershipPct))) : 100,
+    netSEIncome: (function() {
+      const total = planningNum(b.businessIncomeTotal);
+      const pct = b.ownershipPct != null ? planningNum(b.ownershipPct) : null;
+      if (total > 0 && pct != null) return planningRound(total * pct / 100);
+      return planningNum(b.netSEIncome != null ? b.netSEIncome : income.grossReceipts);
+    })(),
     otherIncome: planningNum(b.otherIncome != null ? b.otherIncome : income.otherIncome),
     longTermGains: planningNum(b.longTermGains != null ? b.longTermGains : income.capitalGains),
     shortTermGains: planningNum(b.shortTermGains),
@@ -1502,7 +1509,17 @@ async function handlePlanningAnalyze(req, res) {
     "DOCUMENT TEXT: __FILE_TEXT__",
     "",
     'Return ONLY JSON in ```json``` fences (numbers only, no $ signs):',
-    '{"clientName":string,"entityType":string,"taxYear":number,"filingStatus":"Single"|"MFJ"|"MFS"|"HOH","state":string,"dependents":number,"wages":number,"netSEIncome":number,"otherIncome":number,"longTermGains":number,"shortTermGains":number,"deductions":number,"qbi":number,"w2Wages":number,"keyObservations":[string]}',
+    '{',
+    '  "clientName":string, "entityType":string, "taxYear":number,',
+    '  "filingStatus":"Single"|"MFJ"|"MFS"|"HOH", "state":string, "dependents":number,',
+    '  "wages":number,',
+    '  "businessIncomeTotal":number (total entity-level ordinary income before owner\'s share; K-1 Box 1 × all partners, entity net profit, Schedule C gross profit — NOT multiplied by ownership %),',
+    '  "ownershipPct":number (owner\'s percentage 0–100; from K-1 ownership %, partnership agreement, or 100 if sole owner/sole prop),',
+    '  "netSEIncome":number (owner\'s share = businessIncomeTotal × ownershipPct / 100; also include any guaranteed payments or other SE income not captured above),',
+    '  "otherIncome":number, "longTermGains":number, "shortTermGains":number,',
+    '  "deductions":number, "qbi":number, "w2Wages":number,',
+    '  "keyObservations":[string]',
+    '}',
   ].join("\n");
 
   const { content, hasInput } = planningFileContent(payload.files, prompt);

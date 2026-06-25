@@ -8004,6 +8004,60 @@ body.admin-mode #adminNavButton {
 .planning-ns-del { color: var(--muted); font-size: 0.82rem; text-align: center; }
 .planning-ns-del:hover { color: var(--error, #dc2626); }
 
+/* ── Planning — Business income card (confirm step) ── */
+.planning-biz-card {
+  grid-column: 1 / -1;
+  background: var(--soft);
+  border: 1.5px solid var(--accent);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+.planning-biz-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.planning-biz-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 540px) { .planning-biz-grid { grid-template-columns: 1fr; } }
+.planning-biz-hint {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.35;
+}
+.planning-biz-share {
+  font-size: 0.9rem;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.planning-biz-share strong {
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+.planning-biz-formula {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.planning-biz-note {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0;
+}
+
 /* ── Planning — Tax breakdown panel ── */
 .planning-scenario-name-cell { display: flex; flex-direction: column; gap: 2px; }
 .planning-row-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }

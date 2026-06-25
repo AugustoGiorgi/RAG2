@@ -9974,7 +9974,7 @@ const PLANNING_CONFIRM_FIELDS = [
   { key: "filingStatus", label: "Filing status", type: "select" },
   { key: "state", label: "State (2-letter)", type: "text" },
   { key: "wages", label: "W-2 wages", type: "money" },
-  { key: "netSEIncome", label: "Net SE / business income", type: "money" },
+  // businessIncome section rendered separately (not a simple field)
   // Advanced fields below
   { key: "otherIncome", label: "Other income", type: "money", advanced: true },
   { key: "longTermGains", label: "Long-term cap gains", type: "money", advanced: true },
@@ -10429,6 +10429,33 @@ function planningFieldHtml(f, baseData) {
   return `<label class="field"><span>${escapeHtml(f.label)}</span><input id="planning-f-${f.key}" type="${inputType}" value="${v}" /></label>`;
 }
 
+function planningBizIncomeHtml(baseData) {
+  const total = Number(baseData.businessIncomeTotal) || 0;
+  const pct = baseData.ownershipPct != null ? Number(baseData.ownershipPct) : 100;
+  const share = Math.round(total * pct / 100);
+  return `<div class="planning-biz-card" id="planningBizCard">
+    <div class="planning-biz-title">Business / pass-through income</div>
+    <div class="planning-biz-grid">
+      <label class="field">
+        <span>Total entity ordinary income</span>
+        <input id="planning-biz-total" type="number" value="${total}" placeholder="0" />
+        <span class="planning-biz-hint">K-1 Box 1 total or entity net profit (before dividing by ownership %)</span>
+      </label>
+      <label class="field">
+        <span>Ownership %</span>
+        <input id="planning-biz-pct" type="number" min="0" max="100" step="0.01" value="${pct}" placeholder="100" />
+        <span class="planning-biz-hint">From K-1 or partnership agreement — 100 if sole owner</span>
+      </label>
+    </div>
+    <div class="planning-biz-share">
+      Owner's share flowing to this return:
+      <strong id="planning-biz-share-val">${planningFmtMoney(share)}</strong>
+      <span class="planning-biz-formula" id="planning-biz-formula">${total > 0 ? `(${planningFmtMoney(total)} × ${pct}%)` : ""}</span>
+    </div>
+    <p class="planning-biz-note">This amount feeds into the tax calculation as net SE / business income.</p>
+  </div>`;
+}
+
 function planningRenderConfirm(baseData, observations) {
   const obs = document.getElementById("planningObservations");
   if (obs) {
@@ -10440,7 +10467,23 @@ function planningRenderConfirm(baseData, observations) {
   const advanced = PLANNING_CONFIRM_FIELDS.filter((f) => f.advanced);
   const basicWrap = document.getElementById("planningConfirmFields");
   const advWrap = document.getElementById("planningConfirmAdvanced");
-  if (basicWrap) basicWrap.innerHTML = basic.map((f) => planningFieldHtml(f, baseData)).join("");
+  if (basicWrap) {
+    basicWrap.innerHTML = basic.map((f) => planningFieldHtml(f, baseData)).join("") + planningBizIncomeHtml(baseData);
+    // Wire live recalculation of owner's share
+    const totalInp = basicWrap.querySelector("#planning-biz-total");
+    const pctInp = basicWrap.querySelector("#planning-biz-pct");
+    const shareVal = basicWrap.querySelector("#planning-biz-share-val");
+    const formula = basicWrap.querySelector("#planning-biz-formula");
+    const recalc = () => {
+      const t = Number(totalInp?.value) || 0;
+      const p = Number(pctInp?.value) || 100;
+      const s = Math.round(t * p / 100);
+      if (shareVal) shareVal.textContent = planningFmtMoney(s);
+      if (formula) formula.textContent = t > 0 ? `(${planningFmtMoney(t)} × ${p}%)` : "";
+    };
+    totalInp?.addEventListener("input", recalc);
+    pctInp?.addEventListener("input", recalc);
+  }
   if (advWrap) advWrap.innerHTML = advanced.map((f) => planningFieldHtml(f, baseData)).join("");
   const toggle = document.getElementById("planningAdvancedToggle");
   if (toggle) {
@@ -10460,6 +10503,12 @@ function planningCollectConfirm() {
     if (f.type === "money" || f.type === "number") base[f.key] = Number(el.value) || 0;
     else base[f.key] = el.value.trim();
   });
+  // Business income section
+  const bizTotal = Number(document.getElementById("planning-biz-total")?.value) || 0;
+  const bizPct = Number(document.getElementById("planning-biz-pct")?.value) ?? 100;
+  base.businessIncomeTotal = bizTotal;
+  base.ownershipPct = bizPct;
+  base.netSEIncome = Math.round(bizTotal * bizPct / 100);
   return base;
 }
 
