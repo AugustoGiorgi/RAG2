@@ -1668,47 +1668,20 @@ async function handlePlanningGenerate(req, res) {
     "Base tax (system-computed): $" + Math.round(base.taxCalc.total).toLocaleString(),
     "CPA instructions: " + (instructions || "(none)"),
     "",
-    "Task 1 — Propose 3-5 planning scenarios as field ADJUSTMENTS only (no tax numbers).",
+    "Propose 3-5 tax-planning scenarios as field ADJUSTMENTS only. No tax numbers — the system computes them.",
     "Allowed fields: " + PLANNING_FIELDS.join(", "),
     "Good levers: max SEP-IRA/Solo-401k (retirementContribution), Sec 179 purchase (sec179), S-corp salary split (wages+netSEIncome), defer income (otherIncome), bunch deductions.",
     "",
-    "Task 2 — List top savings opportunities (use scenario names, not computed $; the system will fill in real savings).",
-    "Categories: Retirement Planning, Business Deductions, Entity Structure, Income Timing, Investment Strategy, Credits & Incentives, Estate & Gift, State Tax.",
-    "",
     'Return ONLY JSON in ```json``` fences:',
-    '{"scenarios":[{"id":string,"name":string,"description":string,"adjustments":[{"field":string,"newValue":number,"rationale":string}]}],"opportunities":[{"id":string,"title":string,"category":string,"estimatedSavings":{"min":number,"max":number},"deadline":string|null,"complexity":"Simple"|"Moderate"|"Complex","description":string,"cpaNote":string,"requiresAction":boolean,"actionDeadline":string|null}]}',
-  ].join("\n") + styleProfilePromptBlock(activeStyleProfile(req));
+    '{"scenarios":[{"id":string,"name":string,"description":string,"adjustments":[{"field":string,"newValue":number,"rationale":string}]}]}',
+  ].join("\n");
 
-  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "Design tax-planning scenarios as field adjustments and surface savings opportunities. Return only valid JSON. Never compute tax numbers.", "planning_generate", payload, 8000);
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "Design tax-planning scenarios as field adjustments. Return only valid JSON. Never output computed tax numbers.", "planning_generate", payload, 6000);
   if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
 
   const defs = Array.isArray(result.data.scenarios) ? result.data.scenarios.slice(0, 5) : [];
   const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
-
-  // Anchor opportunity savings to system-computed scenario savings where a name match exists.
-  const savingsMap = {};
-  scenarios.forEach((s) => { if (!s.isBase) savingsMap[s.name.toLowerCase()] = s.savingsVsBase?.dollars || 0; });
-  const rawOpps = Array.isArray(result.data.opportunities) ? result.data.opportunities : [];
-  const opportunities = rawOpps.slice(0, 12).map((o, i) => {
-    const key = String(o.title || "").toLowerCase();
-    const matched = savingsMap[key] || 0;
-    const min = matched ? Math.round(matched * 0.7) : planningNum(o?.estimatedSavings?.min);
-    const max = matched || planningNum(o?.estimatedSavings?.max);
-    return {
-      id: String(o.id || `opp-${i + 1}`),
-      title: String(o.title || "Opportunity").slice(0, 160),
-      category: String(o.category || "Other").slice(0, 60),
-      estimatedSavings: { min, max },
-      deadline: o.deadline ? String(o.deadline).slice(0, 80) : null,
-      complexity: ["Simple", "Moderate", "Complex"].includes(o.complexity) ? o.complexity : "Moderate",
-      description: String(o.description || "").slice(0, 400),
-      cpaNote: String(o.cpaNote || "").slice(0, 400),
-      requiresAction: Boolean(o.requiresAction),
-      actionDeadline: o.actionDeadline ? String(o.actionDeadline).slice(0, 80) : null,
-    };
-  });
-
-  sendJson(res, 200, { scenarios, opportunities });
+  sendJson(res, 200, { scenarios });
 }
 
 // ---------------------------------------------------------------------------

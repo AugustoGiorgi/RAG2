@@ -10345,18 +10345,26 @@ async function planningGenerateScenarios() {
   planningStudio.busy = true;
   planningStudio.nextSteps = null; // reset editable next steps
   planningShowState("building");
-  planningSetStatus("Building scenarios & opportunities…");
+  planningSetStatus("Building scenarios…");
   try {
     const year = Number(planningStudio.baseData.taxYear) || new Date().getFullYear();
-    const res = await fetch(`${API_BASE_URL}/api/planning/generate`, {
+    const sres = await fetch(`${API_BASE_URL}/api/planning/generate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ baseData: planningStudio.baseData, year, instructions }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Generation failed.");
-    planningStudio.scenarios = Array.isArray(data.scenarios) ? data.scenarios : [];
-    planningStudio.opportunities = Array.isArray(data.opportunities) ? data.opportunities : [];
+    const sdata = await sres.json();
+    if (!sres.ok) throw new Error(sdata.error || "Scenario generation failed.");
+    planningStudio.scenarios = Array.isArray(sdata.scenarios) ? sdata.scenarios : [];
+
+    planningSetStatus("Identifying opportunities…");
+    const ores = await fetch(`${API_BASE_URL}/api/planning/opportunities`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios }),
+    });
+    const odata = await ores.json();
+    planningStudio.opportunities = ores.ok && Array.isArray(odata.opportunities) ? odata.opportunities : [];
 
     planningRenderResults();
     planningShowState("results");
