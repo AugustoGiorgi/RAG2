@@ -5874,6 +5874,43 @@ function listZipEntryBuffers(buffer, maxEntries = 80) {
   return entries;
 }
 
+function extractDrawingMlText(xml) {
+  const texts = [];
+  const re = /<a:t[^>]*>([\s\S]*?)<\/a:t>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const t = m[1]
+      .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'").trim();
+    if (t) texts.push(t);
+  }
+  return texts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function extractPptxText(buffer) {
+  try {
+    const entries = listZipEntryBuffers(buffer, 300);
+    const slideEntries = entries
+      .filter((e) => /^ppt\/slides\/slide\d+\.xml$/i.test(e.name))
+      .sort((a, b) => (parseInt(a.name.match(/\d+/)?.[0] || 0) - parseInt(b.name.match(/\d+/)?.[0] || 0)));
+    const noteEntries = entries
+      .filter((e) => /^ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(e.name))
+      .sort((a, b) => (parseInt(a.name.match(/\d+/)?.[0] || 0) - parseInt(b.name.match(/\d+/)?.[0] || 0)));
+    const parts = [];
+    slideEntries.forEach((entry, i) => {
+      const text = extractDrawingMlText(entry.data.toString("utf8"));
+      if (text) parts.push(`[Slide ${i + 1}] ${text}`);
+    });
+    noteEntries.forEach((entry, i) => {
+      const text = extractDrawingMlText(entry.data.toString("utf8"));
+      if (text) parts.push(`[Notes ${i + 1}] ${text}`);
+    });
+    return parts.join("\n") || "[PPTX: no readable slide text found]";
+  } catch (err) {
+    return `[Could not extract PPTX content: ${err.message || "unknown error"}]`;
+  }
+}
+
 function extractZipPackageTextServer(buffer, packageName = "package.zip") {
   const parts = [];
   for (const entry of listZipEntryBuffers(buffer, 80)) {
@@ -8737,7 +8774,8 @@ function buildUploadedFileContext(files = []) {
     }
     let extracted = "";
     try {
-      if (/\.docx$/i.test(name) || type.includes("wordprocessingml.document")) extracted = extractDocxText(buffer);
+      if (/\.pptx$/i.test(name) || type.includes("presentationml.presentation")) extracted = extractPptxText(buffer);
+      else if (/\.docx$/i.test(name) || type.includes("wordprocessingml.document")) extracted = extractDocxText(buffer);
       else if (/\.xlsx$/i.test(name) || type.includes("spreadsheet")) extracted = extractXlsxText(buffer);
       else if (/\.zip$/i.test(name) || type.includes("zip")) extracted = extractZipPackageTextServer(buffer, name);
       else if (/\.csv$/i.test(name) || type.includes("csv")) extracted = buffer.toString("utf8");
