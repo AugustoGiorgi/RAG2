@@ -94,6 +94,7 @@ const els = {
   preparationModeButton: document.getElementById("preparationModeButton"),
   deliverableModeButton: document.getElementById("deliverableModeButton"),
   estimatedTaxesModeButton: document.getElementById("estimatedTaxesModeButton"),
+  planningModeButton: document.getElementById("planningModeButton"),
   trackerModeButton: document.getElementById("trackerModeButton"),
   researchModeButton: document.getElementById("researchModeButton"),
   noticesModeButton: document.getElementById("noticesModeButton"),
@@ -108,6 +109,7 @@ const els = {
   preparerPanel: document.getElementById("preparerPanel"),
   deliverablePanel: document.getElementById("deliverablePanel"),
   estimatedTaxesPanel: document.getElementById("estimatedTaxesPanel"),
+  planningPanel: document.getElementById("planningPanel"),
   trackerPanel: document.getElementById("trackerPanel"),
   researchPanel: document.getElementById("researchPanel"),
   presentationsPanel: document.getElementById("presentationsPanel"),
@@ -594,6 +596,7 @@ function init() {
   els.preparationModeButton.addEventListener("click", () => setWorkspaceMode("preparation"));
   els.deliverableModeButton.addEventListener("click", () => setWorkspaceMode("deliverable"));
   els.estimatedTaxesModeButton?.addEventListener("click", () => setWorkspaceMode("estimated"));
+  els.planningModeButton?.addEventListener("click", () => setWorkspaceMode("planning"));
   els.trackerModeButton?.addEventListener("click", () => setWorkspaceMode("tracker"));
   els.researchModeButton?.addEventListener("click", () => setWorkspaceMode("research"));
   els.noticesModeButton.addEventListener("click", () => setWorkspaceMode("notices"));
@@ -728,6 +731,7 @@ function setWorkspaceMode(mode) {
   const isReview = mode === "review";
   const isDeliverable = mode === "deliverable";
   const isEstimated = mode === "estimated";
+  const isPlanning = mode === "planning";
   const isTracker = mode === "tracker";
   const isResearch = mode === "research";
   const isPresentations = mode === "presentations";
@@ -739,6 +743,7 @@ function setWorkspaceMode(mode) {
   els.reviewModeButton.classList.toggle("active", isReview);
   els.deliverableModeButton.classList.toggle("active", isDeliverable);
   els.estimatedTaxesModeButton?.classList.toggle("active", isEstimated);
+  els.planningModeButton?.classList.toggle("active", isPlanning);
   els.trackerModeButton?.classList.toggle("active", isTracker);
   els.researchModeButton?.classList.toggle("active", isResearch);
   els.noticesModeButton.classList.toggle("active", isNotices);
@@ -750,6 +755,7 @@ function setWorkspaceMode(mode) {
   els.reviewPanel.hidden = !isReview;
   els.deliverablePanel.hidden = !isDeliverable;
   if (els.estimatedTaxesPanel) els.estimatedTaxesPanel.hidden = !isEstimated;
+  if (els.planningPanel) els.planningPanel.hidden = !isPlanning;
   if (els.trackerPanel) els.trackerPanel.hidden = !isTracker;
   if (els.researchPanel) els.researchPanel.hidden = !isResearch;
   if (els.presentationsPanel) els.presentationsPanel.hidden = !isPresentations;
@@ -761,6 +767,7 @@ function setWorkspaceMode(mode) {
   els.reviewPanel.classList.toggle("active", isReview);
   els.deliverablePanel.classList.toggle("active", isDeliverable);
   els.estimatedTaxesPanel?.classList.toggle("active", isEstimated);
+  els.planningPanel?.classList.toggle("active", isPlanning);
   els.trackerPanel?.classList.toggle("active", isTracker);
   els.researchPanel?.classList.toggle("active", isResearch);
   els.presentationsPanel?.classList.toggle("active", isPresentations);
@@ -771,6 +778,7 @@ function setWorkspaceMode(mode) {
   showWorkspaceSidebar(mode);
   if (isDeliverable) refreshDeliverableStatus();
   if (isEstimated) syncEstimatedTaxesSharedFields();
+  if (isPlanning) initPlanningStudio();
   if (isTracker) loadTrackerData();
   if (isResearch) hydrateResearchContextFromCurrentSession();
   if (isPresentations) syncPresentationSharedFields();
@@ -9929,6 +9937,648 @@ function escapeHtml(value) {
     '"': "&quot;",
     "'": "&#039;",
   })[char]);
+}
+
+// ===========================================================================
+// Tax Planning Studio (Phase 1) — front-end module.
+// Purely additive: all DOM ids are planning-scoped; reuses readAsBase64,
+// downloadBase64File, showToast, escapeHtml. Tax numbers come from the server.
+// ===========================================================================
+
+const planningStudio = {
+  inited: false,
+  files: [],
+  baseData: null,
+  scenarios: [],
+  opportunities: [],
+  busy: false,
+  view: "analysis",
+  state: "empty",
+  templates: [],
+  styleProfile: null,
+  editingId: null,
+};
+
+const PLANNING_FILING_STATUSES = ["Single", "MFJ", "MFS", "HOH"];
+const PLANNING_CONFIRM_FIELDS = [
+  { key: "clientName", label: "Client name", type: "text" },
+  { key: "entityType", label: "Entity type", type: "text" },
+  { key: "taxYear", label: "Tax year", type: "number" },
+  { key: "filingStatus", label: "Filing status", type: "select" },
+  { key: "state", label: "State", type: "text" },
+  { key: "wages", label: "W-2 wages", type: "money" },
+  { key: "netSEIncome", label: "Net SE / business income", type: "money" },
+  { key: "otherIncome", label: "Other income", type: "money" },
+  { key: "longTermGains", label: "Long-term cap gains", type: "money" },
+  { key: "shortTermGains", label: "Short-term cap gains", type: "money" },
+  { key: "deductions", label: "Itemized deductions (0 = standard)", type: "money" },
+  { key: "qbi", label: "QBI", type: "money" },
+  { key: "w2Wages", label: "Business W-2 wages (QBI limit)", type: "money" },
+];
+
+const PLANNING_FIELD_LABELS = {
+  wages: "W-2 wages",
+  netSEIncome: "Net SE income",
+  otherIncome: "Other income",
+  longTermGains: "LT cap gains",
+  shortTermGains: "ST cap gains",
+  deductions: "Deductions",
+  qbi: "QBI",
+  w2Wages: "Business W-2 wages",
+  retirementContribution: "Retirement contribution",
+  sec179: "Section 179",
+  bonusDepreciation: "Bonus depreciation",
+};
+
+function planningFmtMoney(n) {
+  const v = Math.round(Number(n) || 0);
+  return `$${v.toLocaleString("en-US")}`;
+}
+
+function planningFmtPct(n) {
+  const v = Number(n) || 0;
+  const asPct = Math.abs(v) <= 1 ? v * 100 : v;
+  return `${asPct.toFixed(1)}%`;
+}
+
+function planningSetStatus(text) {
+  const chip = document.getElementById("planningStatus");
+  if (chip) chip.textContent = text;
+}
+
+function planningShowState(name) {
+  planningStudio.state = name;
+  if (planningStudio.view !== "analysis") return; // library is showing; defer
+  const states = ["empty", "loading", "confirm", "building", "results"];
+  states.forEach((s) => {
+    const el = document.getElementById(`planning${s.charAt(0).toUpperCase()}${s.slice(1)}`);
+    if (el) el.hidden = s !== name;
+  });
+  const lib = document.getElementById("planningLibraryView");
+  if (lib) lib.hidden = true;
+}
+
+function planningShowView(view) {
+  planningStudio.view = view;
+  document.getElementById("planningTabAnalysis")?.classList.toggle("active", view === "analysis");
+  document.getElementById("planningTabLibrary")?.classList.toggle("active", view === "library");
+  const lib = document.getElementById("planningLibraryView");
+  const states = ["empty", "loading", "confirm", "building", "results"];
+  if (view === "library") {
+    states.forEach((s) => { const el = document.getElementById(`planning${s.charAt(0).toUpperCase()}${s.slice(1)}`); if (el) el.hidden = true; });
+    if (lib) lib.hidden = false;
+    planningLoadTemplates();
+  } else {
+    if (lib) lib.hidden = true;
+    planningShowState(planningStudio.state || "empty");
+  }
+}
+
+function initPlanningStudio() {
+  if (planningStudio.inited) return;
+  planningStudio.inited = true;
+
+  const dz = document.getElementById("planningDropzone");
+  const input = document.getElementById("planningFiles");
+  dz?.addEventListener("click", () => input?.click());
+  dz?.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input?.click(); } });
+  dz?.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("planning-dragover"); });
+  dz?.addEventListener("dragleave", () => dz.classList.remove("planning-dragover"));
+  dz?.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dz.classList.remove("planning-dragover");
+    planningAddFiles(e.dataTransfer?.files);
+  });
+  input?.addEventListener("change", () => { planningAddFiles(input.files); input.value = ""; });
+
+  document.getElementById("planningAnalyzeBtn")?.addEventListener("click", planningAnalyze);
+  document.getElementById("planningBackToUpload")?.addEventListener("click", () => planningShowState("empty"));
+  document.getElementById("planningGenerateBtn")?.addEventListener("click", planningGenerateScenarios);
+  document.getElementById("planningCustomBtn")?.addEventListener("click", planningAddCustomScenario);
+  document.getElementById("planningCustomInput")?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); planningAddCustomScenario(); } });
+  document.getElementById("planningDeckBtn")?.addEventListener("click", planningDownloadDeck);
+  document.getElementById("planningPresentBtn")?.addEventListener("click", () => planningTogglePresent(true));
+  document.getElementById("planningExitPresent")?.addEventListener("click", () => planningTogglePresent(false));
+
+  // Library sub-view
+  document.getElementById("planningTabAnalysis")?.addEventListener("click", () => planningShowView("analysis"));
+  document.getElementById("planningTabLibrary")?.addEventListener("click", () => planningShowView("library"));
+  const libDz = document.getElementById("planningLibDropzone");
+  const libInput = document.getElementById("planningLibFile");
+  libDz?.addEventListener("click", () => libInput?.click());
+  libDz?.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); libInput?.click(); } });
+  libDz?.addEventListener("dragover", (e) => { e.preventDefault(); libDz.classList.add("planning-dragover"); });
+  libDz?.addEventListener("dragleave", () => libDz.classList.remove("planning-dragover"));
+  libDz?.addEventListener("drop", (e) => { e.preventDefault(); libDz.classList.remove("planning-dragover"); planningUploadTemplate(e.dataTransfer?.files?.[0]); });
+  libInput?.addEventListener("change", () => { planningUploadTemplate(libInput.files?.[0]); libInput.value = ""; });
+  document.getElementById("planningRegenBtn")?.addEventListener("click", planningRegenerateProfile);
+
+  // Load library state once so the indicator is accurate from the start.
+  planningLoadTemplates();
+}
+
+async function planningLoadTemplates() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/templates`);
+    if (!res.ok) return;
+    const data = await res.json();
+    planningStudio.templates = Array.isArray(data.templates) ? data.templates : [];
+    planningStudio.styleProfile = data.styleProfile || null;
+    planningRenderTemplates();
+    planningRenderProfile();
+    planningUpdateLibIndicator();
+  } catch (_) { /* non-fatal */ }
+}
+
+function planningUpdateLibIndicator() {
+  const el = document.getElementById("planningLibIndicator");
+  if (!el) return;
+  const active = planningStudio.templates.filter((t) => t.isActive).length;
+  if (active > 0) {
+    el.textContent = `${active} template${active === 1 ? "" : "s"} active — the AI will use your style`;
+    el.classList.add("planning-lib-on");
+  } else {
+    el.textContent = "No templates — default format";
+    el.classList.remove("planning-lib-on");
+  }
+}
+
+function planningRenderTemplates() {
+  const wrap = document.getElementById("planningLibList");
+  if (!wrap) return;
+  if (!planningStudio.templates.length) { wrap.innerHTML = "<p class=\"muted-note\">No templates uploaded yet.</p>"; return; }
+  wrap.innerHTML = planningStudio.templates.map((t) => `
+    <div class="planning-lib-item">
+      <div class="planning-lib-item-main">
+        <strong>${escapeHtml(t.filename)}</strong>
+        <span class="planning-lib-meta">${escapeHtml(t.category || "")}${t.styleSummary?.tone ? ` · ${escapeHtml(t.styleSummary.tone)}` : ""}</span>
+      </div>
+      <label class="planning-lib-toggle"><input type="checkbox" data-planning-tpl="${t.id}" ${t.isActive ? "checked" : ""} /> Active</label>
+      <button type="button" class="link-button planning-lib-del" data-planning-tpl-del="${t.id}">Delete</button>
+    </div>`).join("");
+  wrap.querySelectorAll("[data-planning-tpl]").forEach((cb) => {
+    cb.addEventListener("change", () => planningToggleTemplate(cb.dataset.planningTpl, cb.checked));
+  });
+  wrap.querySelectorAll("[data-planning-tpl-del]").forEach((btn) => {
+    btn.addEventListener("click", () => planningDeleteTemplate(btn.dataset.planningTplDel));
+  });
+}
+
+function planningRenderProfile() {
+  const wrap = document.getElementById("planningProfileView");
+  if (!wrap) return;
+  const p = planningStudio.styleProfile?.combinedSummary;
+  if (!p) { wrap.innerHTML = "<p class=\"muted-note\">No active style profile — activate templates to build one.</p>"; return; }
+  const row = (label, val) => val ? `<div class="planning-profile-row"><span>${escapeHtml(label)}</span><p>${escapeHtml(Array.isArray(val) ? val.join(" · ") : String(val))}</p></div>` : "";
+  wrap.innerHTML = `
+    ${row("Tone", p.tone)}
+    ${row("Structure", p.structure)}
+    ${row("Numbers", p.numberFormat)}
+    ${row("Key phrases", p.keyPhrases)}
+    ${row("Recommendation style", p.recommendationStyle)}
+    ${row("Client language", p.clientLanguage)}
+    ${row("Disclaimer", p.disclaimer)}`;
+}
+
+async function planningUploadTemplate(file) {
+  if (!file || planningStudio.busy) return;
+  const status = document.getElementById("planningLibStatus");
+  const category = document.getElementById("planningLibCategory")?.value || "presentation";
+  planningStudio.busy = true;
+  if (status) status.textContent = `Processing ${file.name}…`;
+  try {
+    const content = await readAsBase64(file);
+    const res = await fetch(`${API_BASE_URL}/api/planning/templates`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: { name: file.name, type: file.type || "", content }, category }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not process template.");
+    if (status) status.textContent = "";
+    await planningLoadTemplates();
+  } catch (err) {
+    if (status) status.textContent = "";
+    showToast(err.message || "Could not process template.", "error");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+async function planningToggleTemplate(id, isActive) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/templates/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ isActive }),
+    });
+    if (!res.ok) throw new Error("Update failed.");
+    await planningLoadTemplates();
+  } catch (err) {
+    showToast(err.message || "Could not update template.", "error");
+  }
+}
+
+async function planningDeleteTemplate(id) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/templates/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Delete failed.");
+    await planningLoadTemplates();
+  } catch (err) {
+    showToast(err.message || "Could not delete template.", "error");
+  }
+}
+
+async function planningRegenerateProfile() {
+  if (planningStudio.busy) return;
+  planningStudio.busy = true;
+  const status = document.getElementById("planningLibStatus");
+  if (status) status.textContent = "Regenerating style profile…";
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/templates/regenerate-profile`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not regenerate profile.");
+    if (status) status.textContent = "";
+    await planningLoadTemplates();
+  } catch (err) {
+    if (status) status.textContent = "";
+    showToast(err.message || "Could not regenerate profile.", "error");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+async function planningAddFiles(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    try {
+      const content = await readAsBase64(file);
+      planningStudio.files.push({ name: file.name, type: file.type || "", content });
+    } catch (_) {
+      showToast(`Could not read ${file.name}.`, "error");
+    }
+  }
+  planningRenderFileList();
+}
+
+function planningRenderFileList() {
+  const list = document.getElementById("planningFileList");
+  if (!list) return;
+  if (!planningStudio.files.length) { list.innerHTML = ""; return; }
+  list.innerHTML = planningStudio.files.map((f, i) =>
+    `<span class="planning-file-chip">${escapeHtml(f.name)}<button type="button" data-planning-remove="${i}" aria-label="Remove">×</button></span>`
+  ).join("");
+  list.querySelectorAll("[data-planning-remove]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      planningStudio.files.splice(Number(btn.dataset.planningRemove), 1);
+      planningRenderFileList();
+    });
+  });
+}
+
+async function planningAnalyze() {
+  if (planningStudio.busy) return;
+  const instructions = document.getElementById("planningInstructions")?.value || "";
+  if (!planningStudio.files.length && !instructions.trim()) {
+    showToast("Upload at least one document or write some instructions.", "error");
+    return;
+  }
+  planningStudio.busy = true;
+  planningShowState("loading");
+  planningSetStatus("Analyzing…");
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ files: planningStudio.files, instructions }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Analysis failed.");
+    planningStudio.baseData = data.baseData;
+    planningRenderConfirm(data.baseData, data.keyObservations || []);
+    planningShowState("confirm");
+    planningSetStatus("Review profile");
+  } catch (err) {
+    showToast(err.message || "Analysis failed.", "error");
+    planningShowState("empty");
+    planningSetStatus("Ready");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+function planningRenderConfirm(baseData, observations) {
+  const obs = document.getElementById("planningObservations");
+  if (obs) {
+    obs.innerHTML = (Array.isArray(observations) && observations.length)
+      ? `<strong>AI observations</strong><ul>${observations.map((o) => `<li>${escapeHtml(String(o))}</li>`).join("")}</ul>`
+      : "";
+  }
+  const wrap = document.getElementById("planningConfirmFields");
+  if (!wrap) return;
+  wrap.innerHTML = PLANNING_CONFIRM_FIELDS.map((f) => {
+    const raw = baseData[f.key];
+    const val = raw == null ? "" : raw;
+    if (f.type === "select") {
+      const opts = PLANNING_FILING_STATUSES.map((s) => `<option value="${s}" ${s === val ? "selected" : ""}>${s}</option>`).join("");
+      return `<label class="field"><span>${escapeHtml(f.label)}</span><select id="planning-f-${f.key}">${opts}</select></label>`;
+    }
+    const inputType = f.type === "text" ? "text" : "number";
+    const v = f.type === "money" || f.type === "number" ? (Number(val) || 0) : escapeHtml(String(val));
+    return `<label class="field"><span>${escapeHtml(f.label)}</span><input id="planning-f-${f.key}" type="${inputType}" value="${v}" /></label>`;
+  }).join("");
+}
+
+function planningCollectConfirm() {
+  const base = { ...(planningStudio.baseData || {}) };
+  PLANNING_CONFIRM_FIELDS.forEach((f) => {
+    const el = document.getElementById(`planning-f-${f.key}`);
+    if (!el) return;
+    if (f.type === "money" || f.type === "number") base[f.key] = Number(el.value) || 0;
+    else base[f.key] = el.value;
+  });
+  return base;
+}
+
+async function planningGenerateScenarios() {
+  if (planningStudio.busy) return;
+  planningStudio.baseData = planningCollectConfirm();
+  const instructions = document.getElementById("planningInstructions")?.value || "";
+  planningStudio.busy = true;
+  planningShowState("building");
+  planningSetStatus("Building scenarios…");
+  try {
+    const year = Number(planningStudio.baseData.taxYear) || new Date().getFullYear();
+    const sres = await fetch(`${API_BASE_URL}/api/planning/scenarios`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, year, instructions }),
+    });
+    const sdata = await sres.json();
+    if (!sres.ok) throw new Error(sdata.error || "Scenario generation failed.");
+    planningStudio.scenarios = Array.isArray(sdata.scenarios) ? sdata.scenarios : [];
+
+    document.getElementById("planningBuildingText").textContent = "Identifying opportunities…";
+    const ores = await fetch(`${API_BASE_URL}/api/planning/opportunities`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios }),
+    });
+    const odata = await ores.json();
+    planningStudio.opportunities = ores.ok && Array.isArray(odata.opportunities) ? odata.opportunities : [];
+
+    planningRenderResults();
+    planningShowState("results");
+    planningSetStatus("Ready to present");
+  } catch (err) {
+    showToast(err.message || "Could not build scenarios.", "error");
+    planningShowState("confirm");
+    planningSetStatus("Review profile");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+function planningBestScenarioId() {
+  let best = null;
+  planningStudio.scenarios.forEach((s) => {
+    if (s.isBase) return;
+    const t = Number(s?.taxCalc?.total);
+    if (!Number.isFinite(t)) return;
+    if (!best || t < Number(best.taxCalc.total)) best = s;
+  });
+  return best ? best.id : null;
+}
+
+function planningRenderResults() {
+  planningRenderComparison();
+  planningRenderOpportunities();
+}
+
+function planningRenderComparison() {
+  const wrap = document.getElementById("planningComparison");
+  if (!wrap) return;
+  if (!planningStudio.scenarios.length) { wrap.innerHTML = "<p class=\"muted-note\">No scenarios yet.</p>"; return; }
+  const bestId = planningBestScenarioId();
+  const rows = planningStudio.scenarios.map((s) => {
+    const c = s.taxCalc || {};
+    const savings = s?.savingsVsBase?.dollars || 0;
+    const isBest = s.id === bestId && savings > 0;
+    const editBtn = s.isBase ? "" : `<button type="button" class="link-button planning-edit-btn" data-planning-edit="${s.id}">Edit</button>`;
+    const main = `<tr class="${isBest ? "planning-row-best" : ""}">
+      <td>${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""} ${editBtn}</td>
+      <td>${planningFmtMoney(c.taxableIncome)}</td>
+      <td>${planningFmtMoney(c.federalTax)}</td>
+      <td>${planningFmtMoney(c.stateTax)}${c.stateEstimated ? '<span class="planning-est" title="Estimated state rate">*</span>' : ""}</td>
+      <td>${planningFmtMoney(c.seTax)}</td>
+      <td><strong>${planningFmtMoney(c.total)}</strong></td>
+      <td class="${savings > 0 ? "planning-pos" : ""}">${savings > 0 ? planningFmtMoney(savings) : "—"}</td>
+      <td>${planningFmtPct(c.effectiveRate)}</td>
+    </tr>`;
+    if (planningStudio.editingId !== s.id) return main;
+    const adjs = Array.isArray(s.adjustments) ? s.adjustments : [];
+    const editorFields = (adjs.length ? adjs : [{ field: "retirementContribution", newValue: 0 }]).map((a) => {
+      const label = PLANNING_FIELD_LABELS[a.field] || a.field;
+      const val = a.newValue != null ? a.newValue : (a.delta != null ? a.delta : 0);
+      return `<label class="planning-edit-field"><span>${escapeHtml(label)}</span><input type="number" data-planning-adj-field="${escapeHtml(a.field)}" value="${Number(val) || 0}" /></label>`;
+    }).join("");
+    const editor = `<tr class="planning-editor-row"><td colspan="8">
+      <div class="planning-editor">
+        <strong>Edit assumptions</strong>
+        <div class="planning-edit-grid">${editorFields}</div>
+        <div class="planning-actions">
+          <button type="button" class="ghost-button small-button" data-planning-edit-cancel>Cancel</button>
+          <button type="button" class="primary-button small-button" data-planning-edit-apply="${s.id}">Apply</button>
+        </div>
+      </div></td></tr>`;
+    return main + editor;
+  }).join("");
+  const anyEstimated = planningStudio.scenarios.some((s) => s?.taxCalc?.stateEstimated);
+  wrap.innerHTML = `
+    <table class="planning-table">
+      <thead><tr>
+        <th>Scenario</th><th>Taxable income</th><th>Federal</th><th>State</th><th>SE tax</th><th>Total tax</th><th>Savings vs. base</th><th>Eff. rate</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${anyEstimated ? '<p class="muted-note">* State tax uses an estimated rate; confirm against the actual state return.</p>' : ""}`;
+
+  wrap.querySelectorAll("[data-planning-edit]").forEach((b) => b.addEventListener("click", () => { planningStudio.editingId = b.dataset.planningEdit; planningRenderComparison(); }));
+  wrap.querySelector("[data-planning-edit-cancel]")?.addEventListener("click", () => { planningStudio.editingId = null; planningRenderComparison(); });
+  wrap.querySelector("[data-planning-edit-apply]")?.addEventListener("click", (e) => planningApplyScenarioEdit(e.currentTarget.dataset.planningEditApply));
+}
+
+async function planningApplyScenarioEdit(id) {
+  const scenario = planningStudio.scenarios.find((s) => s.id === id);
+  if (!scenario) return;
+  const wrap = document.getElementById("planningComparison");
+  const adjustments = Array.from(wrap.querySelectorAll("[data-planning-adj-field]")).map((inp) => ({
+    field: inp.dataset.planningAdjField,
+    newValue: Number(inp.value) || 0,
+  }));
+  const base = planningStudio.scenarios.find((s) => s.isBase);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/recompute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, adjustments, year: planningStudio.baseData?.taxYear, baseTotal: base?.taxCalc?.total }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Recompute failed.");
+    scenario.adjustments = data.adjustments;
+    scenario.taxCalc = data.taxCalc;
+    scenario.savingsVsBase = data.savingsVsBase;
+    planningStudio.editingId = null;
+    planningRenderComparison();
+  } catch (err) {
+    showToast(err.message || "Could not apply changes.", "error");
+  }
+}
+
+function planningRenderOpportunities() {
+  const wrap = document.getElementById("planningOpportunities");
+  if (!wrap) return;
+  if (!planningStudio.opportunities.length) { wrap.innerHTML = "<p class=\"muted-note\">No opportunities identified.</p>"; return; }
+  const sorted = [...planningStudio.opportunities].sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0));
+  wrap.innerHTML = sorted.map((o) => {
+    const min = Number(o?.estimatedSavings?.min) || 0;
+    const max = Number(o?.estimatedSavings?.max) || 0;
+    const range = max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : "—";
+    const complexity = escapeHtml(o.complexity || "Moderate");
+    return `<article class="planning-opp-card planning-complexity-${complexity.toLowerCase()}">
+      <div class="planning-opp-head">
+        <strong>${escapeHtml(o.title || "Opportunity")}</strong>
+        <span class="planning-opp-savings">${range}</span>
+      </div>
+      <p class="planning-opp-meta">${escapeHtml(o.category || "")}${o.deadline ? ` · by ${escapeHtml(o.deadline)}` : ""} · ${complexity}</p>
+      <p>${escapeHtml(o.description || "")}</p>
+      ${o.cpaNote ? `<p class="planning-opp-note"><strong>CPA note:</strong> ${escapeHtml(o.cpaNote)}</p>` : ""}
+    </article>`;
+  }).join("");
+}
+
+async function planningAddCustomScenario() {
+  if (planningStudio.busy) return;
+  const input = document.getElementById("planningCustomInput");
+  const instruction = input?.value?.trim();
+  if (!instruction) { showToast("Describe the scenario to add.", "error"); return; }
+  const base = planningStudio.scenarios.find((s) => s.isBase);
+  planningStudio.busy = true;
+  planningSetStatus("Adding scenario…");
+  try {
+    const year = Number(planningStudio.baseData?.taxYear) || new Date().getFullYear();
+    const res = await fetch(`${API_BASE_URL}/api/planning/scenario`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, instruction, year, baseTotal: base?.taxCalc?.total }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not add scenario.");
+    planningStudio.scenarios.push(data.scenario);
+    planningRenderComparison();
+    if (input) input.value = "";
+    planningSetStatus("Ready to present");
+  } catch (err) {
+    showToast(err.message || "Could not add scenario.", "error");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+// Derive concrete next steps from the opportunities the AI surfaced (what / when / who).
+function planningDeriveNextSteps() {
+  return [...planningStudio.opportunities]
+    .filter((o) => o.requiresAction || o.actionDeadline || o.deadline)
+    .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
+    .slice(0, 8)
+    .map((o) => {
+      const complexity = String(o.complexity || "").toLowerCase();
+      const owner = complexity === "complex" ? "CPA" : complexity === "simple" ? "Client" : "CPA & Client";
+      return { action: o.title || "Action", owner, deadline: o.actionDeadline || o.deadline || "" };
+    });
+}
+
+async function planningDownloadDeck() {
+  if (planningStudio.busy) return;
+  planningStudio.busy = true;
+  planningSetStatus("Building deck…");
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/deck`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientName: planningStudio.baseData?.clientName || "Client",
+        year: planningStudio.baseData?.taxYear,
+        baseData: planningStudio.baseData,
+        scenarios: planningStudio.scenarios,
+        opportunities: planningStudio.opportunities,
+        nextSteps: planningDeriveNextSteps(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Deck generation failed.");
+    downloadBase64File(data.filename || "TaxPlanning.pptx", data.contentBase64, data.mimeType);
+    planningSetStatus("Deck downloaded");
+  } catch (err) {
+    showToast(err.message || "Deck generation failed.", "error");
+  } finally {
+    planningStudio.busy = false;
+  }
+}
+
+function planningTogglePresent(on) {
+  const overlay = document.getElementById("planningPresent");
+  if (!overlay) return;
+  if (on) planningRenderPresentation();
+  overlay.hidden = !on;
+}
+
+function planningRenderPresentation() {
+  const inner = document.getElementById("planningPresentInner");
+  if (!inner) return;
+  const base = planningStudio.scenarios.find((s) => s.isBase) || planningStudio.scenarios[0];
+  const baseCalc = base?.taxCalc || {};
+  const bestId = planningBestScenarioId();
+  const best = planningStudio.scenarios.find((s) => s.id === bestId);
+  const bestSavings = best ? (base?.taxCalc?.total || 0) - (best.taxCalc?.total || 0) : 0;
+  const year = planningStudio.baseData?.taxYear || new Date().getFullYear();
+  const client = planningStudio.baseData?.clientName || "Client";
+
+  const compRows = planningStudio.scenarios.map((s) => {
+    const c = s.taxCalc || {};
+    const sav = s?.savingsVsBase?.dollars || 0;
+    return `<tr class="${s.id === bestId && sav > 0 ? "planning-row-best" : ""}"><td>${escapeHtml(s.name)}</td><td>${planningFmtMoney(c.total)}</td><td>${sav > 0 ? planningFmtMoney(sav) : "—"}</td><td>${planningFmtPct(c.effectiveRate)}</td></tr>`;
+  }).join("");
+
+  const oppCards = [...planningStudio.opportunities]
+    .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
+    .map((o) => {
+      const max = Number(o?.estimatedSavings?.max) || 0;
+      const min = Number(o?.estimatedSavings?.min) || 0;
+      return `<div class="planning-present-opp"><strong>${escapeHtml(o.title)}</strong><span>${max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : ""}</span><p>${escapeHtml(o.description || "")}</p></div>`;
+    }).join("");
+
+  inner.innerHTML = `
+    <header class="planning-present-header">
+      <h1>Tax Planning Analysis ${escapeHtml(String(year))}</h1>
+      <p>${escapeHtml(client)} · ${new Date().toLocaleDateString()}</p>
+    </header>
+    <section class="planning-present-hero">
+      <div><span class="planning-present-num">${planningFmtMoney(baseCalc.total)}</span><label>Current total tax</label></div>
+      <div><span class="planning-present-num">${planningFmtPct(baseCalc.effectiveRate)}</span><label>Effective rate</label></div>
+      <div><span class="planning-present-num">${planningFmtMoney(baseCalc.taxableIncome)}</span><label>Taxable income</label></div>
+    </section>
+    ${bestSavings > 0 ? `<p class="planning-present-headline">Potential savings of <strong>${planningFmtMoney(bestSavings)}</strong> identified.</p>` : ""}
+    <h2>Scenario comparison</h2>
+    <table class="planning-table"><thead><tr><th>Scenario</th><th>Total tax</th><th>Savings vs. today</th><th>Effective rate</th></tr></thead><tbody>${compRows}</tbody></table>
+    ${oppCards ? `<h2>Recommended opportunities</h2><div class="planning-present-opps">${oppCards}</div>` : ""}
+    ${(function () {
+      const steps = planningDeriveNextSteps();
+      if (!steps.length) return "";
+      const items = steps.map((s) => `<li><strong>${escapeHtml(s.action)}</strong>${s.deadline ? ` — by ${escapeHtml(s.deadline)}` : ""} <span class="planning-step-owner">${escapeHtml(s.owner)}</span></li>`).join("");
+      return `<h2>Next steps</h2><ol class="planning-present-steps">${items}</ol>`;
+    })()}
+    <footer class="planning-present-footer">Prepared for planning purposes. Figures are estimates based on the information provided and current tax law. Consult your CPA before acting.</footer>`;
 }
 
 init();

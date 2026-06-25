@@ -8,6 +8,8 @@ const zlib = require("node:zlib");
 const net = require("node:net");
 const tls = require("node:tls");
 const { buildPresentation } = require("./lib/pptx-builder");
+const { buildPlanningDeck } = require("./lib/pptx-builder");
+const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 
 const PORT = Number(process.env.PORT || 8080);
@@ -616,6 +618,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/estimated-taxes/detect-period") { await handleEstimatedTaxesDetectPeriod(req, res); return; }
     if (req.method === "POST" && req.url === "/api/estimated-taxes/calculate") { await handleEstimatedTaxesCalculate(req, res); return; }
     if (req.method === "POST" && req.url === "/api/extension/calculate") { await handleExtensionCalculate(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/analyze") { await handlePlanningAnalyze(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/scenarios") { await handlePlanningScenarios(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/scenario") { await handlePlanningScenarioCustom(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/recompute") { await handlePlanningRecompute(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/opportunities") { await handlePlanningOpportunities(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/deck") { await handlePlanningDeck(req, res); return; }
+    if (requestUrl.pathname.startsWith("/api/planning/templates")) { await handlePlanningTemplatesApi(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/presentations/generate") { await handlePresentationsGenerate(req, res); return; }
     if (req.method === "POST" && req.url === "/api/calculations/run") { await handleCalculationsRun(req, res); return; }
     if (req.method === "POST" && req.url === "/api/notices") { await handleNotices(req, res); return; }
@@ -1323,6 +1332,531 @@ async function handleEstimatedTaxesTemplateDownload(_req, res, requestUrl) {
 async function handleExtensionCalculate(req, res) {
   const payload = await readJsonBody(req);
   sendJson(res, 200, calculateExtension(payload));
+}
+
+// ===========================================================================
+// Tax Planning Studio (Phase 1)
+//
+// The AI extracts facts and proposes scenario *definitions* (which levers to
+// pull). EVERY tax dollar is recomputed here with lib/tax-calculations.js — the
+// model's own arithmetic is never trusted for liability numbers.
+// ===========================================================================
+
+const PLANNING_MODELS = ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS];
+// Profile fields a scenario adjustment is allowed to touch (mirrors applyAdjustments).
+const PLANNING_FIELDS = [
+  "wages", "netSEIncome", "otherIncome", "longTermGains", "shortTermGains",
+  "deductions", "qbi", "w2Wages", "retirementContribution", "sec179", "bonusDepreciation",
+];
+
+function planningNum(value) {
+  const n = Number(String(value == null ? "" : value).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizePlanningProfile(baseData = {}) {
+  const b = baseData || {};
+  const income = b.income || {};
+  const ded = b.deductions || {};
+  return {
+    clientName: String(b.clientName || "").trim(),
+    entityType: String(b.entityType || "").trim(),
+    taxYear: Number(b.taxYear) || new Date().getFullYear(),
+    filingStatus: planningTax.normalizeStatus(b.filingStatus),
+    state: String(b.state || "").trim().toUpperCase(),
+    dependents: Number(b.dependents) || 0,
+    wages: planningNum(b.wages != null ? b.wages : income.wages),
+    netSEIncome: planningNum(b.netSEIncome != null ? b.netSEIncome : income.grossReceipts),
+    otherIncome: planningNum(b.otherIncome != null ? b.otherIncome : income.otherIncome),
+    longTermGains: planningNum(b.longTermGains != null ? b.longTermGains : income.capitalGains),
+    shortTermGains: planningNum(b.shortTermGains),
+    deductions: planningNum(b.deductions != null ? b.deductions : ded.total),
+    qbi: planningNum(b.qbi),
+    w2Wages: planningNum(b.w2Wages),
+    retirementContribution: planningNum(b.retirementContribution),
+    sec179: planningNum(b.sec179),
+    bonusDepreciation: planningNum(b.bonusDepreciation),
+  };
+}
+
+function planningRound(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function sanitizePlanningAdjustments(adjustments) {
+  if (!Array.isArray(adjustments)) return [];
+  return adjustments
+    .filter((a) => a && PLANNING_FIELDS.includes(String(a.field)))
+    .map((a) => {
+      const out = { field: String(a.field), rationale: String(a.rationale || "").slice(0, 400) };
+      if (a.newValue != null) out.newValue = planningNum(a.newValue);
+      else if (a.delta != null) out.delta = planningNum(a.delta);
+      if (a.originalValue != null) out.originalValue = planningNum(a.originalValue);
+      return out;
+    });
+}
+
+function buildPlanningBaseScenario(profile, year) {
+  const taxCalc = planningTax.computeScenarioTax(profile, [], year);
+  return {
+    id: "base",
+    name: "Base (current)",
+    description: "Your current situation with no planning changes applied.",
+    isBase: true,
+    adjustments: [],
+    taxCalc,
+    savingsVsBase: { dollars: 0, percentage: 0 },
+  };
+}
+
+function finalizePlanningScenario(profile, def, baseTotal, year, index) {
+  const adjustments = sanitizePlanningAdjustments(def.adjustments);
+  const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+  const dollars = planningRound((baseTotal || 0) - taxCalc.total);
+  const percentage = baseTotal > 0 ? planningRound((dollars / baseTotal) * 100) : 0;
+  return {
+    id: String(def.id || `scenario-${index + 1}`),
+    name: String(def.name || `Scenario ${index + 1}`).slice(0, 120),
+    description: String(def.description || "").slice(0, 600),
+    adjustments,
+    taxCalc,
+    savingsVsBase: { dollars, percentage },
+  };
+}
+
+function planningFileContent(files, promptText) {
+  const ctx = buildUploadedFileContext(Array.isArray(files) ? files : []);
+  const content = [
+    ...ctx.documents.slice(0, 8).map((doc) => ({
+      type: "document",
+      source: { type: "base64", media_type: doc.type || "application/pdf", data: doc.content },
+      title: doc.name,
+      context: "tax planning source document",
+    })),
+    ...ctx.images.slice(0, 6).map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.type || "image/png", data: img.content },
+    })),
+    { type: "text", text: promptText.replace("__FILE_TEXT__", ctx.text || "(no extractable text — read attached documents/images)") },
+  ];
+  return { content, hasInput: Boolean(ctx.text || ctx.documents.length || ctx.images.length) };
+}
+
+async function callPlanningClaude(req, content, systemText, action, payload, maxTokens = 8000) {
+  const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
+  if (!apiKey) return { error: "Claude API key is not configured.", status: 400 };
+  const startedAt = Date.now();
+  const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+    maxTokens,
+    webSearch: false,
+    models: PLANNING_MODELS,
+    system: [{ type: "text", text: systemText }],
+  });
+  if (!result.ok) return { error: `Claude request failed: ${result.error}`, status: result.status || 502 };
+  logClaudeCost(req, result, action, "planning", payload || {}, startedAt);
+  const raw = extractText(result.data);
+  const parsed = parseClaudeJson(raw);
+  if (!parsed) return { error: "Claude did not return valid JSON.", status: 502, details: raw.slice(0, 1500) };
+  return { data: parsed };
+}
+
+async function handlePlanningAnalyze(req, res) {
+  const payload = await readJsonBody(req);
+  const instructions = String(payload.instructions || "").slice(0, 8000);
+  const prompt = [
+    "You are a senior CPA preparing a tax-planning base profile for a client.",
+    "Read the uploaded documents (workpapers, prior returns, K-1s, statements) and the CPA's instructions.",
+    "",
+    "CPA INSTRUCTIONS:",
+    instructions || "(none provided)",
+    "",
+    "EXTRACTED DOCUMENT TEXT:",
+    "__FILE_TEXT__",
+    "",
+    "Return ONLY JSON inside ```json``` fences with this exact shape (numbers only, no $ or commas):",
+    "{",
+    '  "clientName": string, "entityType": string, "taxYear": number,',
+    '  "filingStatus": "Single"|"MFJ"|"MFS"|"HOH", "state": string (2-letter), "dependents": number,',
+    '  "wages": number, "netSEIncome": number, "otherIncome": number,',
+    '  "longTermGains": number, "shortTermGains": number,',
+    '  "deductions": number (total itemized; 0 if standard), "qbi": number, "w2Wages": number,',
+    '  "keyObservations": [string]  // up to 5 short notes',
+    "}",
+    "Report only FACTS extracted from the documents. Do NOT compute taxes — that is done separately.",
+  ].join("\n");
+
+  const { content, hasInput } = planningFileContent(payload.files, prompt);
+  if (!hasInput && !instructions) {
+    sendJson(res, 400, { error: "Upload at least one document or provide instructions before analyzing." });
+    return;
+  }
+  const result = await callPlanningClaude(req, content, "You extract tax facts and return only valid JSON. Never invent tax liability numbers.", "planning_analyze", payload);
+  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
+
+  const profile = normalizePlanningProfile(result.data);
+  const year = profile.taxYear;
+  const currentTax = planningTax.computeScenarioTax(profile, [], year);
+  sendJson(res, 200, {
+    baseData: { ...profile, currentTax },
+    keyObservations: Array.isArray(result.data.keyObservations) ? result.data.keyObservations.slice(0, 5).map((s) => String(s)) : [],
+  });
+}
+
+async function handlePlanningScenarios(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const instructions = String(payload.instructions || "").slice(0, 4000);
+  const base = buildPlanningBaseScenario(profile, year);
+
+  const prompt = [
+    "Given this client's tax profile and the CPA's instructions, propose 3 to 5 relevant tax-planning scenarios.",
+    "",
+    "PROFILE (facts):",
+    JSON.stringify(profile),
+    "",
+    "BASE LIABILITY (already computed by the system, for reference): total = " + base.taxCalc.total,
+    "",
+    "CPA INSTRUCTIONS:",
+    instructions || "(none)",
+    "",
+    "Each scenario is a set of ADJUSTMENTS to these allowed fields ONLY: " + PLANNING_FIELDS.join(", ") + ".",
+    "Do NOT output tax numbers — the system computes them. Output only the levers to pull.",
+    "Return ONLY JSON inside ```json``` fences:",
+    '{ "scenarios": [ { "id": string, "name": string, "description": string,',
+    '  "adjustments": [ { "field": string, "newValue": number, "rationale": string } ] } ] }',
+    "Examples of good scenarios: max SEP-IRA (retirementContribution), Sec 179 asset purchase (sec179),",
+    "S-corp salary optimization (wages/netSEIncome), defer income (otherIncome), bunch deductions (deductions).",
+  ].join("\n");
+
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You design tax-planning scenarios as field adjustments and return only valid JSON. Never output computed tax numbers.", "planning_scenarios", payload);
+  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
+
+  const defs = Array.isArray(result.data.scenarios) ? result.data.scenarios.slice(0, 5) : [];
+  const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
+  sendJson(res, 200, { scenarios });
+}
+
+async function handlePlanningScenarioCustom(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const instruction = String(payload.instruction || "").slice(0, 2000);
+  const baseTotal = planningNum(payload.baseTotal) || planningTax.computeScenarioTax(profile, [], year).total;
+  if (!instruction) { sendJson(res, 400, { error: "Describe the scenario you want to model." }); return; }
+
+  const prompt = [
+    "The CPA wrote this instruction for a new tax-planning scenario:",
+    `"${instruction}"`,
+    "",
+    "Client profile (facts):",
+    JSON.stringify(profile),
+    "",
+    "Convert it into ONE scenario expressed as adjustments to these allowed fields ONLY: " + PLANNING_FIELDS.join(", ") + ".",
+    "If the instruction is ambiguous, assume the conservative case and say so in rationale.",
+    "Do NOT output tax numbers. Return ONLY JSON inside ```json``` fences:",
+    '{ "id": string, "name": string, "description": string,',
+    '  "adjustments": [ { "field": string, "newValue": number, "rationale": string } ] }',
+  ].join("\n");
+
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You convert a natural-language tax-planning request into one scenario of field adjustments and return only valid JSON.", "planning_scenario_custom", payload, 4000);
+  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
+
+  const scenario = finalizePlanningScenario(profile, result.data, baseTotal, year, 0);
+  sendJson(res, 200, { scenario });
+}
+
+async function handlePlanningOpportunities(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const scenarios = Array.isArray(payload.scenarios) ? payload.scenarios : [];
+  // Feed the AI the system-computed savings so dollar figures originate from real math.
+  const computedSavings = scenarios
+    .filter((s) => s && !s.isBase)
+    .map((s) => ({ name: s.name, savings: s?.savingsVsBase?.dollars || 0 }));
+
+  const prompt = [
+    "Given this client's profile and the system-computed scenario savings, identify the most relevant savings opportunities to present.",
+    "",
+    "PROFILE:", JSON.stringify(profile),
+    "",
+    "COMPUTED SCENARIO SAVINGS (use THESE dollar figures; do not invent your own math):",
+    JSON.stringify(computedSavings),
+    "",
+    "Return ONLY JSON inside ```json``` fences:",
+    '{ "opportunities": [ {',
+    '  "id": string, "title": string, "category": string,',
+    '  "estimatedSavings": { "min": number, "max": number },',
+    '  "deadline": string|null, "complexity": "Simple"|"Moderate"|"Complex",',
+    '  "description": string (<=2 sentences, plain language for the client),',
+    '  "cpaNote": string (technical detail for the CPA), "requiresAction": boolean, "actionDeadline": string|null',
+    "} ] }",
+    "Categories: Retirement Planning, Business Deductions, Entity Structure, Income Timing, Investment Strategy, Credits & Incentives, Estate & Gift, State Tax.",
+  ].join("\n") + styleProfilePromptBlock(activeStyleProfile(req));
+
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You identify tax-savings opportunities in plain language and return only valid JSON. Use the provided computed savings figures.", "planning_opportunities", payload);
+  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
+
+  const opportunities = (Array.isArray(result.data.opportunities) ? result.data.opportunities : []).slice(0, 12).map((o, i) => ({
+    id: String(o.id || `opp-${i + 1}`),
+    title: String(o.title || "Opportunity").slice(0, 160),
+    category: String(o.category || "Other").slice(0, 60),
+    estimatedSavings: { min: planningNum(o?.estimatedSavings?.min), max: planningNum(o?.estimatedSavings?.max) },
+    deadline: o.deadline ? String(o.deadline).slice(0, 80) : null,
+    complexity: ["Simple", "Moderate", "Complex"].includes(o.complexity) ? o.complexity : "Moderate",
+    description: String(o.description || "").slice(0, 400),
+    cpaNote: String(o.cpaNote || "").slice(0, 400),
+    requiresAction: Boolean(o.requiresAction),
+    actionDeadline: o.actionDeadline ? String(o.actionDeadline).slice(0, 80) : null,
+  }));
+  sendJson(res, 200, { opportunities });
+}
+
+// Deterministic recompute for manual scenario edits — no AI, pure tax math.
+async function handlePlanningRecompute(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const adjustments = sanitizePlanningAdjustments(payload.adjustments);
+  const baseTotal = planningNum(payload.baseTotal) || planningTax.computeScenarioTax(profile, [], year).total;
+  const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+  const dollars = planningRound(baseTotal - taxCalc.total);
+  const percentage = baseTotal > 0 ? planningRound((dollars / baseTotal) * 100) : 0;
+  sendJson(res, 200, { taxCalc, savingsVsBase: { dollars, percentage }, adjustments });
+}
+
+async function handlePlanningDeck(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = activeStyleProfile(req);
+  try {
+    const buffer = await buildPlanningDeck({
+      clientName: payload.clientName || payload?.baseData?.clientName || "Client",
+      year: payload.year || payload?.baseData?.taxYear || new Date().getFullYear(),
+      firmName: payload.firmName || "RAG Tax AI",
+      baseData: payload.baseData || {},
+      scenarios: Array.isArray(payload.scenarios) ? payload.scenarios : [],
+      opportunities: Array.isArray(payload.opportunities) ? payload.opportunities : [],
+      nextSteps: Array.isArray(payload.nextSteps) ? payload.nextSteps : [],
+      // Prefer the firm's learned disclaimer from the active style profile.
+      disclaimer: payload.disclaimer || profile?.combinedSummary?.disclaimer || "",
+      theme: payload.theme || {},
+    });
+    const clientSlug = safeFileName(String(payload.clientName || payload?.baseData?.clientName || "Client"));
+    const year = String(payload.year || payload?.baseData?.taxYear || new Date().getFullYear());
+    sendJson(res, 200, {
+      filename: `TaxPlanning_${clientSlug}_${year}.pptx`,
+      mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      contentBase64: buffer.toString("base64"),
+    });
+  } catch (error) {
+    sendJson(res, 502, { error: `Could not generate the planning deck: ${error.message || "unknown error"}` });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Template Library + Style Profile.
+// Per-user JSON stores (firm style learned from prior presentations).
+// ---------------------------------------------------------------------------
+
+const PLANNING_TEMPLATES_PATH = path.join(DATA_DIR, "planning_templates.json");
+const PLANNING_STYLE_PROFILE_PATH = path.join(DATA_DIR, "planning_style_profile.json");
+const PLANNING_TEMPLATE_CATEGORIES = ["presentation", "recommendation", "template"];
+
+function planningUserKey(req) {
+  return String(req?.user?.username || "firm");
+}
+
+function readPlanningTemplates() {
+  return readJsonFile(PLANNING_TEMPLATES_PATH, {});
+}
+function writePlanningTemplates(store) {
+  writeJsonFile(PLANNING_TEMPLATES_PATH, store);
+}
+function readPlanningProfiles() {
+  return readJsonFile(PLANNING_STYLE_PROFILE_PATH, {});
+}
+function writePlanningProfiles(store) {
+  writeJsonFile(PLANNING_STYLE_PROFILE_PATH, store);
+}
+
+function userPlanningTemplates(req) {
+  const store = readPlanningTemplates();
+  const list = store[planningUserKey(req)];
+  return Array.isArray(list) ? list : [];
+}
+
+function activeStyleProfile(req) {
+  const profiles = readPlanningProfiles();
+  const profile = profiles[planningUserKey(req)];
+  return profile && profile.combinedSummary ? profile : null;
+}
+
+// Strips a style-summary object down to the known shape (defends the prompt).
+function sanitizeStyleSummary(obj = {}) {
+  const arr = (v) => (Array.isArray(v) ? v.slice(0, 12).map((x) => String(x).slice(0, 200)) : []);
+  return {
+    tone: String(obj.tone || "").slice(0, 200),
+    structure: arr(obj.structure),
+    numberFormat: String(obj.numberFormat || "").slice(0, 200),
+    keyPhrases: arr(obj.keyPhrases),
+    disclaimer: String(obj.disclaimer || "").slice(0, 1000),
+    recommendationStyle: String(obj.recommendationStyle || "").slice(0, 400),
+    clientLanguage: String(obj.clientLanguage || "").slice(0, 200),
+  };
+}
+
+function styleProfilePromptBlock(profile) {
+  if (!profile || !profile.combinedSummary) return "";
+  const s = profile.combinedSummary;
+  return [
+    "",
+    "IMPORTANT — FIRM STYLE (match these preferences in all wording you generate):",
+    `- Tone: ${s.tone || "professional"}`,
+    `- Typical structure: ${(s.structure || []).join("; ")}`,
+    `- How numbers are presented: ${s.numberFormat || ""}`,
+    `- Characteristic phrases: ${(s.keyPhrases || []).join("; ")}`,
+    `- Recommendation style: ${s.recommendationStyle || ""}`,
+    `- Client language level: ${s.clientLanguage || ""}`,
+  ].join("\n");
+}
+
+async function generateStyleSummary(req, file, category) {
+  const prompt = [
+    "Analyze this tax-planning document from a CPA firm.",
+    `It is an example of a ${category} the firm used with a client.`,
+    "",
+    "DOCUMENT TEXT:",
+    "__FILE_TEXT__",
+    "",
+    "Extract and return ONLY JSON inside ```json``` fences with this exact shape:",
+    "{",
+    '  "tone": string, "structure": [string], "numberFormat": string,',
+    '  "keyPhrases": [string] (max 10), "disclaimer": string,',
+    '  "recommendationStyle": string, "clientLanguage": string',
+    "}",
+  ].join("\n");
+  const { content, hasInput } = planningFileContent([file], prompt);
+  if (!hasInput) return { error: "No readable content in the uploaded template." };
+  const result = await callPlanningClaude(req, content, "You analyze a CPA firm's planning document and return only valid JSON describing its style.", "planning_style_summary", { category }, 3000);
+  if (result.error) return result;
+  return { data: sanitizeStyleSummary(result.data) };
+}
+
+async function regeneratePlanningProfile(req) {
+  const templates = userPlanningTemplates(req).filter((t) => t.isActive && t.styleSummary);
+  const profiles = readPlanningProfiles();
+  const key = planningUserKey(req);
+  if (!templates.length) {
+    delete profiles[key];
+    writePlanningProfiles(profiles);
+    return { profile: null };
+  }
+  if (templates.length === 1) {
+    profiles[key] = { combinedSummary: templates[0].styleSummary, lastUpdated: new Date().toISOString(), templateCount: 1 };
+    writePlanningProfiles(profiles);
+    return { profile: profiles[key] };
+  }
+  const summaries = templates.map((t) => t.styleSummary);
+  const prompt = [
+    "You are given style summaries from a CPA firm's planning documents.",
+    "Combine the best of each into ONE coherent style profile. On conflicts, prefer the most recent.",
+    "",
+    "SUMMARIES (most recent last):",
+    JSON.stringify(summaries),
+    "",
+    "Return ONLY JSON inside ```json``` fences with the same shape as an individual summary:",
+    '{ "tone": string, "structure": [string], "numberFormat": string, "keyPhrases": [string], "disclaimer": string, "recommendationStyle": string, "clientLanguage": string }',
+  ].join("\n");
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You merge CPA-firm style summaries into one profile and return only valid JSON.", "planning_style_profile", {}, 3000);
+  if (result.error) return result;
+  profiles[key] = { combinedSummary: sanitizeStyleSummary(result.data), lastUpdated: new Date().toISOString(), templateCount: templates.length };
+  writePlanningProfiles(profiles);
+  return { profile: profiles[key] };
+}
+
+function publicPlanningTemplate(t) {
+  return {
+    id: t.id, filename: t.filename, fileType: t.fileType, category: t.category,
+    uploadedAt: t.uploadedAt, isActive: t.isActive, styleSummary: t.styleSummary,
+  };
+}
+
+async function handlePlanningTemplatesApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean); // ["api","planning","templates", maybe id/regenerate-profile]
+  const key = planningUserKey(req);
+
+  // POST /api/planning/templates/regenerate-profile
+  if (req.method === "POST" && parts[3] === "regenerate-profile") {
+    const result = await regeneratePlanningProfile(req);
+    if (result.error) { sendJson(res, result.status || 502, { error: result.error }); return; }
+    sendJson(res, 200, { styleProfile: result.profile });
+    return;
+  }
+
+  // GET /api/planning/templates
+  if (req.method === "GET" && !parts[3]) {
+    sendJson(res, 200, {
+      templates: userPlanningTemplates(req).map(publicPlanningTemplate),
+      styleProfile: activeStyleProfile(req),
+    });
+    return;
+  }
+
+  // POST /api/planning/templates  (upload one file -> style summary)
+  if (req.method === "POST" && !parts[3]) {
+    const payload = await readJsonBody(req);
+    const file = payload.file || {};
+    if (!file.name || !file.content) { sendJson(res, 400, { error: "Upload a file (name + content) to add a template." }); return; }
+    const category = PLANNING_TEMPLATE_CATEGORIES.includes(payload.category) ? payload.category : "presentation";
+    const summary = await generateStyleSummary(req, file, category);
+    if (summary.error) { sendJson(res, summary.status || 502, { error: summary.error }); return; }
+
+    const store = readPlanningTemplates();
+    if (!Array.isArray(store[key])) store[key] = [];
+    const template = {
+      id: crypto.randomUUID(),
+      filename: String(file.name).slice(0, 200),
+      fileType: String(file.type || mimeFromName(file.name) || "").slice(0, 120),
+      category,
+      uploadedAt: new Date().toISOString(),
+      rawText: "", // not persisted to keep the store light; summary is what matters
+      styleSummary: summary.data,
+      isActive: true,
+    };
+    store[key].push(template);
+    writePlanningTemplates(store);
+    await regeneratePlanningProfile(req);
+    sendJson(res, 200, { template: publicPlanningTemplate(template), styleProfile: activeStyleProfile(req) });
+    return;
+  }
+
+  // PATCH /api/planning/templates/:id  (toggle active)
+  if (req.method === "PATCH" && parts[3]) {
+    const payload = await readJsonBody(req);
+    const store = readPlanningTemplates();
+    const list = Array.isArray(store[key]) ? store[key] : [];
+    const target = list.find((t) => t.id === parts[3]);
+    if (!target) { sendJson(res, 404, { error: "Template not found." }); return; }
+    if (payload.isActive != null) target.isActive = Boolean(payload.isActive);
+    writePlanningTemplates(store);
+    await regeneratePlanningProfile(req);
+    sendJson(res, 200, { template: publicPlanningTemplate(target), styleProfile: activeStyleProfile(req) });
+    return;
+  }
+
+  // DELETE /api/planning/templates/:id
+  if (req.method === "DELETE" && parts[3]) {
+    const store = readPlanningTemplates();
+    const list = Array.isArray(store[key]) ? store[key] : [];
+    const next = list.filter((t) => t.id !== parts[3]);
+    store[key] = next;
+    writePlanningTemplates(store);
+    await regeneratePlanningProfile(req);
+    sendJson(res, 200, { ok: true, styleProfile: activeStyleProfile(req) });
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed." });
 }
 
 function summarizeEstimatedTaxFiles(files = []) {
@@ -5250,6 +5784,12 @@ function isTokenConsumingRoute(req, requestUrl) {
     "/api/deliverable/email-draft",
     "/api/deliverable/generate-draft",
     "/api/requests/generate-email",
+    "/api/planning/analyze",
+    "/api/planning/scenarios",
+    "/api/planning/scenario",
+    "/api/planning/opportunities",
+    "/api/planning/templates",
+    "/api/planning/templates/regenerate-profile",
   ].includes(pathName);
 }
 

@@ -209,6 +209,7 @@
             <button id="reviewModeButton" class="mode-button" type="button">Review</button>
             <button id="deliverableModeButton" class="mode-button" type="button">Deliverable</button>
             <button id="estimatedTaxesModeButton" class="mode-button" type="button">Estimated Taxes</button>
+            <button id="planningModeButton" class="mode-button" type="button">Tax Planning</button>
             <button id="trackerModeButton" class="mode-button" type="button">Tracker</button>
           </div>
         </article>
@@ -1227,6 +1228,120 @@
           </section>
         </section>
         <div id="deliverableResults" hidden></div>
+      </section>
+
+      <section id="planningPanel" class="layout mode-panel planning-layout" hidden>
+        <section class="planning-workbench">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Tax Workflow</p>
+                <h2>Tax Planning</h2>
+                <p>Upload client documents, model scenarios with real tax math, and build a client-ready plan.</p>
+              </div>
+              <span id="planningStatus" class="status-chip">Ready</span>
+            </div>
+
+            <div class="planning-subnav">
+              <button id="planningTabAnalysis" class="planning-subnav-btn active" type="button">Analysis</button>
+              <button id="planningTabLibrary" class="planning-subnav-btn" type="button">My Library</button>
+              <span id="planningLibIndicator" class="planning-lib-indicator">No templates — default format</span>
+            </div>
+
+            <div id="planningEmpty" class="planning-state">
+              <article class="request-step-card active">
+                <h3 class="request-step-title">1. Upload client information</h3>
+                <p class="muted-note">Prior-year return, K-1s, statements, the Excel workpaper, photos of documents — or just notes. Multiple files supported.</p>
+                <div id="planningDropzone" class="est-upload-zone" role="button" tabindex="0">
+                  <strong>Drop client files here</strong>
+                  <span>PDF, XLSX, CSV, PNG/JPG.</span>
+                  <em>or click to browse</em>
+                  <input id="planningFiles" type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.txt" hidden />
+                </div>
+                <div id="planningFileList" class="planning-file-list"></div>
+                <label class="field"><span>Instructions for the AI</span>
+                  <textarea id="planningInstructions" rows="4" placeholder="e.g. Client wants to buy an $80K truck in December. S-Corp. Analyze with and without Sec 179. Bracket is 37%, prioritize deferral."></textarea>
+                </label>
+                <button id="planningAnalyzeBtn" class="primary-button" type="button">Analyze documents</button>
+              </article>
+            </div>
+
+            <div id="planningLoading" class="planning-state" hidden>
+              <div class="planning-progress"><div class="planning-spinner"></div><p id="planningLoadingText">Analyzing documents…</p></div>
+            </div>
+
+            <div id="planningConfirm" class="planning-state" hidden>
+              <article class="request-step-card">
+                <h3 class="request-step-title">2. Confirm what the AI understood</h3>
+                <p class="muted-note">Review and correct before generating scenarios — garbage in, garbage out. Tax figures are computed by the app, not the AI.</p>
+                <div id="planningObservations" class="planning-observations"></div>
+                <div id="planningConfirmFields" class="form-grid"></div>
+                <div class="planning-actions">
+                  <button id="planningBackToUpload" class="ghost-button small-button" type="button">Back</button>
+                  <button id="planningGenerateBtn" class="primary-button" type="button">Confirm &amp; generate scenarios</button>
+                </div>
+              </article>
+            </div>
+
+            <div id="planningBuilding" class="planning-state" hidden>
+              <div class="planning-progress"><div class="planning-spinner"></div><p id="planningBuildingText">Generating scenarios…</p></div>
+            </div>
+
+            <div id="planningResults" class="planning-state" hidden>
+              <article class="request-step-card">
+                <div class="planning-results-header">
+                  <h3 class="request-step-title">3. Scenarios &amp; opportunities</h3>
+                  <div class="planning-actions">
+                    <button id="planningPresentBtn" class="ghost-button small-button" type="button">Present to client</button>
+                    <button id="planningDeckBtn" class="primary-button small-button" type="button">Download deck</button>
+                  </div>
+                </div>
+                <div id="planningComparison" class="planning-comparison"></div>
+                <div class="planning-custom">
+                  <label class="field"><span>Add a custom scenario</span>
+                    <input id="planningCustomInput" type="text" placeholder="e.g. Contribute $50K to a SEP-IRA" />
+                  </label>
+                  <button id="planningCustomBtn" class="ghost-button small-button" type="button">+ Add scenario</button>
+                </div>
+                <h4 class="planning-subhead">Opportunities</h4>
+                <div id="planningOpportunities" class="planning-opportunities"></div>
+              </article>
+            </div>
+
+            <div id="planningLibraryView" class="planning-state" hidden>
+              <article class="request-step-card">
+                <h3 class="request-step-title">Templates &amp; examples</h3>
+                <p class="muted-note">Upload prior presentations or recommendation letters. The AI learns your firm's style and applies it to new plans and decks.</p>
+                <div id="planningLibDropzone" class="est-upload-zone" role="button" tabindex="0">
+                  <strong>Drop a template here</strong>
+                  <span>PDF, DOCX, PPTX, or TXT.</span>
+                  <em>or click to browse</em>
+                  <input id="planningLibFile" type="file" accept=".pdf,.docx,.pptx,.txt" hidden />
+                </div>
+                <label class="field"><span>Category</span>
+                  <select id="planningLibCategory">
+                    <option value="presentation">Presentation</option>
+                    <option value="recommendation">Recommendation</option>
+                    <option value="template">Firm template</option>
+                  </select>
+                </label>
+                <div id="planningLibStatus" class="muted-note"></div>
+                <h4 class="planning-subhead">My templates</h4>
+                <div id="planningLibList" class="planning-lib-list"></div>
+                <div class="planning-results-header">
+                  <h4 class="planning-subhead">Active style profile</h4>
+                  <button id="planningRegenBtn" class="ghost-button small-button" type="button">Regenerate</button>
+                </div>
+                <div id="planningProfileView" class="planning-profile-view"></div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <div id="planningPresent" class="planning-present" hidden>
+          <div class="planning-present-inner" id="planningPresentInner"></div>
+          <button id="planningExitPresent" class="ghost-button small-button planning-exit" type="button">Exit presentation</button>
+        </div>
       </section>
 
       <section id="estimatedTaxesPanel" class="layout mode-panel estimated-layout" hidden>
