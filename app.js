@@ -9960,9 +9960,10 @@ const planningStudio = {
   nextSteps: null,
   showMultiYear: false,
   savedList: [],
-  clientType: "",          // "1040" | "1065" | "1120S" | "1120" | "990" | "Other"
-  linkedEntities: [],      // [{type, name}] — e.g. 1040 + linked 1120S
+  clientType: "",
+  linkedEntities: [],
   planYear: new Date().getFullYear() + 1,
+  expandedScenarios: new Set(),
 };
 
 const PLANNING_FILING_STATUSES = ["Single", "MFJ", "MFS", "HOH"];
@@ -10348,6 +10349,7 @@ function planningReset() {
   planningStudio.clientType = "";
   planningStudio.linkedEntities = [];
   planningStudio.planYear = new Date().getFullYear() + 1;
+  planningStudio.expandedScenarios = new Set();
 
   // Reset form fields
   const instrEl = document.getElementById("planningInstructions");
@@ -10525,6 +10527,70 @@ function planningRenderResults() {
   planningRenderQuarterly();
 }
 
+function planningBreakdownHtml(scenario, baseScenario, year) {
+  const c = scenario.taxCalc || {};
+  const b = baseScenario?.taxCalc || {};
+  const isBase = scenario.isBase;
+  const adjs = Array.isArray(scenario.adjustments) ? scenario.adjustments.filter((a) => a.newValue != null || a.delta != null) : [];
+
+  const diffCell = (cur, base) => {
+    if (isBase || base == null) return "";
+    const d = (cur || 0) - (base || 0);
+    if (Math.abs(d) < 1) return '<td class="planning-bd-neutral">—</td>';
+    const cls = d < 0 ? "planning-bd-pos" : "planning-bd-neg";
+    return `<td class="${cls}">${d < 0 ? "−" : "+"}${planningFmtMoney(Math.abs(d))}</td>`;
+  };
+  const fmtRow = (label, curVal, baseVal, isPct = false, note = "") => {
+    const fmt = isPct ? planningFmtPct : planningFmtMoney;
+    const dc = diffCell(curVal, baseVal);
+    const noteSpan = note ? ` <span class="planning-bd-note">${escapeHtml(note)}</span>` : "";
+    return `<tr><td class="planning-bd-label">${escapeHtml(label)}${noteSpan}</td><td>${fmt(curVal)}</td>${!isBase ? dc : ""}</tr>`;
+  };
+
+  const adjBlock = (!isBase && adjs.length) ? `
+    <div class="planning-bd-section">
+      <div class="planning-bd-section-title">Adjustments applied vs. base</div>
+      <table class="planning-bd-table planning-bd-adjs">
+        ${adjs.map((a) => {
+          const label = PLANNING_FIELD_LABELS[a.field] || a.field;
+          const val = a.newValue != null ? a.newValue : a.delta;
+          const baseVal = (baseScenario?.adjustments || []).find((ba) => ba.field === a.field)?.newValue ?? null;
+          return `<tr><td class="planning-bd-label">${escapeHtml(label)}</td><td>${planningFmtMoney(val)}</td></tr>`;
+        }).join("")}
+      </table>
+    </div>` : "";
+
+  const stateLbl = c.stateEstimated ? `State tax (estimated*)` : `State tax (${escapeHtml(planningStudio.baseData?.state || "")})`;
+  const savings = scenario.savingsVsBase?.dollars;
+  const savingsPct = scenario.savingsVsBase?.percentage;
+
+  return `<div class="planning-breakdown">
+    ${adjBlock}
+    <div class="planning-bd-section">
+      <div class="planning-bd-section-title">Tax computation — ${escapeHtml(String(year))}</div>
+      <table class="planning-bd-table">
+        <thead><tr>
+          <th></th><th>${isBase ? "Amount" : "This scenario"}</th>${!isBase ? "<th>Change vs. base</th>" : ""}
+        </tr></thead>
+        <tbody>
+          ${fmtRow("Gross income", c.grossIncome, b.grossIncome)}
+          ${fmtRow("Taxable income", c.taxableIncome, b.taxableIncome)}
+          <tr class="planning-bd-divider"><td colspan="${isBase ? 2 : 3}"></td></tr>
+          ${fmtRow("Federal income tax", c.federalTax, b.federalTax)}
+          ${fmtRow(stateLbl, c.stateTax, b.stateTax)}
+          ${fmtRow("SE tax (self-employment)", c.seTax, b.seTax)}
+          ${c.niit > 0 ? fmtRow("Net Investment Income Tax", c.niit, b.niit) : ""}
+          <tr class="planning-bd-divider"><td colspan="${isBase ? 2 : 3}"></td></tr>
+          ${fmtRow("Total tax liability", c.total, b.total)}
+          ${fmtRow("Effective tax rate", c.effectiveRate, b.effectiveRate, true)}
+          ${fmtRow("Marginal tax rate", c.marginalRate, b.marginalRate, true)}
+        </tbody>
+      </table>
+      ${!isBase && savings > 0 ? `<div class="planning-bd-savings">Net savings: <strong>${planningFmtMoney(savings)}</strong> (${planningFmtPct(savingsPct)} reduction in liability)</div>` : ""}
+    </div>
+  </div>`;
+}
+
 function planningRenderComparison() {
   const wrap = document.getElementById("planningComparison");
   if (!wrap) return;
@@ -10533,16 +10599,19 @@ function planningRenderComparison() {
   const year = Number(planningStudio.baseData?.taxYear) || new Date().getFullYear();
   const my = planningStudio.showMultiYear;
 
+  const baseScenario = planningStudio.scenarios.find((s) => s.isBase);
   const rows = planningStudio.scenarios.map((s) => {
     const c = s.taxCalc || {};
     const cn = s.taxCalcNext || {};
     const savings = s?.savingsVsBase?.dollars || 0;
     const isBest = s.id === bestId && savings > 0;
+    const isExpanded = planningStudio.expandedScenarios.has(s.id);
     const editBtn = s.isBase ? "" : `<button type="button" class="link-button planning-edit-btn" data-planning-edit="${s.id}">Edit</button>`;
+    const expandBtn = `<button type="button" class="link-button planning-expand-btn ${isExpanded ? "active" : ""}" data-planning-expand="${s.id}" title="Show tax breakdown">${isExpanded ? "▲ Hide" : "▼ Breakdown"}</button>`;
     const colspan = my ? 10 : 8;
     const nextCols = my ? `<td>${planningFmtMoney(cn.total)}</td><td>${planningFmtPct(cn.effectiveRate)}</td>` : "";
     const main = `<tr class="${isBest ? "planning-row-best" : ""}">
-      <td>${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""} ${editBtn}</td>
+      <td><div class="planning-scenario-name-cell">${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""}<div class="planning-row-actions">${editBtn}${expandBtn}</div></div></td>
       <td>${planningFmtMoney(c.taxableIncome)}</td>
       <td>${planningFmtMoney(c.federalTax)}</td>
       <td>${planningFmtMoney(c.stateTax)}${c.stateEstimated ? '<span class="planning-est" title="Estimated state rate">*</span>' : ""}</td>
@@ -10552,7 +10621,8 @@ function planningRenderComparison() {
       <td>${planningFmtPct(c.effectiveRate)}</td>
       ${nextCols}
     </tr>`;
-    if (planningStudio.editingId !== s.id) return main;
+    const breakdownRow = isExpanded ? `<tr class="planning-breakdown-row"><td colspan="${colspan}">${planningBreakdownHtml(s, baseScenario, year)}</td></tr>` : "";
+    if (planningStudio.editingId !== s.id) return main + breakdownRow;
     const adjs = Array.isArray(s.adjustments) ? s.adjustments : [];
     const editorFields = (adjs.length ? adjs : [{ field: "retirementContribution", newValue: 0 }]).map((a) => {
       const label = PLANNING_FIELD_LABELS[a.field] || a.field;
@@ -10568,7 +10638,7 @@ function planningRenderComparison() {
           <button type="button" class="primary-button small-button" data-planning-edit-apply="${s.id}">Apply</button>
         </div>
       </div></td></tr>`;
-    return main + editor;
+    return main + breakdownRow + editor;
   }).join("");
 
   const anyEstimated = planningStudio.scenarios.some((s) => s?.taxCalc?.stateEstimated);
@@ -10595,6 +10665,12 @@ function planningRenderComparison() {
   wrap.querySelectorAll("[data-qscenario]").forEach((b) => b.addEventListener("click", () => {
     const s = planningStudio.scenarios.find((sc) => sc.id === b.dataset.qscenario);
     planningShowQuarterly(s);
+  }));
+  wrap.querySelectorAll("[data-planning-expand]").forEach((b) => b.addEventListener("click", () => {
+    const id = b.dataset.planningExpand;
+    if (planningStudio.expandedScenarios.has(id)) planningStudio.expandedScenarios.delete(id);
+    else planningStudio.expandedScenarios.add(id);
+    planningRenderComparison();
   }));
 }
 
@@ -10635,6 +10711,27 @@ function planningRenderOpportunities() {
     const max = Number(o?.estimatedSavings?.max) || 0;
     const range = max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : "—";
     const complexity = escapeHtml(o.complexity || "Moderate");
+
+    // Find linked scenario for the full breakdown
+    const linkedScenario = o.scenarioName
+      ? planningStudio.scenarios.find((s) => s.name === o.scenarioName || s.name.toLowerCase().includes((o.scenarioName || "").toLowerCase()))
+      : null;
+    const baseScenario = planningStudio.scenarios.find((s) => s.isBase);
+    const year = Number(planningStudio.baseData?.taxYear) || new Date().getFullYear();
+
+    const calcSection = (o.calcExplanation || linkedScenario) ? `
+      <details class="planning-opp-calc">
+        <summary class="planning-opp-calc-toggle">▼ How this was calculated</summary>
+        <div class="planning-opp-calc-body">
+          ${o.calcExplanation ? `<p class="planning-opp-calc-explanation">${escapeHtml(o.calcExplanation)}</p>` : ""}
+          ${linkedScenario ? `
+            <p class="planning-opp-calc-scenario-label">Tax computation: <strong>${escapeHtml(linkedScenario.name)}</strong></p>
+            ${planningBreakdownHtml(linkedScenario, baseScenario, year)}
+          ` : ""}
+          <p class="planning-opp-calc-note">Savings figures computed by the system's deterministic tax engine — not AI-estimated arithmetic.</p>
+        </div>
+      </details>` : "";
+
     return `<article class="planning-opp-card planning-complexity-${complexity.toLowerCase()}">
       <div class="planning-opp-head">
         <strong>${escapeHtml(o.title || "Opportunity")}</strong>
@@ -10643,6 +10740,7 @@ function planningRenderOpportunities() {
       <p class="planning-opp-meta">${escapeHtml(o.category || "")}${o.deadline ? ` · by ${escapeHtml(o.deadline)}` : ""} · ${complexity}</p>
       <p>${escapeHtml(o.description || "")}</p>
       ${o.cpaNote ? `<p class="planning-opp-note"><strong>CPA note:</strong> ${escapeHtml(o.cpaNote)}</p>` : ""}
+      ${calcSection}
     </article>`;
   }).join("");
 }

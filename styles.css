@@ -8004,6 +8004,45 @@ body.admin-mode #adminNavButton {
 .planning-ns-del { color: var(--muted); font-size: 0.82rem; text-align: center; }
 .planning-ns-del:hover { color: var(--error, #dc2626); }
 
+/* ── Planning — Tax breakdown panel ── */
+.planning-scenario-name-cell { display: flex; flex-direction: column; gap: 2px; }
+.planning-row-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; }
+.planning-expand-btn { font-size: 0.75rem; color: var(--accent); white-space: nowrap; }
+.planning-expand-btn.active { font-weight: 600; }
+.planning-breakdown-row > td { padding: 0; background: var(--soft); border-bottom: 1px solid var(--border); }
+.planning-breakdown {
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+.planning-bd-section { flex: 1; min-width: 260px; }
+.planning-bd-section-title { font-size: 0.75rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+.planning-bd-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+.planning-bd-table th { font-size: 0.73rem; font-weight: 600; color: var(--muted); text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--border); }
+.planning-bd-table th:first-child { text-align: left; }
+.planning-bd-table td { padding: 3px 6px; text-align: right; }
+.planning-bd-label { text-align: left !important; color: var(--text); }
+.planning-bd-note { font-size: 0.7rem; color: var(--muted); margin-left: 4px; }
+.planning-bd-pos { color: var(--success, #16a34a); font-weight: 600; }
+.planning-bd-neg { color: var(--error, #dc2626); font-weight: 600; }
+.planning-bd-neutral { color: var(--muted); }
+.planning-bd-divider td { border-top: 1px solid var(--border); height: 4px; }
+.planning-bd-savings { margin-top: 8px; font-size: 0.85rem; color: var(--success, #16a34a); font-weight: 600; }
+.planning-bd-adjs { margin-bottom: 0; }
+
+/* ── Planning — Opportunity calculation details ── */
+.planning-opp-calc { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 6px; }
+.planning-opp-calc-toggle { font-size: 0.78rem; color: var(--accent); cursor: pointer; list-style: none; user-select: none; }
+.planning-opp-calc-toggle::-webkit-details-marker { display: none; }
+.planning-opp-calc[open] .planning-opp-calc-toggle::before { content: "▲ "; }
+.planning-opp-calc:not([open]) .planning-opp-calc-toggle::before { content: "▼ "; }
+.planning-opp-calc-toggle { padding: 2px 0; }
+.planning-opp-calc-body { padding-top: 8px; }
+.planning-opp-calc-explanation { font-size: 0.82rem; color: var(--text); margin: 0 0 8px; }
+.planning-opp-calc-scenario-label { font-size: 0.78rem; color: var(--muted); margin: 0 0 6px; }
+.planning-opp-calc-note { font-size: 0.74rem; color: var(--muted); font-style: italic; margin-top: 8px; }
+
 /* ── Planning setup card (type + year) ── */
 .planning-setup-card {
   background: var(--soft);

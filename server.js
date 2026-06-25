@@ -1484,8 +1484,18 @@ async function handlePlanningAnalyze(req, res) {
 
   const prompt = [
     `Extract a tax-planning profile. Return type: ${clientType || "unspecified"}. Planning year: ${planYear}. ${linkedNote}`,
-    "Documents are prior-year source material — extract facts about income, deductions, and entity structure.",
-    "Return facts only — do NOT compute taxes.",
+    "Documents may be from a prior year. Extract facts about income, deductions, and entity structure. Return facts only — do NOT compute taxes.",
+    "",
+    "CRITICAL — STATE: Always extract the 2-letter resident state (e.g. NY, CA, NJ, FL). Look for it on:",
+    "  • Form 1040 page 1 header or state field  • State return cover page (e.g. NY IT-201, CA 540, NJ-1040)",
+    "  • Business address on 1120S, 1065, or K-1  • W-2 state box",
+    "Never leave 'state' blank or null if the state is identifiable anywhere in the documents.",
+    "",
+    `PROJECTION — Plan year is ${planYear}. If source documents are from a prior tax year:`,
+    `  • Use prior-year income figures as the baseline projection for ${planYear} unless the documents contain explicit projections, bookkeeping reports, or quarterly estimates for ${planYear}.`,
+    "  • Do NOT set wages, netSEIncome, otherIncome, longTermGains, or shortTermGains to 0 unless the client truly has no income of that type.",
+    "  • If quarterly estimated tax payments are provided, back-calculate the estimated annual income they represent.",
+    "  • Project pass-through K-1 income from prior year if no current-year figure is available.",
     "",
     "CPA INSTRUCTIONS: " + (instructions || "(none)"),
     "",
@@ -1601,7 +1611,9 @@ async function handlePlanningOpportunities(req, res) {
     '  "estimatedSavings": { "min": number, "max": number },',
     '  "deadline": string|null, "complexity": "Simple"|"Moderate"|"Complex",',
     '  "description": string (<=2 sentences, plain language for the client),',
-    '  "cpaNote": string (technical detail for the CPA), "requiresAction": boolean, "actionDeadline": string|null',
+    '  "cpaNote": string (technical detail for the CPA), "requiresAction": boolean, "actionDeadline": string|null,',
+    '  "scenarioName": string|null (name of the computed scenario that supports this savings figure — must match a name in COMPUTED SCENARIO SAVINGS exactly),',
+    '  "calcExplanation": string (1-2 sentences explaining the specific tax mechanism: which field changes, how it reduces taxable income, and what the approximate savings breakdown is across federal/state/SE tax)',
     "} ] }",
     "Categories: Retirement Planning, Business Deductions, Entity Structure, Income Timing, Investment Strategy, Credits & Incentives, Estate & Gift, State Tax.",
   ].join("\n") + styleProfilePromptBlock(activeStyleProfile(req));
@@ -1620,6 +1632,8 @@ async function handlePlanningOpportunities(req, res) {
     cpaNote: String(o.cpaNote || "").slice(0, 400),
     requiresAction: Boolean(o.requiresAction),
     actionDeadline: o.actionDeadline ? String(o.actionDeadline).slice(0, 80) : null,
+    scenarioName: o.scenarioName ? String(o.scenarioName).slice(0, 160) : null,
+    calcExplanation: o.calcExplanation ? String(o.calcExplanation).slice(0, 600) : null,
   }));
   sendJson(res, 200, { opportunities });
 }
