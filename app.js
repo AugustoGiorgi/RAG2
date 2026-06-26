@@ -1595,20 +1595,24 @@ function collectExtensionPayload() {
 }
 
 async function calculateEstimatedTaxesOrExtension() {
+  // Guard: disable synchronously before any await so rapid double-clicks are blocked.
+  const activeButton = els.estCalculateButton;
+  if (activeButton?.disabled) return;
+  if (activeButton) {
+    activeButton.disabled = true;
+    activeButton.textContent = "Generating workpaper...";
+  }
   const endpoint = "/api/estimated-taxes/calculate";
   const payload = await collectEstimatedTaxesPayload();
   if (!payload.clientName || !payload.taxYear) {
+    if (activeButton) { activeButton.disabled = false; updateEstimatedActionLabels(); updateEstimatedCalculateAvailability(); }
     showToast("Complete client name and tax year before generating.", "warning");
     return;
   }
   if (!payload.entityType || !payload.period || !payload.plFile) {
+    if (activeButton) { activeButton.disabled = false; updateEstimatedActionLabels(); updateEstimatedCalculateAvailability(); }
     showToast("Select entity type, period, and upload the current-year P&L before generating.", "warning");
     return;
-  }
-  const activeButton = els.estCalculateButton;
-  if (activeButton) {
-    activeButton.disabled = true;
-    activeButton.textContent = "Generating workpaper...";
   }
   if (els.estStatus) els.estStatus.textContent = "Generating...";
   try {
