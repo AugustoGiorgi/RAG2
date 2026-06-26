@@ -1683,6 +1683,28 @@ async function handlePlanningRecompute(req, res) {
   sendJson(res, 200, { taxCalc, savingsVsBase: { dollars, percentage }, adjustments });
 }
 
+// Maps the active style profile's extracted visual theme to pptx-builder theme fields.
+function buildThemeFromProfile(profile) {
+  const colors = profile?.combinedSummary?.colors;
+  const fonts = profile?.combinedSummary?.fonts;
+  if (!colors && !fonts) return {};
+  const theme = {};
+  if (colors) {
+    // dk2 = secondary dark (brand primary), accent1 = first accent, accent2 = second accent
+    // lt1 = light background, dk1 = dark text
+    if (colors.dk2)     theme.primaryColor    = colors.dk2;
+    if (colors.accent1) theme.secondaryColor  = colors.accent1;
+    if (colors.accent2) theme.accentColor     = colors.accent2;
+    if (colors.lt1)     theme.backgroundColor = colors.lt1;
+    if (colors.dk1)     theme.textColor       = colors.dk1;
+  }
+  if (fonts) {
+    if (fonts.title) theme.fontTitle = fonts.title;
+    if (fonts.body)  theme.fontBody  = fonts.body;
+  }
+  return theme;
+}
+
 async function handlePlanningDeck(req, res) {
   const payload = await readJsonBody(req);
   const profile = activeStyleProfile(req);
@@ -1695,9 +1717,9 @@ async function handlePlanningDeck(req, res) {
       scenarios: Array.isArray(payload.scenarios) ? payload.scenarios : [],
       opportunities: Array.isArray(payload.opportunities) ? payload.opportunities : [],
       nextSteps: Array.isArray(payload.nextSteps) ? payload.nextSteps : [],
-      // Prefer the firm's learned disclaimer from the active style profile.
       disclaimer: payload.disclaimer || profile?.combinedSummary?.disclaimer || "",
-      theme: payload.theme || {},
+      // Merge: profile visual theme overrides any client-side theme override
+      theme: { ...buildThemeFromProfile(profile), ...(payload.theme || {}) },
     });
     const clientSlug = safeFileName(String(payload.clientName || payload?.baseData?.clientName || "Client"));
     const year = String(payload.year || payload?.baseData?.taxYear || new Date().getFullYear());
@@ -1954,6 +1976,9 @@ function sanitizeStyleSummary(obj = {}) {
     recommendationStyle: clean(obj.recommendationStyle),
     clientLanguage: clean(obj.clientLanguage),
   };
+  // Preserve visual theme extracted separately (not via Claude)
+  if (obj.colors && typeof obj.colors === "object") summary.colors = obj.colors;
+  if (obj.fonts && typeof obj.fonts === "object") summary.fonts = obj.fonts;
   // Flag profiles that are essentially empty after cleaning
   const usableFields = [summary.tone, summary.numberFormat, summary.recommendationStyle, summary.clientLanguage]
     .filter(Boolean).length + summary.keyPhrases.length + summary.structure.length;
@@ -2001,7 +2026,19 @@ async function generateStyleSummary(req, file, category) {
   if (!hasInput) return { error: "No readable content in the uploaded template." };
   const result = await callPlanningClaude(req, content, "You analyze a CPA firm's planning document and return only valid JSON describing its style.", "planning_style_summary", { category }, 3000);
   if (result.error) return result;
-  return { data: sanitizeStyleSummary(result.data) };
+  const summary = sanitizeStyleSummary(result.data);
+  // For PPTX, extract visual theme (colors/fonts) directly from the ZIP — no AI guessing needed
+  const isPptx = /\.pptx$/i.test(file.name) || (file.type || "").includes("presentationml");
+  if (isPptx && file.content) {
+    try {
+      const visualTheme = extractPptxVisualTheme(Buffer.from(file.content, "base64"));
+      if (visualTheme) {
+        if (visualTheme.colors) summary.colors = visualTheme.colors;
+        if (visualTheme.fonts) summary.fonts = visualTheme.fonts;
+      }
+    } catch (_) {}
+  }
+  return { data: summary };
 }
 
 async function regeneratePlanningProfile(req) {
@@ -2013,6 +2050,9 @@ async function regeneratePlanningProfile(req) {
     writePlanningProfiles(profiles);
     return { profile: null };
   }
+  // Pick visual theme from the most recently uploaded active PPTX template
+  const templateWithTheme = [...templates].reverse().find((t) => t.styleSummary?.colors || t.styleSummary?.fonts);
+
   if (templates.length === 1) {
     profiles[key] = { combinedSummary: templates[0].styleSummary, lastUpdated: new Date().toISOString(), templateCount: 1 };
     writePlanningProfiles(profiles);
@@ -2031,7 +2071,11 @@ async function regeneratePlanningProfile(req) {
   ].join("\n");
   const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You merge CPA-firm style summaries into one profile and return only valid JSON.", "planning_style_profile", {}, 3000);
   if (result.error) return result;
-  profiles[key] = { combinedSummary: sanitizeStyleSummary(result.data), lastUpdated: new Date().toISOString(), templateCount: templates.length };
+  const combined = sanitizeStyleSummary(result.data);
+  // Carry the visual theme from the PPTX template into the combined profile
+  if (templateWithTheme?.styleSummary?.colors) combined.colors = templateWithTheme.styleSummary.colors;
+  if (templateWithTheme?.styleSummary?.fonts) combined.fonts = templateWithTheme.styleSummary.fonts;
+  profiles[key] = { combinedSummary: combined, lastUpdated: new Date().toISOString(), templateCount: templates.length };
   writePlanningProfiles(profiles);
   return { profile: profiles[key] };
 }
@@ -5980,6 +6024,46 @@ function extractPptxText(buffer) {
   } catch (err) {
     return `[Could not extract PPTX content: ${err.message || "unknown error"}]`;
   }
+}
+
+// Extracts brand colors + fonts from ppt/theme/theme1.xml inside a PPTX ZIP.
+function extractPptxVisualTheme(buffer) {
+  try {
+    const entries = listZipEntryBuffers(buffer, 300);
+    const themeEntry = entries.find((e) => /^ppt\/theme\/theme1\.xml$/i.test(e.name));
+    if (!themeEntry) return null;
+    const xml = themeEntry.data.toString("utf8");
+
+    // Parse named color slots from <a:clrScheme>
+    const colorMap = {};
+    const slots = ["dk1","lt1","dk2","lt2","accent1","accent2","accent3","accent4","accent5","accent6"];
+    for (const slot of slots) {
+      const blockRe = new RegExp(`<a:${slot}[\\s>][\\s\\S]*?</a:${slot}>`, "i");
+      const block = xml.match(blockRe)?.[0] || "";
+      const hex = block.match(/val="([0-9A-Fa-f]{6})"/)?.[1]
+               || block.match(/lastClr="([0-9A-Fa-f]{6})"/)?.[1];
+      if (hex) colorMap[slot] = hex.toUpperCase();
+    }
+
+    // Parse fonts
+    const majorFontM = xml.match(/<a:majorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
+    const minorFontM = xml.match(/<a:minorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
+
+    if (!Object.keys(colorMap).length && !majorFontM) return null;
+    return {
+      colors: {
+        dk1: colorMap.dk1 || null,   // text/foreground
+        lt1: colorMap.lt1 || null,   // background
+        dk2: colorMap.dk2 || null,   // primary brand color
+        accent1: colorMap.accent1 || null,
+        accent2: colorMap.accent2 || null,
+      },
+      fonts: {
+        title: majorFontM?.[1] || null,
+        body: minorFontM?.[1] || null,
+      },
+    };
+  } catch (_) { return null; }
 }
 
 function extractZipPackageTextServer(buffer, packageName = "package.zip") {
