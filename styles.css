@@ -8058,6 +8058,10 @@ body.admin-mode #adminNavButton {
   margin: 0;
 }
 
+/* ── Planning — Template extraction warning ── */
+.planning-lib-item-failed { opacity: 0.85; border-left: 3px solid var(--error, #dc2626); padding-left: 10px; }
+.planning-lib-warn { display: block; font-size: 0.75rem; color: var(--error, #dc2626); margin-top: 3px; }
+
 /* ── Planning — Payments card (confirm step) ── */
 .planning-payments-card {
   grid-column: 1 / -1;

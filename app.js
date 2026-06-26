@@ -10166,15 +10166,23 @@ function planningRenderTemplates() {
   const wrap = document.getElementById("planningLibList");
   if (!wrap) return;
   if (!planningStudio.templates.length) { wrap.innerHTML = "<p class=\"muted-note\">No templates uploaded yet.</p>"; return; }
-  wrap.innerHTML = planningStudio.templates.map((t) => `
-    <div class="planning-lib-item">
+  wrap.innerHTML = planningStudio.templates.map((t) => {
+    const failed = t.extractionFailed;
+    const toneLabel = !failed && t.styleSummary?.tone ? ` · ${escapeHtml(t.styleSummary.tone)}` : "";
+    const warning = failed
+      ? `<span class="planning-lib-warn">⚠ Content could not be extracted — delete and re-upload to fix</span>`
+      : "";
+    return `
+    <div class="planning-lib-item${failed ? " planning-lib-item-failed" : ""}">
       <div class="planning-lib-item-main">
         <strong>${escapeHtml(t.filename)}</strong>
-        <span class="planning-lib-meta">${escapeHtml(t.category || "")}${t.styleSummary?.tone ? ` · ${escapeHtml(t.styleSummary.tone)}` : ""}</span>
+        <span class="planning-lib-meta">${escapeHtml(t.category || "")}${toneLabel}</span>
+        ${warning}
       </div>
-      <label class="planning-lib-toggle"><input type="checkbox" data-planning-tpl="${t.id}" ${t.isActive ? "checked" : ""} /> Active</label>
+      <label class="planning-lib-toggle"><input type="checkbox" data-planning-tpl="${t.id}" ${t.isActive ? "checked" : ""} ${failed ? "disabled title='Fix extraction before activating'" : ""} /> Active</label>
       <button type="button" class="link-button planning-lib-del" data-planning-tpl-del="${t.id}">Delete</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   wrap.querySelectorAll("[data-planning-tpl]").forEach((cb) => {
     cb.addEventListener("change", () => planningToggleTemplate(cb.dataset.planningTpl, cb.checked));
   });
@@ -10216,6 +10224,9 @@ async function planningUploadTemplate(file) {
     if (!res.ok) throw new Error(data.error || "Could not process template.");
     if (status) status.textContent = "";
     await planningLoadTemplates();
+    if (data.template?.extractionFailed) {
+      showToast("⚠ Could not extract text from this file. Delete it and re-upload — make sure it's a standard PPTX/DOCX/PDF.", "error");
+    }
   } catch (err) {
     if (status) status.textContent = "";
     showToast(err.message || "Could not process template.", "error");

@@ -1929,33 +1929,57 @@ function activeStyleProfile(req) {
   return profile && profile.combinedSummary ? profile : null;
 }
 
+// Returns true when a style field contains a real extracted value (not an error/unknown placeholder).
+function isUsableStyleValue(v) {
+  if (!v) return false;
+  const s = String(v).toLowerCase().trim();
+  if (!s || s === "unknown" || s === "n/a" || s === "none" || s === "null") return false;
+  // AI returned an error message when extraction failed
+  if (s.includes("could not be extracted") || s.includes("could not be parsed") ||
+      s.includes("binary") || s.includes("not readable") || s.includes("unable to determine") ||
+      s.includes("not identifiable")) return false;
+  return true;
+}
+
 // Strips a style-summary object down to the known shape (defends the prompt).
 function sanitizeStyleSummary(obj = {}) {
-  const arr = (v) => (Array.isArray(v) ? v.slice(0, 12).map((x) => String(x).slice(0, 200)) : []);
-  return {
-    tone: String(obj.tone || "").slice(0, 200),
+  const arr = (v) => (Array.isArray(v) ? v.slice(0, 12).map((x) => String(x).slice(0, 200)).filter(isUsableStyleValue) : []);
+  const clean = (v) => { const s = String(v || "").slice(0, 200); return isUsableStyleValue(s) ? s : ""; };
+  const summary = {
+    tone: clean(obj.tone),
     structure: arr(obj.structure),
-    numberFormat: String(obj.numberFormat || "").slice(0, 200),
+    numberFormat: clean(obj.numberFormat),
     keyPhrases: arr(obj.keyPhrases),
-    disclaimer: String(obj.disclaimer || "").slice(0, 1000),
-    recommendationStyle: String(obj.recommendationStyle || "").slice(0, 400),
-    clientLanguage: String(obj.clientLanguage || "").slice(0, 200),
+    disclaimer: isUsableStyleValue(obj.disclaimer) ? String(obj.disclaimer || "").slice(0, 1000) : "",
+    recommendationStyle: clean(obj.recommendationStyle),
+    clientLanguage: clean(obj.clientLanguage),
   };
+  // Flag profiles that are essentially empty after cleaning
+  const usableFields = [summary.tone, summary.numberFormat, summary.recommendationStyle, summary.clientLanguage]
+    .filter(Boolean).length + summary.keyPhrases.length + summary.structure.length;
+  summary._extractionQuality = usableFields >= 2 ? "good" : "failed";
+  return summary;
 }
 
 function styleProfilePromptBlock(profile) {
   if (!profile || !profile.combinedSummary) return "";
   const s = profile.combinedSummary;
-  return [
+  // Don't pollute the prompt with a failed/empty profile
+  if (s._extractionQuality === "failed") return "";
+  const lines = [
     "",
     "IMPORTANT — FIRM STYLE (match these preferences in all wording you generate):",
-    `- Tone: ${s.tone || "professional"}`,
-    `- Typical structure: ${(s.structure || []).join("; ")}`,
-    `- How numbers are presented: ${s.numberFormat || ""}`,
-    `- Characteristic phrases: ${(s.keyPhrases || []).join("; ")}`,
-    `- Recommendation style: ${s.recommendationStyle || ""}`,
-    `- Client language level: ${s.clientLanguage || ""}`,
-  ].join("\n");
+  ];
+  if (s.tone) lines.push(`- Tone: ${s.tone}`);
+  if (s.structure?.length) lines.push(`- Typical structure: ${s.structure.join("; ")}`);
+  if (s.numberFormat) lines.push(`- How numbers are presented: ${s.numberFormat}`);
+  if (s.keyPhrases?.length) lines.push(`- Characteristic phrases: ${s.keyPhrases.join("; ")}`);
+  if (s.recommendationStyle) lines.push(`- Recommendation style: ${s.recommendationStyle}`);
+  if (s.clientLanguage) lines.push(`- Client language level: ${s.clientLanguage}`);
+  if (s.disclaimer) lines.push(`- Standard disclaimer: ${s.disclaimer}`);
+  // If only the header line was added, nothing useful — skip the block
+  if (lines.length <= 2) return "";
+  return lines.join("\n");
 }
 
 async function generateStyleSummary(req, file, category) {
@@ -2016,6 +2040,7 @@ function publicPlanningTemplate(t) {
   return {
     id: t.id, filename: t.filename, fileType: t.fileType, category: t.category,
     uploadedAt: t.uploadedAt, isActive: t.isActive, styleSummary: t.styleSummary,
+    extractionFailed: t.styleSummary?._extractionQuality === "failed",
   };
 }
 
