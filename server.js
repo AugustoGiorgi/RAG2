@@ -603,6 +603,7 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === "GET" || req.method === "HEAD") && FAVICON_ROUTES[requestUrl.pathname]) { await serveFavicon(req, res, FAVICON_ROUTES[requestUrl.pathname]); return; }
     if (req.method === "GET" && requestUrl.pathname === "/privacy") { servePrivacyPolicy(res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/eula") { serveEula(res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/terms") { serveEula(res); return; }
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
