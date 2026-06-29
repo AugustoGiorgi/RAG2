@@ -609,6 +609,12 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuthenticated(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
+    if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
+    // Release the concurrency slot when the response finishes (success, error, or abort).
+    if (req._concurrencyUsername) {
+      res.once("finish", () => releaseUserSlot(req));
+      res.once("close",  () => releaseUserSlot(req));
+    }
     if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
@@ -6223,6 +6229,47 @@ function requireUserSpendBudget(req, res) {
     remainingUsd: budget.remainingUsd,
   });
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-user concurrency limiter (in-memory semaphore)
+// Prevents the same user from firing multiple simultaneous AI calls.
+// ---------------------------------------------------------------------------
+const MAX_CONCURRENT_PER_USER = 2;
+const _activeCallsPerUser = new Map(); // username → number of active AI calls
+
+// Attempts to acquire a slot for username. Returns true and increments the counter.
+// Returns false (and sends 429) if the user is already at MAX_CONCURRENT_PER_USER.
+function acquireUserSlot(req, res) {
+  const session = req.user || getSession(req);
+  const username = session?.username || "anonymous";
+  const active = _activeCallsPerUser.get(username) || 0;
+  if (active >= MAX_CONCURRENT_PER_USER) {
+    sendJson(res, 429, {
+      code: "TOO_MANY_CONCURRENT_REQUESTS",
+      error: "Ya hay una operación en curso. Por favor esperá que termine antes de iniciar otra.",
+      active,
+      max: MAX_CONCURRENT_PER_USER,
+    });
+    return false;
+  }
+  _activeCallsPerUser.set(username, active + 1);
+  // Attach to req so releaseUserSlot can identify the user.
+  req._concurrencyUsername = username;
+  return true;
+}
+
+// Releases the slot for req._concurrencyUsername. Idempotent — safe to call twice.
+function releaseUserSlot(req) {
+  const username = req._concurrencyUsername;
+  if (!username) return; // already released or never acquired
+  req._concurrencyUsername = null; // prevent double-release on finish+close firing together
+  const active = _activeCallsPerUser.get(username) || 0;
+  if (active <= 1) {
+    _activeCallsPerUser.delete(username);
+  } else {
+    _activeCallsPerUser.set(username, active - 1);
+  }
 }
 
 // ---------------------------------------------------------------------------
