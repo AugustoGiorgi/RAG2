@@ -5246,8 +5246,14 @@ async function fetchQboReport(username, realmId, reportSpec = {}) {
   //   - Balance Sheet / Inventory Valuation -> `end_date`
   //   - A/R & A/P aging, Customer/Vendor balance -> `report_date`
   if (reportSpec.asOfDate) {
-    if (QBO_REPORT_DATE_REPORTS.has(reportId)) params.report_date = reportSpec.asOfDate;
-    else if (!params.end_date) params.end_date = reportSpec.asOfDate;
+    if (QBO_REPORT_DATE_REPORTS.has(reportId)) {
+      params.report_date = reportSpec.asOfDate;
+    } else {
+      // Balance Sheet and similar point-in-time reports: QBO requires BOTH start_date and
+      // end_date — without start_date it ignores end_date and defaults to the current period.
+      if (!params.end_date) params.end_date = reportSpec.asOfDate;
+      if (!params.start_date) params.start_date = `${reportSpec.asOfDate.slice(0, 4)}-01-01`;
+    }
   }
   if (reportSpec.comparative) params.summarize_column_by = "Year";
   if (reportSpec.summarizeColumnsBy) params.summarize_column_by = reportSpec.summarizeColumnsBy;

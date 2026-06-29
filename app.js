@@ -613,8 +613,9 @@ function init() {
   els.qboConnectBtn?.addEventListener("click", connectQBO);
   els.qboDisconnectBtn?.addEventListener("click", disconnectQBO);
   els.qboCompanySelect?.addEventListener("change", () => onQBOCompanyChange(els.qboCompanySelect.value));
-  els.qboStartDate?.addEventListener("change", () => { qboState.startDate = els.qboStartDate.value; updateQBOFetchButton(); });
-  els.qboEndDate?.addEventListener("change", () => { qboState.endDate = els.qboEndDate.value; updateQBOFetchButton(); });
+  const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+  els.qboStartDate?.addEventListener("change", () => { if (ISO_DATE.test(els.qboStartDate.value)) { qboState.startDate = els.qboStartDate.value; updateQBOFetchButton(); } });
+  els.qboEndDate?.addEventListener("change", () => { if (ISO_DATE.test(els.qboEndDate.value)) { qboState.endDate = els.qboEndDate.value; updateQBOFetchButton(); } });
   els.qboComparative?.addEventListener("change", updateQBOFetchButton);
   els.qboFetchBtn?.addEventListener("click", fetchQBOReports);
   els.adminNavButton?.addEventListener("click", openAdminDashboard);
