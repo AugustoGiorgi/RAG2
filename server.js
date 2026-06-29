@@ -610,8 +610,20 @@ const server = http.createServer(async (req, res) => {
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
-    // Release the concurrency slot when the response finishes (success, error, or abort).
+    // For token-consuming routes: set up AbortController and release hooks.
     if (req._concurrencyUsername) {
+      // Create an AbortController so handlers can cancel the Anthropic fetch when
+      // the client disconnects, saving tokens on abandoned requests.
+      const abortController = new AbortController();
+      req._abortController = abortController;
+      req.on("close", () => {
+        if (!res.writableEnded) {
+          abortController.abort();
+          const username = req._concurrencyUsername || "unknown";
+          console.log(`[ABORTED] userId=${username} path=${requestUrl.pathname} reason=client_closed`);
+        }
+      });
+      // Release the concurrency slot when the response finishes (success, error, or abort).
       res.once("finish", () => releaseUserSlot(req));
       res.once("close",  () => releaseUserSlot(req));
     }
@@ -1485,6 +1497,9 @@ async function callPlanningClaude(req, content, systemText, action, payload, max
     webSearch: false,
     models: PLANNING_MODELS,
     system: [{ type: "text", text: systemText }],
+    signal: req._abortController?.signal,
+    userId: req.user?.username || getSession(req)?.username || "unknown",
+    feature: "tax_planning",
   });
   if (!result.ok) return { error: `Claude request failed: ${result.error}`, status: result.status || 502 };
   logClaudeCost(req, result, action, "planning", payload || {}, startedAt);
@@ -11169,6 +11184,8 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
   const feature = options.feature || "api";
   const MAX_429_RETRIES = 3;
   const BACKOFF_MS = [1000, 2000, 4000];
+  // AbortController passed by the dispatcher when the client disconnects.
+  const signal = options.signal || null;
 
   const models = Array.from(new Set(options.models || MODEL_FALLBACKS));
   for (const model of models) {
@@ -11183,12 +11200,26 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
 
     let triedNextModel = false;
     for (let attempt = 1; attempt <= MAX_429_RETRIES + 1; attempt++) {
-      const res = await fetch(ANTHROPIC_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
-        body: JSON.stringify(requestBody),
-      });
-      const data = await res.json().catch(() => ({}));
+      if (signal?.aborted) {
+        console.log(`[ABORTED] model=${model} userId=${userId} feature=${feature} reason=client_disconnected`);
+        return { ok: false, status: 499, error: "Request cancelled: client disconnected." };
+      }
+      let res, data;
+      try {
+        res  = await fetch(ANTHROPIC_URL, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+          body: JSON.stringify(requestBody),
+          signal,
+        });
+        data = await res.json().catch(() => ({}));
+      } catch (fetchErr) {
+        if (fetchErr?.name === "AbortError") {
+          console.log(`[ABORTED] model=${model} userId=${userId} feature=${feature} reason=fetch_aborted`);
+          return { ok: false, status: 499, error: "Request cancelled: client disconnected." };
+        }
+        return { ok: false, status: 502, error: `Network error calling Claude: ${fetchErr.message}` };
+      }
       if (res.ok) return {
         ok: true,
         data,
