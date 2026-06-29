@@ -38,6 +38,7 @@ const AI_LEARNING_PATH = path.join(DATA_DIR, "ai_learning.json");
 const FEEDBACK_PATH = path.join(DATA_DIR, "feedback.json");
 const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
 const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
+const USER_CREDITS_PATH = path.join(DATA_DIR, "user_credits.json");
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const ACCESS_REQUESTS_PATH = path.join(DATA_DIR, "access_requests.json");
@@ -607,6 +608,8 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
+    if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
+    if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
     if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
     if (req.method === "DELETE" && req.url === "/api/research/chat") { await handleResearchClear(req, res); return; }
@@ -6220,6 +6223,173 @@ function requireUserSpendBudget(req, res) {
     remainingUsd: budget.remainingUsd,
   });
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-feature credit system
+// Completely additive — does not replace the existing spendLimitUsd system.
+// If no credits are configured for a user/feature, the check passes silently.
+// ---------------------------------------------------------------------------
+
+// All valid feature identifiers.
+const CREDIT_FEATURES = [
+  "review", "workpaper_prep", "estimates", "presentation",
+  "misc_calc", "notices", "diagnostics", "deliverable",
+  "tax_research", "tax_planning",
+];
+
+// Maps API route paths to feature identifiers.
+const ROUTE_TO_FEATURE = {
+  "/api/review": "review",
+  "/api/review/respond": "review",
+  "/api/prepare-workpaper": "workpaper_prep",
+  "/api/preparation/data-entry-guide": "workpaper_prep",
+  "/api/preparation/drake-ui-load": "workpaper_prep",
+  "/api/estimated-taxes/calculate": "estimates",
+  "/api/presentations/generate": "presentation",
+  "/api/calculations/run": "misc_calc",
+  "/api/notices": "notices",
+  "/api/diagnostics": "diagnostics",
+  "/api/organizer": "deliverable",
+  "/api/deliverable": "deliverable",
+  "/api/deliverable/email-draft": "deliverable",
+  "/api/deliverable/generate-draft": "deliverable",
+  "/api/requests/generate-email": "deliverable",
+  "/api/research/chat": "tax_research",
+  "/api/planning/analyze": "tax_planning",
+  "/api/planning/generate": "tax_planning",
+  "/api/planning/scenarios": "tax_planning",
+  "/api/planning/scenario": "tax_planning",
+  "/api/planning/opportunities": "tax_planning",
+  "/api/planning/templates": "tax_planning",
+  "/api/planning/templates/regenerate-profile": "tax_planning",
+};
+
+function readUserCredits() {
+  try {
+    if (fsSync.existsSync(USER_CREDITS_PATH)) {
+      const parsed = JSON.parse(fsSync.readFileSync(USER_CREDITS_PATH, "utf8"));
+      return (parsed && typeof parsed === "object") ? parsed : {};
+    }
+  } catch (_) {}
+  return {};
+}
+
+function writeUserCredits(data) {
+  writeJsonFile(USER_CREDITS_PATH, data);
+}
+
+// Per-user async write lock for credit operations (Promise-chain serialisation).
+// Guarantees that check+deduct is atomic even under concurrent requests.
+const _creditLocks = new Map();
+function withCreditLock(username, fn) {
+  const prev = _creditLocks.get(username) || Promise.resolve();
+  const next = prev.then(fn);
+  // Keep the map tidy: only store the tail so completed locks get GC'd.
+  _creditLocks.set(username, next.catch(() => {}));
+  return next;
+}
+
+// Atomically checks and deducts one credit for username+feature.
+// Returns true  → call is allowed (no limit configured, or credit successfully deducted).
+// Returns false → user exhausted their credits for this feature.
+async function checkAndDeductCredit(username, feature) {
+  return withCreditLock(username, () => {
+    const credits = readUserCredits();
+    const fc = credits?.[username]?.[feature];
+    if (!fc) return true; // no limit configured for this user/feature → allow
+
+    // Auto-reset if the resetDate has passed.
+    if (fc.resetDate && new Date() > new Date(fc.resetDate)) {
+      fc.used = 0;
+      fc.resetDate = null;
+      writeUserCredits(credits);
+      return true; // treated as fresh allocation after reset
+    }
+
+    if ((fc.used || 0) >= (fc.allocated || 0)) return false; // exhausted
+
+    fc.used = (fc.used || 0) + 1;
+    writeUserCredits(credits);
+    return true;
+  });
+}
+
+// Allocate (or overwrite) credits for a user+feature. Admin operation.
+function allocateCredits(username, feature, amount, resetDate = null) {
+  const credits = readUserCredits();
+  if (!credits[username]) credits[username] = {};
+  const existing = credits[username][feature] || { allocated: 0, used: 0, resetDate: null };
+  credits[username][feature] = {
+    allocated: Math.max(0, Number(amount) || 0),
+    used: existing.used || 0,
+    resetDate: resetDate !== undefined ? resetDate : existing.resetDate,
+  };
+  writeUserCredits(credits);
+  return credits[username][feature];
+}
+
+// Route middleware: returns false and sends 402 when credits exhausted.
+// Admins always pass. Users with no credit record for the feature also pass.
+async function requireCreditsForRoute(req, res, requestUrl) {
+  const session = req.user || getSession(req);
+  if (session?.role === "admin") return true;
+  const username = session?.username;
+  if (!username) return true; // requireAuthenticated already blocked anonymous
+  const feature = ROUTE_TO_FEATURE[requestUrl.pathname];
+  if (!feature) return true; // route not mapped to a feature
+
+  const allowed = await checkAndDeductCredit(username, feature);
+  if (!allowed) {
+    const credits = readUserCredits();
+    const fc = credits?.[username]?.[feature] || {};
+    sendJson(res, 402, {
+      code: "CREDITS_EXHAUSTED",
+      error: `You have used all ${fc.allocated || 0} credits for this feature. Contact your administrator to allocate more.`,
+      feature,
+      allocated: fc.allocated || 0,
+      used: fc.used || 0,
+    });
+    return false;
+  }
+  return true;
+}
+
+// GET  /api/credits/:username  — returns credit state for a user (self or admin).
+// POST /api/credits/:username  — admin only: allocate credits for a feature.
+async function handleCreditsApi(req, res, requestUrl) {
+  const session = req.user || getSession(req);
+  const parts = requestUrl.pathname.split("/").filter(Boolean); // ["api","credits",username]
+  const targetUsername = parts[2];
+  if (!targetUsername) { sendJson(res, 400, { error: "Username required in path." }); return; }
+
+  // Access control: admin sees anyone; user sees only themselves.
+  if (session?.role !== "admin" && session?.username !== targetUsername) {
+    sendJson(res, 403, { error: "You can only view your own credits." });
+    return;
+  }
+
+  if (req.method === "GET") {
+    const credits = readUserCredits();
+    sendJson(res, 200, { username: targetUsername, credits: credits[targetUsername] || {} });
+    return;
+  }
+
+  if (req.method === "POST") {
+    if (!requireAdmin(req, res)) return;
+    const payload = await readJsonBody(req);
+    const { feature, allocated, resetDate } = payload;
+    if (!CREDIT_FEATURES.includes(feature)) {
+      sendJson(res, 400, { error: `Invalid feature. Valid: ${CREDIT_FEATURES.join(", ")}` });
+      return;
+    }
+    const result = allocateCredits(targetUsername, feature, allocated, resetDate || null);
+    appendAuditLog(req, "admin.credits_allocated", { targetUsername, feature, allocated, resetDate });
+    sendJson(res, 200, { username: targetUsername, feature, credits: result });
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed." });
 }
 
 async function handleCostApi(req, res, requestUrl) {
