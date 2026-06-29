@@ -4095,96 +4095,107 @@ async function handleChangePassword(req, res) {
   const currentPassword = String(payload.currentPassword || "");
   const newPassword = String(payload.newPassword || "");
   if (newPassword.length < 12) { sendJson(res, 400, { error: "New password must be at least 12 characters." }); return; }
-  const store = readUserStore();
-  const user = store.users.find((item) => item.username === session.username);
-  if (!user || !verifyPassword(currentPassword, user.passwordHash)) {
-    appendAuditLog(req, "auth.password_change_failed", { username: session.username });
-    sendJson(res, 401, { error: "Current password is incorrect." });
-    return;
-  }
-  user.passwordHash = createPasswordHash(newPassword);
-  user.updatedAt = new Date().toISOString();
-  user.lastPasswordChangeAt = user.updatedAt;
-  writeUserStore(store);
-  appendAuditLog(req, "auth.password_changed", { username: session.username });
-  sendJson(res, 200, { ok: true });
+  // Serialize per-user to prevent two simultaneous password-change requests
+  // from both reading the store before either writes.
+  await withUserStoreLock(session.username, () => {
+    const store = readUserStore();
+    const user = store.users.find((item) => item.username === session.username);
+    if (!user || !verifyPassword(currentPassword, user.passwordHash)) {
+      appendAuditLog(req, "auth.password_change_failed", { username: session.username });
+      sendJson(res, 401, { error: "Current password is incorrect." });
+      return;
+    }
+    user.passwordHash = createPasswordHash(newPassword);
+    user.updatedAt = new Date().toISOString();
+    user.lastPasswordChangeAt = user.updatedAt;
+    writeUserStore(store);
+    appendAuditLog(req, "auth.password_changed", { username: session.username });
+    sendJson(res, 200, { ok: true });
+  });
 }
 
 async function handleAdminUsersApi(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
-  const store = readUserStore();
+
+  // GET is read-only — no lock needed.
   if (parts.length === 3 && req.method === "GET") {
-    sendJson(res, 200, { users: store.users.map(publicUser) });
+    sendJson(res, 200, { users: readUserStore().users.map(publicUser) });
     return;
   }
-  if (parts.length === 3 && req.method === "POST") {
-    const payload = await readJsonBody(req);
-    const username = String(payload.username || "").trim();
-    const password = String(payload.password || "");
-    if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) { sendJson(res, 400, { error: "Username must be 3-64 letters, numbers, dots, hyphens, or underscores." }); return; }
-    if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
-    if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
-    const now = new Date().toISOString();
-    const user = {
-      username,
-      passwordHash: createPasswordHash(password),
-      role: payload.role === "admin" ? "admin" : "user",
-      displayName: String(payload.displayName || username).trim(),
-      spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
-      active: payload.active !== false,
-      createdAt: now,
-      updatedAt: now,
-      lastPasswordChangeAt: now,
-    };
-    store.users.push(user);
-    writeUserStore(store);
-    appendAuditLog(req, "admin.user_created", { username, role: user.role });
-    sendJson(res, 200, { user: publicUser(user) });
-    return;
-  }
-  if (parts.length === 4 && req.method === "PUT") {
-    const username = decodeURIComponent(parts[3]);
-    const payload = await readJsonBody(req);
-    const user = store.users.find((item) => item.username === username);
-    if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
-    if (payload.role !== undefined) user.role = payload.role === "admin" ? "admin" : "user";
-    if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
-    if (payload.active !== undefined) user.active = Boolean(payload.active);
-    if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
-    user.updatedAt = new Date().toISOString();
-    writeUserStore(store);
-    appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd });
-    sendJson(res, 200, { user: publicUser(user) });
-    return;
-  }
-  if (parts.length === 4 && req.method === "DELETE") {
-    const username = decodeURIComponent(parts[3]);
-    const index = store.users.findIndex((item) => item.username === username);
-    if (index < 0) { sendJson(res, 404, { error: "User not found." }); return; }
-    const user = store.users[index];
-    if (user.username === req.user?.username) { sendJson(res, 400, { error: "You cannot delete your own admin account." }); return; }
-    store.users.splice(index, 1);
-    writeUserStore(store);
-    appendAuditLog(req, "admin.user_deleted", { username, role: user.role });
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-  if (parts.length === 5 && parts[4] === "password" && req.method === "PUT") {
-    const username = decodeURIComponent(parts[3]);
-    const payload = await readJsonBody(req);
-    const password = String(payload.password || "");
-    const user = store.users.find((item) => item.username === username);
-    if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
-    if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
-    user.passwordHash = createPasswordHash(password);
-    user.updatedAt = new Date().toISOString();
-    user.lastPasswordChangeAt = user.updatedAt;
-    writeUserStore(store);
-    appendAuditLog(req, "admin.user_password_reset", { username });
-    sendJson(res, 200, { ok: true, user: publicUser(user) });
-    return;
-  }
-  sendJson(res, 404, { error: "User admin route not found." });
+
+  // All write operations serialised under a global user-store lock.
+  // Key "__userstore__" is a fixed sentinel for the shared users.json file.
+  await withUserStoreLock("__userstore__", async () => {
+    const store = readUserStore(); // fresh read inside the lock
+    if (parts.length === 3 && req.method === "POST") {
+      const payload = await readJsonBody(req);
+      const username = String(payload.username || "").trim();
+      const password = String(payload.password || "");
+      if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) { sendJson(res, 400, { error: "Username must be 3-64 letters, numbers, dots, hyphens, or underscores." }); return; }
+      if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+      if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
+      const now = new Date().toISOString();
+      const user = {
+        username,
+        passwordHash: createPasswordHash(password),
+        role: payload.role === "admin" ? "admin" : "user",
+        displayName: String(payload.displayName || username).trim(),
+        spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
+        active: payload.active !== false,
+        createdAt: now,
+        updatedAt: now,
+        lastPasswordChangeAt: now,
+      };
+      store.users.push(user);
+      writeUserStore(store);
+      appendAuditLog(req, "admin.user_created", { username, role: user.role });
+      sendJson(res, 200, { user: publicUser(user) });
+      return;
+    }
+    if (parts.length === 4 && req.method === "PUT") {
+      const username = decodeURIComponent(parts[3]);
+      const payload = await readJsonBody(req);
+      const user = store.users.find((item) => item.username === username);
+      if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
+      if (payload.role !== undefined) user.role = payload.role === "admin" ? "admin" : "user";
+      if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
+      if (payload.active !== undefined) user.active = Boolean(payload.active);
+      if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
+      user.updatedAt = new Date().toISOString();
+      writeUserStore(store);
+      appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd });
+      sendJson(res, 200, { user: publicUser(user) });
+      return;
+    }
+    if (parts.length === 4 && req.method === "DELETE") {
+      const username = decodeURIComponent(parts[3]);
+      const index = store.users.findIndex((item) => item.username === username);
+      if (index < 0) { sendJson(res, 404, { error: "User not found." }); return; }
+      const user = store.users[index];
+      if (user.username === req.user?.username) { sendJson(res, 400, { error: "You cannot delete your own admin account." }); return; }
+      store.users.splice(index, 1);
+      writeUserStore(store);
+      appendAuditLog(req, "admin.user_deleted", { username, role: user.role });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (parts.length === 5 && parts[4] === "password" && req.method === "PUT") {
+      const username = decodeURIComponent(parts[3]);
+      const payload = await readJsonBody(req);
+      const password = String(payload.password || "");
+      const user = store.users.find((item) => item.username === username);
+      if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
+      if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+      user.passwordHash = createPasswordHash(password);
+      user.updatedAt = new Date().toISOString();
+      user.lastPasswordChangeAt = user.updatedAt;
+      writeUserStore(store);
+      appendAuditLog(req, "admin.user_password_reset", { username });
+      sendJson(res, 200, { ok: true, user: publicUser(user) });
+      return;
+    }
+    sendJson(res, 404, { error: "User admin route not found." });
+  });
 }
 
 async function handleGoogleAuth(req, res) {
@@ -6341,15 +6352,29 @@ function writeUserCredits(data) {
   writeJsonFile(USER_CREDITS_PATH, data);
 }
 
+// ---------------------------------------------------------------------------
+// General-purpose write lock (Promise-chain serialisation).
+// withWriteLock(lockMap, key, fn) ensures that only one fn() runs at a time
+// for a given key within a given Map. Safe for per-user and global locks.
+// ---------------------------------------------------------------------------
+function withWriteLock(lockMap, key, fn) {
+  const prev = lockMap.get(key) || Promise.resolve();
+  const next = prev.then(fn);
+  lockMap.set(key, next.catch(() => {})); // tail-only: GC'd after completion
+  return next;
+}
+
+// Convenience: per-user lock for user-store writes (username as key).
+const _userStoreLocks = new Map();
+function withUserStoreLock(username, fn) {
+  return withWriteLock(_userStoreLocks, username, fn);
+}
+
 // Per-user async write lock for credit operations (Promise-chain serialisation).
 // Guarantees that check+deduct is atomic even under concurrent requests.
 const _creditLocks = new Map();
 function withCreditLock(username, fn) {
-  const prev = _creditLocks.get(username) || Promise.resolve();
-  const next = prev.then(fn);
-  // Keep the map tidy: only store the tail so completed locks get GC'd.
-  _creditLocks.set(username, next.catch(() => {}));
-  return next;
+  return withWriteLock(_creditLocks, username, fn);
 }
 
 // Atomically checks and deducts one credit for username+feature.
