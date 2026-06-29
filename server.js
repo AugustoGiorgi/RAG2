@@ -8477,7 +8477,9 @@ async function callAnthropicDirect(apiKey, requestBody) {
     }
     if (res.ok) return { ok: true, data, model: data.model || requestBody.model };
     const errorMessage = data.error?.message || data.message || data.raw || `Claude API returned HTTP ${res.status}.`;
-    return { ok: false, status: Number(res.status) || 502, error: errorMessage };
+    // Pass retry-after header upstream so the fallback loop can use it.
+    const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
+    return { ok: false, status: Number(res.status) || 502, error: errorMessage, retryAfterMs };
   } catch (error) {
     console.error("[Review] Anthropic request failed:", error);
     const timedOut = error?.name === "AbortError";
@@ -8493,21 +8495,44 @@ async function callAnthropicDirect(apiKey, requestBody) {
   }
 }
 
-async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MODEL_FALLBACKS) {
+async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MODEL_FALLBACKS, { userId = "unknown", feature = "review" } = {}) {
   const candidates = Array.from(new Set((models || []).filter(Boolean)));
   let lastError = "Claude API request failed.";
   let lastStatus = 500;
   const attempts = [];
+  const MAX_429_RETRIES = 3;
+  const BACKOFF_MS = [1000, 2000, 4000];
+
   for (const model of candidates) {
     const body = { ...requestBody, model };
     if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
-    const result = await callAnthropicDirect(apiKey, body);
-    if (result.ok) return result;
-    lastError = `Model ${model}: ${result.error}`;
-    lastStatus = result.status || 500;
+
+    let triedNextModel = false;
+    for (let attempt = 1; attempt <= MAX_429_RETRIES + 1; attempt++) {
+      const result = await callAnthropicDirect(apiKey, body);
+      if (result.ok) return result;
+      lastError = `Model ${model}: ${result.error}`;
+      lastStatus = result.status || 500;
+
+      if (isRateLimitError(lastStatus, result.error)) {
+        if (attempt <= MAX_429_RETRIES) {
+          const waitMs = result.retryAfterMs || BACKOFF_MS[attempt - 1];
+          console.log(`[RETRY] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} userId=${userId} feature=${feature}`);
+          await sleep(waitMs);
+          continue;
+        }
+        triedNextModel = true;
+        break;
+      }
+      if (!shouldTryNextModel(lastStatus, result.error)) {
+        attempts.push(lastError);
+        return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
+      }
+      triedNextModel = true;
+      break;
+    }
     attempts.push(lastError);
-    if (isRateLimitError(lastStatus, result.error)) break;
-    if (!shouldTryNextModel(lastStatus, result.error)) break;
+    if (!triedNextModel) break;
   }
   return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
 }
@@ -10923,6 +10948,10 @@ function reviewJsonSchemaText() {
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
   let lastError = "Claude API request failed.";
   let lastStatus = 500;
+  const userId = options.userId || "unknown";
+  const feature = options.feature || "api";
+  const MAX_429_RETRIES = 3;
+  const BACKOFF_MS = [1000, 2000, 4000];
 
   const models = Array.from(new Set(options.models || MODEL_FALLBACKS));
   for (const model of models) {
@@ -10935,29 +10964,49 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
     if (options.thinking && /sonnet-4-5/i.test(model)) requestBody.thinking = options.thinking;
     if (WEB_SEARCH_ENABLED && options.webSearch !== false) requestBody.tools = [buildWebSearchTool()];
 
-    const res = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
-      body: JSON.stringify(requestBody),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) return {
-      ok: true,
-      data,
-      model,
-      context: {
-        knowledgeBaseCount: context.knowledgeBase.length,
-        reviewExampleCount: context.reviewExamples.length,
-        knowledgeBaseFiles: context.knowledgeBase.map((file) => file.name),
-        reviewExampleFiles: context.reviewExamples.map((file) => file.name),
-        databaseContextTokens: estimateTokens(context.databaseContext || ""),
-      },
-    };
-    const message = data.error?.message || data.message || "Failed.";
-    lastError = `Model ${model}: ${message}`;
-    lastStatus = res.status;
-    if (isRateLimitError(res.status, message)) break;
-    if (!shouldTryNextModel(res.status, message)) break;
+    let triedNextModel = false;
+    for (let attempt = 1; attempt <= MAX_429_RETRIES + 1; attempt++) {
+      const res = await fetch(ANTHROPIC_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+        body: JSON.stringify(requestBody),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return {
+        ok: true,
+        data,
+        model,
+        context: {
+          knowledgeBaseCount: context.knowledgeBase.length,
+          reviewExampleCount: context.reviewExamples.length,
+          knowledgeBaseFiles: context.knowledgeBase.map((file) => file.name),
+          reviewExampleFiles: context.reviewExamples.map((file) => file.name),
+          databaseContextTokens: estimateTokens(context.databaseContext || ""),
+        },
+      };
+      const message = data.error?.message || data.message || "Failed.";
+      lastError = `Model ${model}: ${message}`;
+      lastStatus = res.status;
+
+      if (isRateLimitError(res.status, message)) {
+        if (attempt <= MAX_429_RETRIES) {
+          const waitMs = parseRetryAfterMs(res.headers.get("retry-after")) || BACKOFF_MS[attempt - 1];
+          console.log(`[RETRY] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} userId=${userId} feature=${feature}`);
+          await sleep(waitMs);
+          continue;
+        }
+        // All retries for this model exhausted — try next model in fallbacks
+        triedNextModel = true;
+        break;
+      }
+      if (!shouldTryNextModel(res.status, message)) {
+        // Non-transient error, no point trying other models
+        return { ok: false, status: lastStatus, error: `${lastError} Tried: ${models.join(", ")}.` };
+      }
+      triedNextModel = true;
+      break;
+    }
+    if (!triedNextModel) break;
   }
   return { ok: false, status: lastStatus, error: `${lastError} Tried: ${models.join(", ")}.` };
 }
@@ -10965,6 +11014,21 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
 function isRateLimitError(status, message) {
   const lower = String(message || "").toLowerCase();
   return status === 429 || lower.includes("rate limit") || lower.includes("tokens per minute");
+}
+
+// Pause execution for ms milliseconds.
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Parse Anthropic's Retry-After header (integer seconds or HTTP-date string).
+function parseRetryAfterMs(headerValue) {
+  if (!headerValue) return null;
+  const asInt = parseInt(headerValue, 10);
+  if (!isNaN(asInt) && asInt > 0) return asInt * 1000;
+  const asDate = Date.parse(headerValue);
+  if (!isNaN(asDate)) return Math.max(0, asDate - Date.now());
+  return null;
 }
 
 function buildWebSearchTool() {
