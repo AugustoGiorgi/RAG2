@@ -659,18 +659,22 @@ const server = http.createServer(async (req, res) => {
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
-    // For token-consuming routes: set up AbortController and release hooks.
+    // For token-consuming routes: set up AbortController, global slot, and release hooks.
     if (req._concurrencyUsername) {
       // Create an AbortController so handlers can cancel the Anthropic fetch when
       // the client disconnects, saving tokens on abandoned requests.
       const abortController = new AbortController();
       req._abortController = abortController;
+      // Wait for a global Anthropic slot (max MAX_CONCURRENT_GLOBAL simultaneous calls).
+      // If all slots are in use, this await parks the request in a queue until one frees
+      // rather than rejecting it — the client waits but does not get an error.
+      await acquireGlobalSlot();
       // IMPORTANT: listen on res (ServerResponse) not req (IncomingMessage).
       // req "close" fires when the request body stream is consumed — which happens
       // immediately after readJsonBody() reads the POST body, long before the
       // response is written. res "close" fires only when the actual TCP socket
       // closes prematurely (real client disconnect).
-      res.once("finish", () => releaseUserSlot(req));
+      res.once("finish", () => { releaseUserSlot(req); releaseGlobalSlot(); });
       res.once("close", () => {
         if (!res.writableEnded) {
           abortController.abort();
@@ -678,6 +682,7 @@ const server = http.createServer(async (req, res) => {
           console.log(`[ABORTED] userId=${username} path=${requestUrl.pathname} reason=client_closed`);
         }
         releaseUserSlot(req);
+        releaseGlobalSlot();
       });
     }
     if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
@@ -6837,6 +6842,35 @@ function requireUserSpendBudget(req, res) {
 // Per-user concurrency limiter (in-memory semaphore)
 // Prevents the same user from firing multiple simultaneous AI calls.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Global concurrency limiter — caps simultaneous outbound Anthropic calls
+// across ALL users. When the cap is reached, new requests wait in a Promise
+// queue until a slot is released rather than failing immediately.
+// MAX_CONCURRENT_GLOBAL should be tuned to stay below Anthropic's RPM limit.
+// ---------------------------------------------------------------------------
+const MAX_CONCURRENT_GLOBAL = 10;
+let _globalActiveCount = 0;
+const _globalWaiters = []; // queue of { resolve } for requests waiting for a slot
+
+function acquireGlobalSlot() {
+  if (_globalActiveCount < MAX_CONCURRENT_GLOBAL) {
+    _globalActiveCount++;
+    return Promise.resolve();
+  }
+  // At cap: park the caller in the queue. It will be woken up when a slot frees.
+  return new Promise((resolve) => _globalWaiters.push(resolve));
+}
+
+function releaseGlobalSlot() {
+  if (_globalWaiters.length > 0) {
+    // Hand the slot directly to the next waiter — count stays the same.
+    const next = _globalWaiters.shift();
+    next();
+  } else {
+    _globalActiveCount = Math.max(0, _globalActiveCount - 1);
+  }
+}
+
 const MAX_CONCURRENT_PER_USER = 2;
 const _activeCallsPerUser = new Map(); // username → number of active AI calls
 
@@ -9430,7 +9464,8 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
 
       if (isRateLimitError(lastStatus, result.error)) {
         if (attempt <= MAX_429_RETRIES) {
-          const waitMs = result.retryAfterMs || BACKOFF_MS[attempt - 1];
+          const baseMs = result.retryAfterMs || BACKOFF_MS[attempt - 1];
+          const waitMs = baseMs + Math.floor(Math.random() * 500);
           console.log(`[RETRY] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} userId=${userId} feature=${feature}`);
           await sleep(waitMs);
           continue;
@@ -11920,7 +11955,8 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
 
       if (isRateLimitError(res.status, message)) {
         if (attempt <= MAX_429_RETRIES) {
-          const waitMs = parseRetryAfterMs(res.headers.get("retry-after")) || BACKOFF_MS[attempt - 1];
+          const baseMs = parseRetryAfterMs(res.headers.get("retry-after")) || BACKOFF_MS[attempt - 1];
+          const waitMs = baseMs + Math.floor(Math.random() * 500);
           console.log(`[RETRY] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} userId=${userId} feature=${feature}`);
           await sleep(waitMs);
           continue;
