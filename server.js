@@ -665,16 +665,20 @@ const server = http.createServer(async (req, res) => {
       // the client disconnects, saving tokens on abandoned requests.
       const abortController = new AbortController();
       req._abortController = abortController;
-      req.on("close", () => {
+      // IMPORTANT: listen on res (ServerResponse) not req (IncomingMessage).
+      // req "close" fires when the request body stream is consumed — which happens
+      // immediately after readJsonBody() reads the POST body, long before the
+      // response is written. res "close" fires only when the actual TCP socket
+      // closes prematurely (real client disconnect).
+      res.once("finish", () => releaseUserSlot(req));
+      res.once("close", () => {
         if (!res.writableEnded) {
           abortController.abort();
           const username = req._concurrencyUsername || "unknown";
           console.log(`[ABORTED] userId=${username} path=${requestUrl.pathname} reason=client_closed`);
         }
+        releaseUserSlot(req);
       });
-      // Release the concurrency slot when the response finishes (success, error, or abort).
-      res.once("finish", () => releaseUserSlot(req));
-      res.once("close",  () => releaseUserSlot(req));
     }
     if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
