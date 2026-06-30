@@ -11,6 +11,7 @@ const { buildPresentation } = require("./lib/pptx-builder");
 const { buildPlanningDeck } = require("./lib/pptx-builder");
 const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
+const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -50,6 +51,10 @@ const LOCAL_SECRETS = loadLocalSecrets();
 const GOOGLE_TOKEN_PATH = path.join(DATA_DIR, "google_tokens.json");
 const QBO_TOKEN_PATH = path.join(DATA_DIR, "qbo_tokens.json");
 const ACCOUNTING_TOKEN_PATH = path.join(DATA_DIR, "accounting_tokens.json");
+let databasePool = null;
+let databaseReady = false;
+let databaseHydrating = false;
+let databaseSyncQueue = Promise.resolve();
 const MASTER_REVIEW_PROMPT_PATH = path.join(ROOT, "senior-review-master-prompt.txt");
 const KNOWLEDGE_BASE_DIR = path.resolve(process.env.KNOWLEDGE_BASE_DIR || path.join(ROOT, "knowledge_base"));
 const REVIEW_EXAMPLES_DIR = path.resolve(process.env.REVIEW_EXAMPLES_DIR || path.join(ROOT, "review_examples"));
@@ -78,6 +83,7 @@ const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
 const TOKEN_ENCRYPTION_KEY = String(process.env.TOKEN_ENCRYPTION_KEY || LOCAL_SECRETS.tokenEncryptionKey || "").trim();
 const TOKEN_ENCRYPTION_KEY_BYTES = tokenEncryptionKeyBytes(TOKEN_ENCRYPTION_KEY);
+const DATABASE_PERSISTENCE_ENABLED = isDatabaseConfigured();
 const CLIENT_FILE_PERSISTENCE_ENABLED = String(process.env.ENABLE_CLIENT_FILE_PERSISTENCE || "false").toLowerCase() === "true";
 const WEB_SEARCH_ENABLED = String(process.env.ENABLE_CLAUDE_WEB_SEARCH || "true").toLowerCase() === "true";
 const WEB_SEARCH_MAX_USES = Number(process.env.CLAUDE_WEB_SEARCH_MAX_USES || 3);
@@ -730,15 +736,20 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`AI Tax Agent listening on ${HOST}:${PORT}`);
-  try {
-    const index = rebuildDeadlinesIndex();
-    console.log(`[Deadlines] Index rebuilt - ${(index.upcoming || []).length} upcoming deadlines`);
-  } catch (error) {
-    console.warn("[Deadlines] Could not rebuild index:", error.message);
-  }
-});
+startServer();
+
+async function startServer() {
+  await initializeDatabasePersistence();
+  server.listen(PORT, HOST, () => {
+    console.log(`AI Tax Agent listening on ${HOST}:${PORT}`);
+    try {
+      const index = rebuildDeadlinesIndex();
+      console.log(`[Deadlines] Index rebuilt - ${(index.upcoming || []).length} upcoming deadlines`);
+    } catch (error) {
+      console.warn("[Deadlines] Could not rebuild index:", error.message);
+    }
+  });
+}
 
 setInterval(() => {
   try { checkDeadlineNotifications(); } catch (error) { console.warn("[Deadlines] Notification check failed:", error.message); }
@@ -4569,6 +4580,272 @@ function writeJsonFile(filePath, value) {
   try { fsSync.chmodSync(tempPath, PRIVATE_FILE_MODE); } catch (_) {}
   fsSync.renameSync(tempPath, filePath);
   try { fsSync.chmodSync(filePath, PRIVATE_FILE_MODE); } catch (_) {}
+  queueDatabaseSync(filePath, value);
+}
+
+function dataSnapshotKey(filePath) {
+  const relative = path.relative(DATA_DIR, filePath).replace(/\\/g, "/");
+  if (relative.startsWith("..") || path.isAbsolute(relative) || !relative.endsWith(".json")) return "";
+  return relative;
+}
+
+function isDataJsonPath(filePath) {
+  return Boolean(dataSnapshotKey(filePath));
+}
+
+function jsonParam(value) {
+  return JSON.stringify(value ?? {});
+}
+
+function sqlTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function sqlNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+async function initializeDatabasePersistence() {
+  if (!DATABASE_PERSISTENCE_ENABLED) return;
+  databasePool = createPool();
+  try {
+    await databasePool.query("select 1");
+    databaseReady = true;
+    await hydrateLocalDataFromDatabase();
+    console.log("[Database] Supabase persistence enabled.");
+  } catch (error) {
+    databaseReady = false;
+    console.warn("[Database] Supabase persistence disabled for this boot:", error.message);
+  }
+}
+
+async function hydrateLocalDataFromDatabase() {
+  if (!databaseReady || !databasePool) return;
+  databaseHydrating = true;
+  try {
+    const snapshots = await databasePool.query("select snapshot_key, payload from rag_private.app_json_snapshots");
+    for (const row of snapshots.rows || []) {
+      const filePath = path.join(DATA_DIR, String(row.snapshot_key || ""));
+      if (!isDataJsonPath(filePath)) continue;
+      writeJsonFile(filePath, row.payload || {});
+    }
+    await hydrateUsersFromDatabase();
+    await hydrateCostLogFromDatabase();
+    await hydrateAuditLogFromDatabase();
+    await hydrateAccessRequestsFromDatabase();
+  } finally {
+    databaseHydrating = false;
+  }
+}
+
+async function hydrateUsersFromDatabase() {
+  const result = await databasePool.query(
+    `select username, password_hash, role, display_name, active, spend_limit_usd,
+            created_at, updated_at, last_password_change_at
+       from rag_private.app_users
+      order by created_at nulls last, username`,
+  );
+  if (!result.rows.length) return;
+  writeJsonFile(USERS_PATH, {
+    users: result.rows.map((row) => ({
+      username: row.username,
+      passwordHash: row.password_hash,
+      role: row.role === "admin" ? "admin" : "user",
+      displayName: row.display_name || row.username,
+      active: row.active !== false,
+      spendLimitUsd: row.spend_limit_usd === null ? null : Number(row.spend_limit_usd),
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+      lastPasswordChangeAt: row.last_password_change_at ? new Date(row.last_password_change_at).toISOString() : "",
+    })),
+  });
+}
+
+async function hydrateCostLogFromDatabase() {
+  const result = await databasePool.query("select payload from rag_private.cost_log_entries order by source_index, id");
+  if (!result.rows.length) return;
+  writeJsonFile(COST_LOG_PATH, { entries: result.rows.map((row) => row.payload || {}) });
+}
+
+async function hydrateAuditLogFromDatabase() {
+  const result = await databasePool.query("select payload from rag_private.audit_log_entries order by source_index, id");
+  if (!result.rows.length) return;
+  writeJsonFile(AUDIT_LOG_PATH, { entries: result.rows.map((row) => row.payload || {}) });
+}
+
+async function hydrateAccessRequestsFromDatabase() {
+  const result = await databasePool.query("select payload from rag_private.access_requests order by source_index, created_at nulls last, imported_at");
+  if (!result.rows.length) return;
+  writeJsonFile(ACCESS_REQUESTS_PATH, { entries: result.rows.map((row) => row.payload || {}) });
+}
+
+function queueDatabaseSync(filePath, value) {
+  if (!databaseReady || databaseHydrating || !databasePool || !isDataJsonPath(filePath)) return;
+  const snapshotKey = dataSnapshotKey(filePath);
+  const payload = structuredCloneSafe(value);
+  databaseSyncQueue = databaseSyncQueue
+    .then(() => syncJsonToDatabase(filePath, snapshotKey, payload))
+    .catch((error) => {
+      console.warn(`[Database] Sync failed for ${snapshotKey}:`, error.message);
+    });
+}
+
+async function syncJsonToDatabase(filePath, snapshotKey, payload) {
+  await databasePool.query(
+    `insert into rag_private.app_json_snapshots (snapshot_key, payload, imported_at)
+     values ($1, $2::jsonb, now())
+     on conflict (snapshot_key) do update set payload = excluded.payload, imported_at = now()`,
+    [snapshotKey, jsonParam(payload)],
+  );
+  if (filePath === USERS_PATH) await syncUsersToDatabase(payload);
+  else if (filePath === COST_LOG_PATH) await syncCostLogToDatabase(payload);
+  else if (filePath === AUDIT_LOG_PATH) await syncAuditLogToDatabase(payload);
+  else if (filePath === ACCESS_REQUESTS_PATH) await syncAccessRequestsToDatabase(payload);
+  else if (filePath === DB_PATH) await syncClientsToDatabase(payload);
+  else if (filePath === GOOGLE_TOKEN_PATH) await syncOauthTokenStoreToDatabase("google", payload);
+  else if (filePath === QBO_TOKEN_PATH) await syncOauthTokenStoreToDatabase("quickbooks", payload);
+  else if (filePath === ACCOUNTING_TOKEN_PATH) await syncOauthTokenStoreToDatabase("accounting", payload);
+}
+
+async function syncUsersToDatabase(store) {
+  const users = Array.isArray(store?.users) ? store.users : [];
+  const usernames = [];
+  for (const user of users) {
+    if (!user?.username || !user?.passwordHash) continue;
+    usernames.push(String(user.username));
+    await databasePool.query(
+      `insert into rag_private.app_users
+        (username, password_hash, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
+       values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), coalesce($8::timestamptz, now()), $9::timestamptz)
+       on conflict (username) do update set
+        password_hash = excluded.password_hash,
+        role = excluded.role,
+        display_name = excluded.display_name,
+        active = excluded.active,
+        spend_limit_usd = excluded.spend_limit_usd,
+        updated_at = now(),
+        last_password_change_at = excluded.last_password_change_at`,
+      [
+        String(user.username),
+        String(user.passwordHash),
+        user.role === "admin" ? "admin" : "user",
+        String(user.displayName || user.username),
+        user.active !== false,
+        user.spendLimitUsd === undefined ? null : sqlNumber(user.spendLimitUsd),
+        sqlTimestamp(user.createdAt),
+        sqlTimestamp(user.updatedAt),
+        sqlTimestamp(user.lastPasswordChangeAt),
+      ],
+    );
+  }
+  if (usernames.length) {
+    await databasePool.query("delete from rag_private.app_users where not (username = any($1::text[]))", [usernames]);
+  }
+}
+
+async function syncCostLogToDatabase(store) {
+  const entries = Array.isArray(store?.entries) ? store.entries : [];
+  await databasePool.query("delete from rag_private.cost_log_entries");
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index] || {};
+    await databasePool.query(
+      `insert into rag_private.cost_log_entries
+        (source_index, username, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::jsonb)`,
+      [
+        index,
+        entry.username || entry.user || null,
+        entry.action || null,
+        entry.model || null,
+        sqlNumber(entry.inputTokens ?? entry.input_tokens),
+        sqlNumber(entry.outputTokens ?? entry.output_tokens),
+        sqlNumber(entry.totalCostUsd ?? entry.total_cost_usd ?? entry.costUsd),
+        sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at),
+        jsonParam(entry),
+      ],
+    );
+  }
+}
+
+async function syncAuditLogToDatabase(store) {
+  const entries = Array.isArray(store?.entries) ? store.entries : [];
+  await databasePool.query("delete from rag_private.audit_log_entries");
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index] || {};
+    await databasePool.query(
+      `insert into rag_private.audit_log_entries
+        (source_index, username, action, occurred_at, payload)
+       values ($1, $2, $3, $4::timestamptz, $5::jsonb)`,
+      [
+        index,
+        entry.username || entry.user?.username || null,
+        entry.action || null,
+        sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at),
+        jsonParam(entry),
+      ],
+    );
+  }
+}
+
+async function syncAccessRequestsToDatabase(store) {
+  const entries = Array.isArray(store?.entries) ? store.entries : [];
+  await databasePool.query("delete from rag_private.access_requests");
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index] || {};
+    await databasePool.query(
+      `insert into rag_private.access_requests
+        (source_index, email, name, estimated_returns, created_at, payload)
+       values ($1, $2, $3, $4, $5::timestamptz, $6::jsonb)`,
+      [
+        index,
+        entry.email || entry.contactEmail || null,
+        entry.name || entry.contactName || entry.company || entry.firm || null,
+        entry.estimatedReturns || entry.estimated_returns || entry.returns || null,
+        sqlTimestamp(entry.createdAt || entry.timestamp || entry.at),
+        jsonParam(entry),
+      ],
+    );
+  }
+}
+
+async function syncClientsToDatabase(store) {
+  const clients = store?.clients && typeof store.clients === "object" ? store.clients : {};
+  await databasePool.query("delete from rag_private.clients");
+  for (const [clientId, record] of Object.entries(clients)) {
+    await databasePool.query(
+      `insert into rag_private.clients (client_id, owner_username, display_name, payload)
+       values ($1, $2, $3, $4::jsonb)
+       on conflict (client_id) do update set
+        owner_username = excluded.owner_username,
+        display_name = excluded.display_name,
+        payload = excluded.payload,
+        updated_at = now()`,
+      [
+        clientId,
+        record?.ownerUsername || record?.createdBy || null,
+        record?.name || record?.clientName || clientId,
+        jsonParam(record),
+      ],
+    );
+  }
+}
+
+async function syncOauthTokenStoreToDatabase(provider, store) {
+  const users = store?.users && typeof store.users === "object" ? store.users : {};
+  await databasePool.query("delete from rag_private.oauth_tokens where provider = $1", [provider]);
+  for (const [username, payload] of Object.entries(users)) {
+    await databasePool.query(
+      `insert into rag_private.oauth_tokens (provider, username, account_key, encrypted_payload)
+       values ($1, $2, $3, $4::jsonb)
+       on conflict (provider, username, account_key) do update set
+        encrypted_payload = excluded.encrypted_payload,
+        updated_at = now()`,
+      [provider, String(username), "default", jsonParam(payload)],
+    );
+  }
 }
 
 function structuredCloneSafe(value) {

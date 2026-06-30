@@ -24,6 +24,8 @@ create table if not exists rag_private.oauth_tokens (
   primary key (provider, username, account_key)
 );
 
+create index if not exists oauth_tokens_username_idx on rag_private.oauth_tokens (username);
+
 create table if not exists rag_private.clients (
   client_id text primary key,
   owner_username text,
