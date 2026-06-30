@@ -112,7 +112,8 @@
               <label><span>Username</span><input id="adminNewUsername" autocomplete="off" required /></label>
               <label><span>Display name</span><input id="adminNewDisplayName" autocomplete="off" /></label>
               <label><span>Password</span><input id="adminNewPassword" type="text" autocomplete="off" minlength="12" required /></label>
-              <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="Example: 25.00" required /></label>
+              <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
+              <label><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
               <label><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="admin">Administrator</option></select></label>
               <button class="primary-button small-button" type="submit">Create User</button>
             </form>
@@ -123,6 +124,24 @@
               <button id="adminRefreshUsers" class="ghost-button small-button" type="button">Refresh</button>
             </div>
             <div id="adminUsersList" class="admin-users-list"></div>
+          </section>
+        </div>
+        <div class="admin-users-shell">
+          <section class="admin-users-panel">
+            <h3>Create Budget Group</h3>
+            <div id="adminGroupMessage" class="admin-user-message" hidden></div>
+            <form id="adminCreateGroupForm" class="admin-user-form">
+              <label><span>Group name</span><input id="adminNewGroupName" autocomplete="off" placeholder="e.g. Associates Team" required /></label>
+              <label><span>Shared budget USD</span><input id="adminNewGroupLimit" type="number" min="0" step="0.01" placeholder="Example: 30.00" required /></label>
+              <button class="primary-button small-button" type="submit">Create Group</button>
+            </form>
+          </section>
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <h3>Budget Groups</h3>
+              <button id="adminRefreshGroups" class="ghost-button small-button" type="button">Refresh</button>
+            </div>
+            <div id="adminBudgetGroupsList" class="admin-users-list"></div>
           </section>
         </div>
       </div>

@@ -72,7 +72,14 @@ const els = {
   adminNewDisplayName: document.getElementById("adminNewDisplayName"),
   adminNewPassword: document.getElementById("adminNewPassword"),
   adminNewSpendLimit: document.getElementById("adminNewSpendLimit"),
+  adminNewBudgetGroup: document.getElementById("adminNewBudgetGroup"),
   adminNewRole: document.getElementById("adminNewRole"),
+  adminCreateGroupForm: document.getElementById("adminCreateGroupForm"),
+  adminRefreshGroups: document.getElementById("adminRefreshGroups"),
+  adminBudgetGroupsList: document.getElementById("adminBudgetGroupsList"),
+  adminGroupMessage: document.getElementById("adminGroupMessage"),
+  adminNewGroupName: document.getElementById("adminNewGroupName"),
+  adminNewGroupLimit: document.getElementById("adminNewGroupLimit"),
   apiStatus: document.getElementById("apiStatus"),
   webSearchStatus: document.getElementById("webSearchStatus"),
   webSearchPolicy: document.getElementById("webSearchPolicy"),
@@ -622,6 +629,8 @@ function init() {
   els.closeAdminDashboardButton?.addEventListener("click", closeAdminDashboard);
   els.adminRefreshUsers?.addEventListener("click", loadAdminUsers);
   els.adminCreateUserForm?.addEventListener("submit", createAdminUser);
+  els.adminRefreshGroups?.addEventListener("click", loadBudgetGroups);
+  els.adminCreateGroupForm?.addEventListener("submit", createBudgetGroup);
   document.querySelectorAll("[data-qbo-preset]").forEach((button) => button.addEventListener("click", () => setQBOPreset(button.dataset.qboPreset, button)));
   setupEstimatedTaxesEvents();
   setupTrackerEvents();
@@ -4012,7 +4021,10 @@ function showCostEstimateBanner(estimate, onConfirm, onCancel) {
 async function openAdminDashboard() {
   if (currentUser.role !== "admin") return;
   els.adminDashboard.hidden = false;
-  await loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error"));
+  await Promise.all([
+    loadBudgetGroups().catch((error) => showAdminGroupMessage(error.message || "Could not load groups.", "error")),
+    loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
+  ]);
 }
 
 function closeAdminDashboard() {
@@ -4047,13 +4059,25 @@ function renderAdminUsers(users) {
     els.adminUsersList.innerHTML = `<div class="admin-user-row">No users created yet.</div>`;
     return;
   }
+  const groupOptions = `<option value="">— No group (individual budget) —</option>` +
+    _cachedBudgetGroups.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)} (${formatUsd(g.limitUsd || 0)} shared)</option>`).join("");
+
   els.adminUsersList.innerHTML = users.map((user) => {
     const username = user.username || "";
     const limit = user.spendLimitUsd ?? "";
     const used = formatUsd(user.spendUsedUsd || 0);
-    const budgetText = user.spendHasLimit
-      ? `Used ${used} / Limit ${formatUsd(user.spendLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)}`
-      : `Used ${used} / No limit`;
+    let budgetText;
+    if (user.budgetGroupId && user.budgetGroupName) {
+      budgetText = `Group "${user.budgetGroupName}" — Used ${used} / Limit ${formatUsd(user.budgetGroupLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)} (shared)`;
+    } else if (user.spendHasLimit) {
+      budgetText = `Used ${used} / Limit ${formatUsd(user.spendLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)}`;
+    } else {
+      budgetText = `Used ${used} / No limit`;
+    }
+    const groupSelectOptions = groupOptions.replace(
+      `value="${escapeHtml(user.budgetGroupId || "")}"`,
+      `value="${escapeHtml(user.budgetGroupId || "")}" selected`
+    );
     return `
       <article class="admin-user-row" data-admin-user="${escapeHtml(username)}">
         <div class="admin-user-identity">
@@ -4080,8 +4104,12 @@ function renderAdminUsers(users) {
           </select>
         </label>
         <label>
-          <span>Budget USD</span>
-          <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" />
+          <span>Budget group</span>
+          <select data-admin-group="${escapeHtml(username)}" data-admin-group-current="${escapeHtml(user.budgetGroupId || "")}">${groupSelectOptions}</select>
+        </label>
+        <label>
+          <span>Individual budget USD</span>
+          <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" ${user.budgetGroupId ? 'title="Overridden by group budget"' : ""} />
         </label>
         <div class="admin-user-actions">
           <button class="ghost-button small-button" type="button" data-admin-save="${escapeHtml(username)}">Save</button>
@@ -4124,6 +4152,7 @@ async function createAdminUser(event) {
       displayName: els.adminNewDisplayName.value.trim(),
       role: els.adminNewRole.value || "user",
       spendLimitUsd,
+      budgetGroupId: els.adminNewBudgetGroup?.value || null,
     }),
   });
   const payload = await response.json().catch(() => ({}));
@@ -4143,10 +4172,11 @@ async function updateAdminUser(username) {
   const role = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`)?.value || "user";
   const active = els.adminUsersList?.querySelector(`[data-admin-active="${cssEscape(username)}"]`)?.value !== "false";
   const spendLimitUsd = els.adminUsersList?.querySelector(`[data-admin-limit="${cssEscape(username)}"]`)?.value ?? "";
+  const budgetGroupId = els.adminUsersList?.querySelector(`[data-admin-group="${cssEscape(username)}"]`)?.value || null;
   const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ displayName, role, active, spendLimitUsd }),
+    body: JSON.stringify({ displayName, role, active, spendLimitUsd, budgetGroupId }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -4186,6 +4216,134 @@ async function deleteAdminUser(username) {
   showAdminUserMessage(`User ${username} deleted.`);
   await loadAdminUsers();
 }
+
+// ── Budget Groups ─────────────────────────────────────────────────────────────
+
+let _cachedBudgetGroups = [];
+
+async function loadBudgetGroups() {
+  if (!els.adminBudgetGroupsList) return [];
+  els.adminBudgetGroupsList.innerHTML = `<div class="admin-user-row">Loading groups...</div>`;
+  const response = await fetch(`${API_BASE_URL}/api/admin/budget-groups`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Could not load budget groups.");
+  _cachedBudgetGroups = payload.budgetGroups || [];
+  renderBudgetGroups(_cachedBudgetGroups);
+  populateGroupDropdowns(_cachedBudgetGroups);
+  return _cachedBudgetGroups;
+}
+
+function populateGroupDropdowns(groups) {
+  const noGroup = `<option value="">— No group (individual budget) —</option>`;
+  const options = noGroup + groups.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)} (${formatUsd(g.limitUsd || 0)} shared)</option>`).join("");
+  if (els.adminNewBudgetGroup) els.adminNewBudgetGroup.innerHTML = options;
+  els.adminUsersList?.querySelectorAll("[data-admin-group]").forEach((select) => {
+    const current = select.dataset.adminGroupCurrent || "";
+    select.innerHTML = options;
+    select.value = current;
+  });
+}
+
+function renderBudgetGroups(groups) {
+  if (!els.adminBudgetGroupsList) return;
+  if (!groups.length) {
+    els.adminBudgetGroupsList.innerHTML = `<div class="admin-user-row">No budget groups yet.</div>`;
+    return;
+  }
+  els.adminBudgetGroupsList.innerHTML = groups.map((g) => {
+    const usedText = g.limitUsd !== null
+      ? `Used ${formatUsd(g.usedUsd)} / Limit ${formatUsd(g.limitUsd)} / Remaining ${formatUsd(g.remainingUsd)}`
+      : `Used ${formatUsd(g.usedUsd)} / No limit`;
+    const membersText = g.memberCount === 0 ? "No members" : g.memberUsernames.join(", ");
+    return `
+      <article class="admin-user-row" data-group-id="${escapeHtml(g.id)}">
+        <div class="admin-user-identity">
+          <strong>${escapeHtml(g.name)}</strong>
+          <span class="admin-user-spend">${escapeHtml(usedText)}</span>
+          <span style="font-size:0.82em;opacity:0.7">Members: ${escapeHtml(membersText)}</span>
+        </div>
+        <label>
+          <span>Name</span>
+          <input data-group-name="${escapeHtml(g.id)}" value="${escapeHtml(g.name)}" />
+        </label>
+        <label>
+          <span>Budget USD</span>
+          <input data-group-limit="${escapeHtml(g.id)}" type="number" min="0" step="0.01" value="${escapeHtml(String(g.limitUsd ?? ""))}" placeholder="No limit" />
+        </label>
+        <div class="admin-user-actions">
+          <button class="ghost-button small-button" type="button" data-group-save="${escapeHtml(g.id)}">Save</button>
+          <button class="admin-danger-button" type="button" data-group-delete="${escapeHtml(g.id)}">Delete</button>
+        </div>
+      </article>
+    `;
+  }).join("");
+  bindBudgetGroupActions();
+}
+
+function bindBudgetGroupActions() {
+  els.adminBudgetGroupsList?.querySelectorAll("[data-group-save]").forEach((btn) => {
+    btn.addEventListener("click", () => updateBudgetGroup(btn.dataset.groupSave));
+  });
+  els.adminBudgetGroupsList?.querySelectorAll("[data-group-delete]").forEach((btn) => {
+    btn.addEventListener("click", () => deleteBudgetGroup(btn.dataset.groupDelete));
+  });
+}
+
+async function createBudgetGroup(event) {
+  event.preventDefault();
+  const name = els.adminNewGroupName.value.trim();
+  const limitUsd = els.adminNewGroupLimit.value;
+  if (!name) { showAdminGroupMessage("Group name is required.", "error"); return; }
+  const response = await fetch(`${API_BASE_URL}/api/admin/budget-groups`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, limitUsd }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { showAdminGroupMessage(payload.error || "Could not create group.", "error"); return; }
+  els.adminCreateGroupForm.reset();
+  showAdminGroupMessage(`Group "${name}" created.`);
+  await loadBudgetGroups();
+  await loadAdminUsers();
+}
+
+async function updateBudgetGroup(id) {
+  if (!id) return;
+  const name = els.adminBudgetGroupsList?.querySelector(`[data-group-name="${cssEscape(id)}"]`)?.value || "";
+  const limitUsd = els.adminBudgetGroupsList?.querySelector(`[data-group-limit="${cssEscape(id)}"]`)?.value ?? "";
+  const response = await fetch(`${API_BASE_URL}/api/admin/budget-groups/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, limitUsd }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { showAdminGroupMessage(payload.error || "Could not update group.", "error"); return; }
+  showAdminGroupMessage(`Group updated.`);
+  await loadBudgetGroups();
+  await loadAdminUsers();
+}
+
+async function deleteBudgetGroup(id) {
+  if (!id) return;
+  const group = _cachedBudgetGroups.find((g) => g.id === id);
+  if (!window.confirm(`Delete group "${group?.name || id}"? This cannot be undone.`)) return;
+  const response = await fetch(`${API_BASE_URL}/api/admin/budget-groups/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { showAdminGroupMessage(payload.error || "Could not delete group.", "error"); return; }
+  showAdminGroupMessage(`Group deleted.`);
+  await loadBudgetGroups();
+  await loadAdminUsers();
+}
+
+function showAdminGroupMessage(message, type = "success") {
+  if (!els.adminGroupMessage) return;
+  els.adminGroupMessage.textContent = message;
+  els.adminGroupMessage.className = `admin-user-message${type === "error" ? " admin-user-message-error" : ""}`;
+  els.adminGroupMessage.hidden = false;
+  setTimeout(() => { if (els.adminGroupMessage) els.adminGroupMessage.hidden = true; }, 4000);
+}
+
+// ── End Budget Groups ─────────────────────────────────────────────────────────
 
 function formatUsd(value) {
   const number = Number(value || 0);

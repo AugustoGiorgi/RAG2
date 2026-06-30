@@ -758,6 +758,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { entries: readAuditEntries(limit) });
       return;
     }
+    if (requestUrl.pathname.startsWith("/api/admin/budget-groups")) {
+      if (!requireAdmin(req, res)) return;
+      await handleAdminBudgetGroupsApi(req, res, requestUrl);
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/admin/users")) {
       if (!requireAdmin(req, res)) return;
       await handleAdminUsersApi(req, res, requestUrl);
@@ -4224,6 +4229,8 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
       if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
       const now = new Date().toISOString();
+      const bgId = payload.budgetGroupId || null;
+      const groupExists = bgId && (store.budgetGroups || []).some((g) => g.id === bgId);
       const user = {
         username,
         passwordHash: createPasswordHash(password),
@@ -4231,6 +4238,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
         role: payload.role === "admin" ? "admin" : "user",
         displayName: String(payload.displayName || username).trim(),
         spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
+        budgetGroupId: groupExists ? bgId : null,
         active: payload.active !== false,
         createdAt: now,
         updatedAt: now,
@@ -4252,10 +4260,15 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
       if (payload.active !== undefined) user.active = Boolean(payload.active);
       if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
+      if (payload.budgetGroupId !== undefined) {
+        const bgId = payload.budgetGroupId || null;
+        const groupExists = bgId && (store.budgetGroups || []).some((g) => g.id === bgId);
+        user.budgetGroupId = groupExists ? bgId : null;
+      }
       user.updatedAt = new Date().toISOString();
       writeUserStore(store);
       await flushDatabaseSyncQueue();
-      appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd });
+      appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd, budgetGroupId: user.budgetGroupId || null });
       sendJson(res, 200, { user: publicUser(user) });
       return;
     }
@@ -4289,6 +4302,76 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       return;
     }
     sendJson(res, 404, { error: "User admin route not found." });
+  });
+}
+
+async function handleAdminBudgetGroupsApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  // parts: ["api","admin","budget-groups"] or ["api","admin","budget-groups",":id"]
+
+  if (parts.length === 3 && req.method === "GET") {
+    const store = readUserStore();
+    const costEntries = readCostLog().entries || [];
+    const groups = (store.budgetGroups || []).map((g) => {
+      const members = store.users.filter((u) => u.budgetGroupId === g.id);
+      const memberUsernames = members.map((u) => u.username);
+      const usedUsd = roundMoney(costEntries
+        .filter((e) => memberUsernames.includes(e.username))
+        .reduce((sum, e) => sum + entryTotalCost(e), 0));
+      const limitUsd = sanitizeSpendLimit(g.limitUsd);
+      const remainingUsd = limitUsd !== null ? roundMoney(Math.max(0, limitUsd - usedUsd)) : null;
+      return { id: g.id, name: g.name, limitUsd, usedUsd, remainingUsd, memberCount: members.length, memberUsernames, createdAt: g.createdAt || "" };
+    });
+    sendJson(res, 200, { budgetGroups: groups });
+    return;
+  }
+
+  await withUserStoreLock("__userstore__", async () => {
+    const store = readUserStore();
+    if (!store.budgetGroups) store.budgetGroups = [];
+
+    if (parts.length === 3 && req.method === "POST") {
+      const payload = await readJsonBody(req);
+      const name = String(payload.name || "").trim();
+      if (!name) { sendJson(res, 400, { error: "Group name is required." }); return; }
+      const group = { id: crypto.randomUUID(), name, limitUsd: sanitizeSpendLimit(payload.limitUsd), createdAt: new Date().toISOString() };
+      store.budgetGroups.push(group);
+      writeUserStore(store);
+      appendAuditLog(req, "admin.budget_group_created", { id: group.id, name });
+      sendJson(res, 200, { group });
+      return;
+    }
+
+    if (parts.length === 4 && req.method === "PUT") {
+      const id = decodeURIComponent(parts[3]);
+      const payload = await readJsonBody(req);
+      const group = store.budgetGroups.find((g) => g.id === id);
+      if (!group) { sendJson(res, 404, { error: "Budget group not found." }); return; }
+      if (payload.name !== undefined) group.name = String(payload.name || "").trim();
+      if (payload.limitUsd !== undefined) group.limitUsd = sanitizeSpendLimit(payload.limitUsd);
+      writeUserStore(store);
+      appendAuditLog(req, "admin.budget_group_updated", { id, name: group.name, limitUsd: group.limitUsd });
+      sendJson(res, 200, { group });
+      return;
+    }
+
+    if (parts.length === 4 && req.method === "DELETE") {
+      const id = decodeURIComponent(parts[3]);
+      const members = store.users.filter((u) => u.budgetGroupId === id);
+      if (members.length > 0) {
+        sendJson(res, 400, { error: `Cannot delete a group that has ${members.length} assigned user(s). Remove all members first.` });
+        return;
+      }
+      const idx = store.budgetGroups.findIndex((g) => g.id === id);
+      if (idx < 0) { sendJson(res, 404, { error: "Budget group not found." }); return; }
+      store.budgetGroups.splice(idx, 1);
+      writeUserStore(store);
+      appendAuditLog(req, "admin.budget_group_deleted", { id });
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    sendJson(res, 404, { error: "Budget group route not found." });
   });
 }
 
@@ -4449,16 +4532,22 @@ function readUserStore() {
   try {
     if (fsSync.existsSync(USERS_PATH)) {
       const parsed = JSON.parse(fsSync.readFileSync(USERS_PATH, "utf8"));
-      return { users: Array.isArray(parsed.users) ? parsed.users : [] };
+      return {
+        users: Array.isArray(parsed.users) ? parsed.users : [],
+        budgetGroups: Array.isArray(parsed.budgetGroups) ? parsed.budgetGroups : [],
+      };
     }
   } catch (_) {}
   const users = parseAuthUsersJson();
-  if (users.length) writeUserStore({ users });
-  return { users };
+  if (users.length) writeUserStore({ users, budgetGroups: [] });
+  return { users, budgetGroups: [] };
 }
 
 function writeUserStore(store) {
-  writeJsonFile(USERS_PATH, { users: Array.isArray(store.users) ? store.users : [] });
+  writeJsonFile(USERS_PATH, {
+    users: Array.isArray(store.users) ? store.users : [],
+    budgetGroups: Array.isArray(store.budgetGroups) ? store.budgetGroups : [],
+  });
 }
 
 function parseAuthUsersJson() {
@@ -4492,6 +4581,9 @@ function publicUser(user) {
     spendUsedUsd: budget.usedUsd,
     spendRemainingUsd: budget.remainingUsd,
     spendHasLimit: budget.hasLimit,
+    budgetGroupId: user.budgetGroupId || null,
+    budgetGroupName: budget.budgetGroupName || null,
+    budgetGroupLimitUsd: budget.budgetGroupId ? budget.limitUsd : null,
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
     lastPasswordChangeAt: user.lastPasswordChangeAt || "",
@@ -4528,9 +4620,30 @@ function entryTotalCost(entry = {}) {
 }
 
 function userSpendBudget(username) {
-  const user = readUserStore().users.find((item) => item.username === username);
+  const store = readUserStore();
+  const user = store.users.find((item) => item.username === username);
+  const costEntries = readCostLog().entries || [];
+
+  // If the user belongs to a budget group, aggregate spending across all members.
+  if (user?.budgetGroupId) {
+    const group = (store.budgetGroups || []).find((g) => g.id === user.budgetGroupId);
+    if (group) {
+      const memberUsernames = store.users
+        .filter((u) => u.budgetGroupId === group.id)
+        .map((u) => u.username);
+      const usedUsd = roundMoney(costEntries
+        .filter((entry) => memberUsernames.includes(entry.username))
+        .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
+      const limitUsd = sanitizeSpendLimit(group.limitUsd);
+      const hasLimit = limitUsd !== null;
+      const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
+      return { hasLimit, limitUsd, usedUsd, remainingUsd, budgetGroupId: group.id, budgetGroupName: group.name };
+    }
+  }
+
+  // Individual budget — original behavior.
   const limitUsd = user?.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd);
-  const usedUsd = roundMoney((readCostLog().entries || [])
+  const usedUsd = roundMoney(costEntries
     .filter((entry) => entry.username === username)
     .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
   const hasLimit = limitUsd !== null;
