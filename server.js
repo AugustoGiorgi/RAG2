@@ -43,6 +43,8 @@ const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const ACCESS_REQUESTS_PATH = path.join(DATA_DIR, "access_requests.json");
 const CLIENT_FILES_DIR = path.join(DATA_DIR, "client_files");
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 const LOCAL_SECRETS_PATH = path.join(DATA_DIR, "local-secrets.json");
 const LOCAL_SECRETS = loadLocalSecrets();
 const GOOGLE_TOKEN_PATH = path.join(DATA_DIR, "google_tokens.json");
@@ -4534,8 +4536,8 @@ function safeEqual(left, right) {
 }
 
 function ensureDatabase() {
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.mkdirSync(CLIENT_FILES_DIR, { recursive: true });
+  ensurePrivateDirectory(DATA_DIR);
+  ensurePrivateDirectory(CLIENT_FILES_DIR);
   if (!fsSync.existsSync(DB_PATH)) writeDb({ clients: {}, sessions: {} });
   if (!fsSync.existsSync(CLIENTS_PATH)) writeJsonFile(CLIENTS_PATH, { clients: {} });
   if (!fsSync.existsSync(FIRM_LIBRARY_PATH)) writeJsonFile(FIRM_LIBRARY_PATH, { documents: [], globalInstructions: "" });
@@ -4547,6 +4549,11 @@ function ensureDatabase() {
   if (!fsSync.existsSync(ACCESS_REQUESTS_PATH)) writeJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
 }
 
+function ensurePrivateDirectory(dirPath) {
+  fsSync.mkdirSync(dirPath, { recursive: true, mode: PRIVATE_DIR_MODE });
+  try { fsSync.chmodSync(dirPath, PRIVATE_DIR_MODE); } catch (_) {}
+}
+
 function readJsonFile(filePath, fallback) {
   try {
     return JSON.parse(fsSync.readFileSync(filePath, "utf8"));
@@ -4556,10 +4563,12 @@ function readJsonFile(filePath, fallback) {
 }
 
 function writeJsonFile(filePath, value) {
-  fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+  ensurePrivateDirectory(path.dirname(filePath));
   const tempPath = `${filePath}.${process.pid}.tmp`;
-  fsSync.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
+  fsSync.writeFileSync(tempPath, JSON.stringify(value, null, 2), { encoding: "utf8", mode: PRIVATE_FILE_MODE });
+  try { fsSync.chmodSync(tempPath, PRIVATE_FILE_MODE); } catch (_) {}
   fsSync.renameSync(tempPath, filePath);
+  try { fsSync.chmodSync(filePath, PRIVATE_FILE_MODE); } catch (_) {}
 }
 
 function structuredCloneSafe(value) {
@@ -4625,10 +4634,12 @@ function readDb() {
 }
 
 function writeDb(db) {
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
+  ensurePrivateDirectory(DATA_DIR);
   const tempPath = `${DB_PATH}.${process.pid}.tmp`;
-  fsSync.writeFileSync(tempPath, JSON.stringify({ clients: db.clients || {}, sessions: db.sessions || {} }, null, 2), "utf8");
+  fsSync.writeFileSync(tempPath, JSON.stringify({ clients: db.clients || {}, sessions: db.sessions || {} }, null, 2), { encoding: "utf8", mode: PRIVATE_FILE_MODE });
+  try { fsSync.chmodSync(tempPath, PRIVATE_FILE_MODE); } catch (_) {}
   fsSync.renameSync(tempPath, DB_PATH);
+  try { fsSync.chmodSync(DB_PATH, PRIVATE_FILE_MODE); } catch (_) {}
   writeJsonFile(CLIENTS_PATH, { clients: db.clients || {} });
 }
 
@@ -5024,15 +5035,13 @@ function readGoogleTokens(username = "default") {
 function writeGoogleTokens(username, tokens) {
   const store = readGoogleTokenStore();
   store.users[String(username || "default")] = tokens;
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
+  writeJsonFile(GOOGLE_TOKEN_PATH, { users: encryptUserMap(store.users || {}) });
 }
 
 function deleteGoogleTokens(username) {
   const store = readGoogleTokenStore();
   delete store.users[String(username || "default")];
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(GOOGLE_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
+  writeJsonFile(GOOGLE_TOKEN_PATH, { users: encryptUserMap(store.users || {}) });
 }
 
 function isQboEnabled() {
@@ -5050,8 +5059,7 @@ function readQboStore() {
 }
 
 function writeQboStore(store) {
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(QBO_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
+  writeJsonFile(QBO_TOKEN_PATH, { users: encryptUserMap(store.users || {}) });
 }
 
 function getQboUserStore(username) {
@@ -5282,8 +5290,7 @@ function readAccountingStore() {
 }
 
 function writeAccountingStore(store) {
-  fsSync.mkdirSync(DATA_DIR, { recursive: true });
-  fsSync.writeFileSync(ACCOUNTING_TOKEN_PATH, JSON.stringify({ users: encryptUserMap(store.users || {}) }, null, 2), "utf8");
+  writeJsonFile(ACCOUNTING_TOKEN_PATH, { users: encryptUserMap(store.users || {}) });
 }
 
 function accountingStoreKey(username, softwareId) {
@@ -7173,8 +7180,9 @@ function saveClientDocument(client, payload = {}) {
       const safeName = safeFileName(doc.name);
       const relPath = path.join("data", "client_files", client.id, `${doc.id}-${safeName}`).replace(/\\/g, "/");
       const absPath = path.join(ROOT, relPath);
-      fsSync.mkdirSync(path.dirname(absPath), { recursive: true });
-      fsSync.writeFileSync(absPath, buffer);
+      ensurePrivateDirectory(path.dirname(absPath));
+      fsSync.writeFileSync(absPath, buffer, { mode: PRIVATE_FILE_MODE });
+      try { fsSync.chmodSync(absPath, PRIVATE_FILE_MODE); } catch (_) {}
       doc.localPath = `./${relPath}`;
     }
   }
