@@ -6,6 +6,8 @@ const { createPool } = require("../lib/postgres");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT_DIR, "data");
+const DEFAULT_TENANT_ID = String(process.env.DEFAULT_TENANT_ID || "rag-tax-ai").trim() || "rag-tax-ai";
+const DEFAULT_TENANT_NAME = String(process.env.DEFAULT_TENANT_NAME || "RAG Tax AI").trim() || "RAG Tax AI";
 
 function readJson(fileName, fallback) {
   const filePath = path.join(DATA_DIR, fileName);
@@ -31,17 +33,40 @@ function jsonb(value) {
   return JSON.stringify(value ?? {});
 }
 
+function userTenantMap() {
+  const store = readJson("users.json", { users: [] });
+  const map = new Map();
+  (Array.isArray(store.users) ? store.users : []).forEach((user) => {
+    if (user?.username) map.set(String(user.username), String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID));
+  });
+  return map;
+}
+
 async function migrateUsers(client) {
+  await client.query(
+    `insert into rag_private.firms (tenant_id, name)
+     values ($1, $2)
+     on conflict (tenant_id) do update set name = excluded.name`,
+    [DEFAULT_TENANT_ID, DEFAULT_TENANT_NAME],
+  );
   const store = readJson("users.json", { users: [] });
   const users = Array.isArray(store.users) ? store.users : [];
   for (const user of users) {
     if (!user?.username || !user?.passwordHash) continue;
+    const tenantId = String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID);
+    await client.query(
+      `insert into rag_private.firms (tenant_id, name)
+       values ($1, $2)
+       on conflict (tenant_id) do nothing`,
+      [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+    );
     await client.query(
       `insert into rag_private.app_users
-        (username, password_hash, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
-       values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), coalesce($8::timestamptz, now()), $9::timestamptz)
+        (username, password_hash, tenant_id, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
+       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8::timestamptz, now()), coalesce($9::timestamptz, now()), $10::timestamptz)
        on conflict (username) do update set
         password_hash = excluded.password_hash,
+        tenant_id = excluded.tenant_id,
         role = excluded.role,
         display_name = excluded.display_name,
         active = excluded.active,
@@ -51,6 +76,7 @@ async function migrateUsers(client) {
       [
         String(user.username),
         String(user.passwordHash),
+        tenantId,
         user.role === "admin" ? "admin" : "user",
         String(user.displayName || user.username),
         user.active !== false,
@@ -59,6 +85,12 @@ async function migrateUsers(client) {
         isoOrNull(user.updatedAt),
         isoOrNull(user.lastPasswordChangeAt),
       ],
+    );
+    await client.query(
+      `insert into rag_private.user_firms (username, tenant_id, firm_role)
+       values ($1, $2, $3)
+       on conflict (username, tenant_id) do update set firm_role = excluded.firm_role`,
+      [String(user.username), tenantId, user.role === "admin" ? "admin" : "member"],
     );
   }
   return users.length;
@@ -69,16 +101,25 @@ async function migrateClients(client) {
   const clients = db.clients && typeof db.clients === "object" ? db.clients : {};
   let count = 0;
   for (const [clientId, record] of Object.entries(clients)) {
+    const tenantId = record?.tenantId || record?.tenant_id || DEFAULT_TENANT_ID;
     await client.query(
-      `insert into rag_private.clients (client_id, owner_username, display_name, payload)
-       values ($1, $2, $3, $4::jsonb)
+      `insert into rag_private.firms (tenant_id, name)
+       values ($1, $2)
+       on conflict (tenant_id) do nothing`,
+      [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+    );
+    await client.query(
+      `insert into rag_private.clients (client_id, tenant_id, owner_username, display_name, payload)
+       values ($1, $2, $3, $4, $5::jsonb)
        on conflict (client_id) do update set
+        tenant_id = excluded.tenant_id,
         owner_username = excluded.owner_username,
         display_name = excluded.display_name,
         payload = excluded.payload,
         updated_at = now()`,
       [
         clientId,
+        tenantId,
         record?.ownerUsername || record?.createdBy || null,
         record?.name || record?.clientName || clientId,
         jsonb(record),
@@ -92,14 +133,17 @@ async function migrateClients(client) {
 async function migrateCostLog(client) {
   const store = readJson("cost_log.json", { entries: [] });
   const entries = Array.isArray(store.entries) ? store.entries : [];
+  const tenantsByUsername = userTenantMap();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index] || {};
+    const username = entry.username || entry.user || null;
     await client.query(
       `insert into rag_private.cost_log_entries
-        (source_index, username, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::jsonb)
+        (source_index, username, tenant_id, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::jsonb)
        on conflict (source_index) do update set
         username = excluded.username,
+        tenant_id = excluded.tenant_id,
         action = excluded.action,
         model = excluded.model,
         input_tokens = excluded.input_tokens,
@@ -109,7 +153,8 @@ async function migrateCostLog(client) {
         payload = excluded.payload`,
       [
         index,
-        entry.username || entry.user || null,
+        username,
+        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
         entry.action || null,
         entry.model || null,
         normalizeNumber(entry.inputTokens ?? entry.input_tokens),
@@ -126,20 +171,24 @@ async function migrateCostLog(client) {
 async function migrateAuditLog(client) {
   const store = readJson("audit_log.json", { entries: [] });
   const entries = Array.isArray(store.entries) ? store.entries : [];
+  const tenantsByUsername = userTenantMap();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index] || {};
+    const username = entry.username || entry.user?.username || null;
     await client.query(
       `insert into rag_private.audit_log_entries
-        (source_index, username, action, occurred_at, payload)
-       values ($1, $2, $3, $4::timestamptz, $5::jsonb)
+        (source_index, username, tenant_id, action, occurred_at, payload)
+       values ($1, $2, $3, $4, $5::timestamptz, $6::jsonb)
        on conflict (source_index) do update set
         username = excluded.username,
+        tenant_id = excluded.tenant_id,
         action = excluded.action,
         occurred_at = excluded.occurred_at,
         payload = excluded.payload`,
       [
         index,
-        entry.username || entry.user?.username || null,
+        username,
+        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
         entry.action || null,
         isoOrNull(entry.createdAt || entry.timestamp || entry.occurredAt),
         jsonb(entry),
@@ -166,8 +215,8 @@ async function migrateAccessRequests(client) {
         payload = excluded.payload`,
       [
         index,
-        entry.email || null,
-        entry.name || entry.company || entry.firm || null,
+        entry.email || entry.contactEmail || null,
+        entry.name || entry.contactName || entry.company || entry.firm || null,
         entry.estimatedReturns || entry.estimated_returns || entry.returns || null,
         isoOrNull(entry.createdAt || entry.timestamp),
         jsonb(entry),
@@ -189,6 +238,7 @@ async function storeSnapshots(client) {
     "google_tokens.json",
     "qbo_tokens.json",
     "accounting_tokens.json",
+    "access_requests.json",
   ];
   let count = 0;
   for (const fileName of snapshotFiles) {

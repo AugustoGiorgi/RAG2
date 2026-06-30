@@ -56,6 +56,7 @@ let databasePool = null;
 let databaseReady = false;
 let databaseHydrating = false;
 let databaseSyncQueue = Promise.resolve();
+let databaseSyncLastError = "";
 const MASTER_REVIEW_PROMPT_PATH = path.join(ROOT, "senior-review-master-prompt.txt");
 const KNOWLEDGE_BASE_DIR = path.resolve(process.env.KNOWLEDGE_BASE_DIR || path.join(ROOT, "knowledge_base"));
 const REVIEW_EXAMPLES_DIR = path.resolve(process.env.REVIEW_EXAMPLES_DIR || path.join(ROOT, "review_examples"));
@@ -82,10 +83,25 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
+const USER_AI_RATE_LIMIT_WINDOW_MS = Number(process.env.USER_AI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+const USER_AI_RATE_LIMIT_MAX = Number(process.env.USER_AI_RATE_LIMIT_MAX || 80);
+const USER_UPLOAD_RATE_LIMIT_WINDOW_MS = Number(process.env.USER_UPLOAD_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
+const USER_UPLOAD_RATE_LIMIT_MAX = Number(process.env.USER_UPLOAD_RATE_LIMIT_MAX || 160);
+const ADMIN_WRITE_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_WRITE_RATE_LIMIT_WINDOW_MS || 10 * 60 * 1000);
+const ADMIN_WRITE_RATE_LIMIT_MAX = Number(process.env.ADMIN_WRITE_RATE_LIMIT_MAX || 40);
+const ADMIN_READ_RATE_LIMIT_WINDOW_MS = Number(process.env.ADMIN_READ_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const ADMIN_READ_RATE_LIMIT_MAX = Number(process.env.ADMIN_READ_RATE_LIMIT_MAX || 120);
 const TOKEN_ENCRYPTION_KEY = String(process.env.TOKEN_ENCRYPTION_KEY || LOCAL_SECRETS.tokenEncryptionKey || "").trim();
 const TOKEN_ENCRYPTION_KEY_BYTES = tokenEncryptionKeyBytes(TOKEN_ENCRYPTION_KEY);
 const DATABASE_PERSISTENCE_ENABLED = isDatabaseConfigured();
+const DEFAULT_TENANT_ID = String(process.env.DEFAULT_TENANT_ID || "rag-tax-ai").trim() || "rag-tax-ai";
+const DEFAULT_TENANT_NAME = String(process.env.DEFAULT_TENANT_NAME || "RAG Tax AI").trim() || "RAG Tax AI";
+const ADMIN_2FA_ENABLED = String(process.env.ADMIN_2FA_ENABLED || "false").toLowerCase() === "true";
+const ADMIN_2FA_CODE_TTL_MS = Number(process.env.ADMIN_2FA_CODE_TTL_MS || 10 * 60 * 1000);
+const ADMIN_2FA_MAX_ATTEMPTS = Number(process.env.ADMIN_2FA_MAX_ATTEMPTS || 5);
+const ADMIN_2FA_EMAIL = String(process.env.ADMIN_2FA_EMAIL || process.env.ACCESS_REQUEST_NOTIFY_EMAIL || "").trim();
 const CLIENT_FILE_PERSISTENCE_ENABLED = String(process.env.ENABLE_CLIENT_FILE_PERSISTENCE || "false").toLowerCase() === "true";
+const CLIENT_FILE_RETENTION_DAYS = Number(process.env.CLIENT_FILE_RETENTION_DAYS || 365);
 const WEB_SEARCH_ENABLED = String(process.env.ENABLE_CLAUDE_WEB_SEARCH || "true").toLowerCase() === "true";
 const WEB_SEARCH_MAX_USES = Number(process.env.CLAUDE_WEB_SEARCH_MAX_USES || 3);
 const WEB_SEARCH_ALLOWED_DOMAINS = String(process.env.CLAUDE_WEB_ALLOWED_DOMAINS || "")
@@ -129,6 +145,7 @@ const MASTER_REVIEW_PROMPT = loadMasterReviewPrompt();
 ensureDatabase();
 const researchHistories = new Map();
 const rateLimitBuckets = new Map();
+const adminTwoFactorChallenges = new Map();
 
 const ACCOUNTING_SOFTWARE = {
   quickbooks: {
@@ -638,6 +655,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname === "/terms") { serveEula(res); return; }
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
+    if (!requireFineGrainedRateLimit(req, res, requestUrl)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
@@ -776,6 +794,10 @@ async function startServer() {
 
 setInterval(() => {
   try { checkDeadlineNotifications(); } catch (error) { console.warn("[Deadlines] Notification check failed:", error.message); }
+}, 6 * 60 * 60 * 1000);
+
+setInterval(() => {
+  try { enforceClientFileRetention(); } catch (error) { console.warn("[Retention] Cleanup failed:", error.message); }
 }, 6 * 60 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
@@ -4053,6 +4075,26 @@ async function handleLogin(req, res) {
     return;
   }
 
+  if (ADMIN_2FA_ENABLED && user.role === "admin") {
+    const challengeId = String(payload.twoFactorChallengeId || "").trim();
+    const code = String(payload.twoFactorCode || "").trim();
+    if (challengeId || code) {
+      const verification = verifyAdminTwoFactorChallenge(req, user, challengeId, code);
+      if (!verification.ok) {
+        sendJson(res, 401, { error: verification.error });
+        return;
+      }
+    } else {
+      const challenge = await startAdminTwoFactorChallenge(req, user).catch((error) => ({ ok: false, error: error.message || "Could not send verification code." }));
+      if (!challenge.ok) {
+        sendJson(res, 503, { error: challenge.error || "Could not send admin verification code." });
+        return;
+      }
+      sendJson(res, 202, { requiresTwoFactor: true, challengeId: challenge.challengeId, message: "Verification code sent." });
+      return;
+    }
+  }
+
   const sessionUser = authUserForSession(user);
   const token = signSession({ ...sessionUser, user: sessionUser, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS });
   res.setHeader("set-cookie", buildSessionCookie(token));
@@ -4093,8 +4135,10 @@ async function handleAccessRequest(req, res) {
     mailStatus: "pending",
   };
   saveAccessRequest(request);
+  await flushDatabaseSyncQueue();
   const mailResult = await notifyAccessRequest(request).catch((error) => ({ ok: false, error: error.message || "Mail notification failed." }));
   updateAccessRequestMailStatus(request.id, mailResult);
+  await flushDatabaseSyncQueue();
   appendAuditLog(req, "access_request.created", {
     email,
     contactName,
@@ -4174,6 +4218,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const user = {
         username,
         passwordHash: createPasswordHash(password),
+        tenantId: String(payload.tenantId || DEFAULT_TENANT_ID),
         role: payload.role === "admin" ? "admin" : "user",
         displayName: String(payload.displayName || username).trim(),
         spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
@@ -4184,6 +4229,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       };
       store.users.push(user);
       writeUserStore(store);
+      await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_created", { username, role: user.role });
       sendJson(res, 200, { user: publicUser(user) });
       return;
@@ -4199,6 +4245,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
       user.updatedAt = new Date().toISOString();
       writeUserStore(store);
+      await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd });
       sendJson(res, 200, { user: publicUser(user) });
       return;
@@ -4211,6 +4258,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (user.username === req.user?.username) { sendJson(res, 400, { error: "You cannot delete your own admin account." }); return; }
       store.users.splice(index, 1);
       writeUserStore(store);
+      await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_deleted", { username, role: user.role });
       sendJson(res, 200, { ok: true });
       return;
@@ -4226,6 +4274,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       user.updatedAt = new Date().toISOString();
       user.lastPasswordChangeAt = user.updatedAt;
       writeUserStore(store);
+      await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_password_reset", { username });
       sendJson(res, 200, { ok: true, user: publicUser(user) });
       return;
@@ -4411,6 +4460,7 @@ function parseAuthUsersJson() {
       .filter((user) => user && typeof user.username === "string" && typeof user.passwordHash === "string")
       .map((user) => ({
         ...user,
+        tenantId: String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID),
         role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
         displayName: String(user.displayName || user.username),
         spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
@@ -4488,6 +4538,7 @@ function createPasswordHash(password) {
 function authUserForSession(user) {
   return {
     username: String(user?.username || ""),
+    tenantId: String(user?.tenantId || user?.tenant_id || DEFAULT_TENANT_ID),
     role: user?.role === "admin" ? "admin" : "user",
     displayName: String(user?.displayName || user?.username || ""),
   };
@@ -4666,7 +4717,7 @@ async function hydrateLocalDataFromDatabase() {
 
 async function hydrateUsersFromDatabase() {
   const result = await databasePool.query(
-    `select username, password_hash, role, display_name, active, spend_limit_usd,
+    `select username, password_hash, tenant_id, role, display_name, active, spend_limit_usd,
             created_at, updated_at, last_password_change_at
        from rag_private.app_users
       order by created_at nulls last, username`,
@@ -4676,6 +4727,7 @@ async function hydrateUsersFromDatabase() {
     users: result.rows.map((row) => ({
       username: row.username,
       passwordHash: row.password_hash,
+      tenantId: row.tenant_id || DEFAULT_TENANT_ID,
       role: row.role === "admin" ? "admin" : "user",
       displayName: row.display_name || row.username,
       active: row.active !== false,
@@ -4712,8 +4764,24 @@ function queueDatabaseSync(filePath, value) {
   databaseSyncQueue = databaseSyncQueue
     .then(() => syncJsonToDatabase(filePath, snapshotKey, payload))
     .catch((error) => {
+      databaseSyncLastError = error.message || String(error);
       console.warn(`[Database] Sync failed for ${snapshotKey}:`, error.message);
     });
+}
+
+async function flushDatabaseSyncQueue(timeoutMs = 5000) {
+  if (!databaseReady || !databasePool) return;
+  let timeout;
+  try {
+    await Promise.race([
+      databaseSyncQueue,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Database sync timeout.")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 async function syncJsonToDatabase(filePath, snapshotKey, payload) {
@@ -4734,17 +4802,31 @@ async function syncJsonToDatabase(filePath, snapshotKey, payload) {
 }
 
 async function syncUsersToDatabase(store) {
+  await databasePool.query(
+    `insert into rag_private.firms (tenant_id, name)
+     values ($1, $2)
+     on conflict (tenant_id) do update set name = excluded.name`,
+    [DEFAULT_TENANT_ID, DEFAULT_TENANT_NAME],
+  );
   const users = Array.isArray(store?.users) ? store.users : [];
   const usernames = [];
   for (const user of users) {
     if (!user?.username || !user?.passwordHash) continue;
+    const tenantId = String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID);
     usernames.push(String(user.username));
     await databasePool.query(
+      `insert into rag_private.firms (tenant_id, name)
+       values ($1, $2)
+       on conflict (tenant_id) do nothing`,
+      [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+    );
+    await databasePool.query(
       `insert into rag_private.app_users
-        (username, password_hash, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
-       values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()), coalesce($8::timestamptz, now()), $9::timestamptz)
+        (username, password_hash, tenant_id, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
+       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8::timestamptz, now()), coalesce($9::timestamptz, now()), $10::timestamptz)
        on conflict (username) do update set
         password_hash = excluded.password_hash,
+        tenant_id = excluded.tenant_id,
         role = excluded.role,
         display_name = excluded.display_name,
         active = excluded.active,
@@ -4754,6 +4836,7 @@ async function syncUsersToDatabase(store) {
       [
         String(user.username),
         String(user.passwordHash),
+        tenantId,
         user.role === "admin" ? "admin" : "user",
         String(user.displayName || user.username),
         user.active !== false,
@@ -4763,6 +4846,12 @@ async function syncUsersToDatabase(store) {
         sqlTimestamp(user.lastPasswordChangeAt),
       ],
     );
+    await databasePool.query(
+      `insert into rag_private.user_firms (username, tenant_id, firm_role)
+       values ($1, $2, $3)
+       on conflict (username, tenant_id) do update set firm_role = excluded.firm_role`,
+      [String(user.username), tenantId, user.role === "admin" ? "admin" : "member"],
+    );
   }
   if (usernames.length) {
     await databasePool.query("delete from rag_private.app_users where not (username = any($1::text[]))", [usernames]);
@@ -4771,16 +4860,19 @@ async function syncUsersToDatabase(store) {
 
 async function syncCostLogToDatabase(store) {
   const entries = Array.isArray(store?.entries) ? store.entries : [];
+  const tenantsByUsername = userTenantMap();
   await databasePool.query("delete from rag_private.cost_log_entries");
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index] || {};
+    const username = entry.username || entry.user || null;
     await databasePool.query(
       `insert into rag_private.cost_log_entries
-        (source_index, username, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::jsonb)`,
+        (source_index, username, tenant_id, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::jsonb)`,
       [
         index,
-        entry.username || entry.user || null,
+        username,
+        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
         entry.action || null,
         entry.model || null,
         sqlNumber(entry.inputTokens ?? entry.input_tokens),
@@ -4795,16 +4887,19 @@ async function syncCostLogToDatabase(store) {
 
 async function syncAuditLogToDatabase(store) {
   const entries = Array.isArray(store?.entries) ? store.entries : [];
+  const tenantsByUsername = userTenantMap();
   await databasePool.query("delete from rag_private.audit_log_entries");
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index] || {};
+    const username = entry.username || entry.user?.username || null;
     await databasePool.query(
       `insert into rag_private.audit_log_entries
-        (source_index, username, action, occurred_at, payload)
-       values ($1, $2, $3, $4::timestamptz, $5::jsonb)`,
+        (source_index, username, tenant_id, action, occurred_at, payload)
+       values ($1, $2, $3, $4, $5::timestamptz, $6::jsonb)`,
       [
         index,
-        entry.username || entry.user?.username || null,
+        username,
+        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
         entry.action || null,
         sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at),
         jsonParam(entry),
@@ -4838,16 +4933,25 @@ async function syncClientsToDatabase(store) {
   const clients = store?.clients && typeof store.clients === "object" ? store.clients : {};
   await databasePool.query("delete from rag_private.clients");
   for (const [clientId, record] of Object.entries(clients)) {
+    const tenantId = record?.tenantId || record?.tenant_id || DEFAULT_TENANT_ID;
     await databasePool.query(
-      `insert into rag_private.clients (client_id, owner_username, display_name, payload)
-       values ($1, $2, $3, $4::jsonb)
+      `insert into rag_private.firms (tenant_id, name)
+       values ($1, $2)
+       on conflict (tenant_id) do nothing`,
+      [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+    );
+    await databasePool.query(
+      `insert into rag_private.clients (client_id, tenant_id, owner_username, display_name, payload)
+       values ($1, $2, $3, $4, $5::jsonb)
        on conflict (client_id) do update set
+        tenant_id = excluded.tenant_id,
         owner_username = excluded.owner_username,
         display_name = excluded.display_name,
         payload = excluded.payload,
         updated_at = now()`,
       [
         clientId,
+        tenantId,
         record?.ownerUsername || record?.createdBy || null,
         record?.name || record?.clientName || clientId,
         jsonParam(record),
@@ -4873,6 +4977,15 @@ async function syncOauthTokenStoreToDatabase(provider, store) {
 
 function structuredCloneSafe(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function userTenantMap() {
+  const store = readUserStore();
+  const map = new Map();
+  (Array.isArray(store.users) ? store.users : []).forEach((user) => {
+    if (user?.username) map.set(String(user.username), String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID));
+  });
+  return map;
 }
 
 function tokenEncryptionKeyBytes(value) {
@@ -4983,7 +5096,7 @@ function updateAccessRequestMailStatus(id, mailResult) {
 
 async function notifyAccessRequest(request) {
   const to = String(process.env.ACCESS_REQUEST_NOTIFY_EMAIL || "ramiroflores@ragtax-ia.com").trim();
-  const from = String(process.env.ACCESS_REQUEST_FROM_EMAIL || "no-reply@ragtax-ia.com").trim();
+  const from = smtpFromAddress();
   const subject = `New RAG Tax AI access request - ${request.contactName}`;
   const bodyText = [
     "A new access request was submitted from the RAG Tax AI login page.",
@@ -5001,8 +5114,79 @@ async function notifyAccessRequest(request) {
   return { ok: true };
 }
 
+function smtpFromAddress() {
+  return String(process.env.ACCESS_REQUEST_FROM_EMAIL || process.env.SMTP_FROM || process.env.ACCESS_REQUEST_SMTP_USER || "no-reply@ragtax-ia.com").trim();
+}
+
 function smtpConfigured() {
   return Boolean(String(process.env.ACCESS_REQUEST_SMTP_HOST || "").trim());
+}
+
+function adminTwoFactorTarget(user) {
+  return String(user?.email || ADMIN_2FA_EMAIL || "").trim();
+}
+
+function hashTwoFactorCode(code) {
+  return hmac(`admin-2fa:${code}`);
+}
+
+async function startAdminTwoFactorChallenge(req, user) {
+  if (!smtpConfigured()) {
+    appendAuditLog(req, "auth.admin_2fa_delivery_missing", { username: user.username, reason: "smtp_not_configured" });
+    return { ok: false, error: "Admin two-factor authentication is enabled, but SMTP is not configured." };
+  }
+  const to = adminTwoFactorTarget(user);
+  if (!to) {
+    appendAuditLog(req, "auth.admin_2fa_delivery_missing", { username: user.username, reason: "email_not_configured" });
+    return { ok: false, error: "Admin two-factor authentication is enabled, but no admin security email is configured." };
+  }
+  const challengeId = crypto.randomUUID();
+  const code = String(crypto.randomInt(100000, 1000000));
+  adminTwoFactorChallenges.set(challengeId, {
+    username: user.username,
+    codeHash: hashTwoFactorCode(code),
+    expiresAt: Date.now() + ADMIN_2FA_CODE_TTL_MS,
+    attempts: 0,
+  });
+  await sendSmtpMail({
+    from: smtpFromAddress(),
+    to,
+    subject: "RAG Tax AI admin verification code",
+    bodyText: [
+      `Your RAG Tax AI admin verification code is: ${code}`,
+      "",
+      `This code expires in ${Math.max(1, Math.round(ADMIN_2FA_CODE_TTL_MS / 60000))} minutes.`,
+      "If you did not request this login, change the admin password and review the audit log.",
+    ].join("\n"),
+  });
+  appendAuditLog(req, "auth.admin_2fa_sent", { username: user.username, to });
+  return { ok: true, challengeId };
+}
+
+function verifyAdminTwoFactorChallenge(req, user, challengeId, code) {
+  const challenge = adminTwoFactorChallenges.get(challengeId);
+  if (!challenge || challenge.username !== user.username) {
+    appendAuditLog(req, "auth.admin_2fa_failed", { username: user.username, reason: "missing_challenge" });
+    return { ok: false, error: "Verification code expired. Please sign in again." };
+  }
+  if (Date.now() > challenge.expiresAt) {
+    adminTwoFactorChallenges.delete(challengeId);
+    appendAuditLog(req, "auth.admin_2fa_failed", { username: user.username, reason: "expired" });
+    return { ok: false, error: "Verification code expired. Please sign in again." };
+  }
+  challenge.attempts += 1;
+  if (challenge.attempts > ADMIN_2FA_MAX_ATTEMPTS) {
+    adminTwoFactorChallenges.delete(challengeId);
+    appendAuditLog(req, "auth.admin_2fa_failed", { username: user.username, reason: "too_many_attempts" });
+    return { ok: false, error: "Too many verification attempts. Please sign in again." };
+  }
+  if (!safeEqual(hashTwoFactorCode(String(code || "").trim()), challenge.codeHash)) {
+    appendAuditLog(req, "auth.admin_2fa_failed", { username: user.username, reason: "invalid_code" });
+    return { ok: false, error: "Invalid verification code." };
+  }
+  adminTwoFactorChallenges.delete(challengeId);
+  appendAuditLog(req, "auth.admin_2fa_success", { username: user.username });
+  return { ok: true };
 }
 
 async function sendSmtpMail({ from, to, subject, bodyText }) {
@@ -5108,12 +5292,34 @@ function readAuditEntries(limit = 200) {
 }
 
 function sanitizeAuditDetails(details = {}) {
-  const redactedKeys = /token|secret|password|authorization|api[_-]?key|content|base64/i;
-  const output = {};
-  Object.entries(details || {}).forEach(([key, value]) => {
-    output[key] = redactedKeys.test(key) ? "[redacted]" : typeof value === "string" ? value.slice(0, 500) : value;
-  });
-  return output;
+  return redactSensitiveValue(details, 0);
+}
+
+function redactSensitiveValue(value, depth = 0, key = "") {
+  const redactedKeys = /token|secret|password|authorization|api[_-]?key|content|base64|ssn|ein|taxpayer|social|refresh|access/i;
+  if (redactedKeys.test(String(key || ""))) return "[redacted]";
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactSensitiveString(value).slice(0, 500);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 3) return "[truncated]";
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => redactSensitiveValue(item, depth + 1));
+  if (typeof value === "object") {
+    const output = {};
+    Object.entries(value).slice(0, 40).forEach(([childKey, childValue]) => {
+      output[childKey] = redactSensitiveValue(childValue, depth + 1, childKey);
+    });
+    return output;
+  }
+  return String(value).slice(0, 200);
+}
+
+function redactSensitiveString(value) {
+  return String(value || "")
+    .replace(/\b\d{3}-\d{2}-\d{4}\b/g, "[redacted-ssn]")
+    .replace(/\b\d{2}-\d{7}\b/g, "[redacted-ein]")
+    .replace(/\b\d{9}\b/g, "[redacted-id]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/sk-[A-Za-z0-9._-]{12,}/g, "[redacted-key]");
 }
 
 function clientIp(req) {
@@ -5130,6 +5336,57 @@ function isRateLimited(req, bucket, maxRequests, windowMs) {
   }
   current.count += 1;
   return current.count > maxRequests;
+}
+
+function isUserRateLimited(req, bucket, maxRequests, windowMs) {
+  const session = req.user || getSession(req) || {};
+  const username = session.username || "anonymous";
+  return isRateLimited(req, `${bucket}:user:${username}`, maxRequests, windowMs);
+}
+
+function requireFineGrainedRateLimit(req, res, requestUrl) {
+  const session = req.user || getSession(req) || {};
+  const pathName = requestUrl.pathname;
+  if (session.role === "admin" && pathName.startsWith("/api/admin")) {
+    const isWrite = req.method !== "GET";
+    const limited = isUserRateLimited(
+      req,
+      isWrite ? "admin-write" : "admin-read",
+      isWrite ? ADMIN_WRITE_RATE_LIMIT_MAX : ADMIN_READ_RATE_LIMIT_MAX,
+      isWrite ? ADMIN_WRITE_RATE_LIMIT_WINDOW_MS : ADMIN_READ_RATE_LIMIT_WINDOW_MS,
+    );
+    if (limited) {
+      appendAuditLog(req, "admin.rate_limited", { path: pathName, method: req.method });
+      sendJson(res, 429, { error: "Too many administrator actions. Please wait a moment and try again." });
+      return false;
+    }
+  }
+
+  if (isTokenConsumingRoute(req, requestUrl)) {
+    if (isUserRateLimited(req, "ai-action", USER_AI_RATE_LIMIT_MAX, USER_AI_RATE_LIMIT_WINDOW_MS)) {
+      appendAuditLog(req, "ai.rate_limited", { path: pathName, method: req.method });
+      sendJson(res, 429, { error: "Too many AI actions in a short period. Please wait a few minutes and try again." });
+      return false;
+    }
+  }
+
+  if (isUploadRoute(req, requestUrl)) {
+    if (isUserRateLimited(req, "upload", USER_UPLOAD_RATE_LIMIT_MAX, USER_UPLOAD_RATE_LIMIT_WINDOW_MS)) {
+      appendAuditLog(req, "upload.rate_limited", { path: pathName, method: req.method });
+      sendJson(res, 429, { error: "Too many uploads in a short period. Please wait a few minutes and try again." });
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isUploadRoute(req, requestUrl) {
+  if (req.method !== "POST") return false;
+  return requestUrl.pathname === "/api/context/upload"
+    || requestUrl.pathname.includes("upload")
+    || requestUrl.pathname.includes("document")
+    || requestUrl.pathname.includes("drive-sync");
 }
 
 function pickClientFields(payload = {}) {
@@ -5158,7 +5415,7 @@ function getOrCreateClient(db, payload = {}) {
   const existing = Object.values(db.clients).find((client) => client.name.toLowerCase() === clientFields.name.toLowerCase() && clientFields.name);
   if (existing) return existing;
   const now = new Date().toISOString();
-  const client = normalizeClientRecord({ id: crypto.randomUUID(), ...clientFields, name: clientFields.name || "Unnamed client", createdAt: now, updatedAt: now });
+  const client = normalizeClientRecord({ id: crypto.randomUUID(), tenantId: DEFAULT_TENANT_ID, ...clientFields, name: clientFields.name || "Unnamed client", createdAt: now, updatedAt: now });
   db.clients[client.id] = client;
   return client;
 }
@@ -5166,6 +5423,7 @@ function getOrCreateClient(db, payload = {}) {
 function normalizeClientRecord(client = {}) {
   return {
     ...client,
+    tenantId: String(client.tenantId || client.tenant_id || DEFAULT_TENANT_ID),
     taxSoftware: normalizeTaxSoftware(client.taxSoftware),
     permanentInstructions: Array.isArray(client.permanentInstructions) ? client.permanentInstructions : [],
     relatedParties: Array.isArray(client.relatedParties) ? client.relatedParties : [],
@@ -5193,6 +5451,7 @@ function normalizeSession(payload = {}) {
   const now = new Date().toISOString();
   const session = {
     id: String(payload.id || crypto.randomUUID()),
+    tenantId: String(payload.tenantId || payload.tenant_id || DEFAULT_TENANT_ID),
     clientId: String(payload.clientId || ""),
     ownerUsername: String(payload.ownerUsername || payload.createdBy || ""),
     createdBy: String(payload.createdBy || payload.ownerUsername || ""),
@@ -7138,6 +7397,10 @@ function buildLoginPage(error = "") {
                 <button class="login-show-password" type="button" id="showPasswordButton">Show</button>
               </div>
             </div>
+            <div class="login-field" id="twoFactorField" hidden>
+              <label for="twoFactorCode">Verification code</label>
+              <input id="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter the 6-digit code" />
+            </div>
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
           <p class="login-access-link">No account yet? <a href="/request-access">Request access</a></p>
@@ -7147,6 +7410,7 @@ function buildLoginPage(error = "") {
       </section>
     </main>
     <script>
+      let twoFactorChallengeId = "";
       document.getElementById("showPasswordButton").addEventListener("click", () => {
         const input = document.getElementById("password");
         input.type = input.type === "password" ? "text" : "password";
@@ -7160,19 +7424,38 @@ function buildLoginPage(error = "") {
         submit.disabled = true;
         text.hidden = true;
         spinner.hidden = false;
+        const body = {
+          username: document.getElementById("username").value,
+          password: document.getElementById("password").value,
+        };
+        if (twoFactorChallengeId) {
+          body.twoFactorChallengeId = twoFactorChallengeId;
+          body.twoFactorCode = document.getElementById("twoFactorCode").value;
+        }
         const response = await fetch("/api/login", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            username: document.getElementById("username").value,
-            password: document.getElementById("password").value,
-          }),
+          body: JSON.stringify(body),
         });
+        const payload = await response.json().catch(() => ({}));
+        if (response.status === 202 && payload.requiresTwoFactor) {
+          twoFactorChallengeId = payload.challengeId || "";
+          document.getElementById("twoFactorField").hidden = false;
+          document.getElementById("twoFactorCode").required = true;
+          document.getElementById("twoFactorCode").focus();
+          const error = document.getElementById("error");
+          error.hidden = false;
+          error.textContent = payload.message || "Enter the verification code sent to the admin email.";
+          submit.disabled = false;
+          text.hidden = false;
+          text.textContent = "Verify Code";
+          spinner.hidden = true;
+          return;
+        }
         if (response.ok) {
           window.location.href = "/";
           return;
         }
-        const payload = await response.json().catch(() => ({}));
         const error = document.getElementById("error");
         error.hidden = false;
         error.textContent = payload.error || "Login failed.";
@@ -7452,6 +7735,22 @@ function deleteCollectionItem(client, collection, itemId) {
   return before !== client[collection].length;
 }
 
+function deleteClientDocument(client, documentId) {
+  client.documents = Array.isArray(client.documents) ? client.documents : [];
+  const index = client.documents.findIndex((entry) => entry.id === documentId);
+  if (index < 0) return false;
+  const [doc] = client.documents.splice(index, 1);
+  if (doc?.localPath) {
+    const absPath = path.resolve(ROOT, String(doc.localPath).replace(/^\.\//, ""));
+    const relative = path.relative(CLIENT_FILES_DIR, absPath);
+    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative) && fsSync.existsSync(absPath)) {
+      try { fsSync.rmSync(absPath, { force: true }); } catch (_) {}
+    }
+  }
+  client.updatedAt = new Date().toISOString();
+  return true;
+}
+
 function saveClientDocument(client, payload = {}) {
   const now = new Date().toISOString();
   const doc = {
@@ -7465,6 +7764,10 @@ function saveClientDocument(client, payload = {}) {
     driveFileId: payload.driveFileId || null,
     driveWebViewLink: payload.driveWebViewLink || null,
     localPath: null,
+    storageProvider: CLIENT_FILE_PERSISTENCE_ENABLED ? "vps-local-private" : "external-reference",
+    retentionDays: CLIENT_FILE_RETENTION_DAYS,
+    expiresAt: CLIENT_FILE_RETENTION_DAYS > 0 ? new Date(Date.now() + CLIENT_FILE_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString() : null,
+    deletedAt: null,
     addedAt: now,
     tags: Array.isArray(payload.tags) ? payload.tags.map(String) : [],
   };
@@ -7494,6 +7797,38 @@ function saveClientDocument(client, payload = {}) {
 
 function safeFileName(name) {
   return String(name || "file").replace(/[<>:"/\\|?*\x00-\x1F]+/g, "-").slice(0, 120) || "file";
+}
+
+function enforceClientFileRetention() {
+  if (!Number.isFinite(CLIENT_FILE_RETENTION_DAYS) || CLIENT_FILE_RETENTION_DAYS <= 0) return;
+  const db = readDb();
+  const now = Date.now();
+  let changed = false;
+  Object.values(db.clients || {}).forEach((client) => {
+    const documents = Array.isArray(client.documents) ? client.documents : [];
+    documents.forEach((doc) => {
+      if (!doc || doc.deletedAt || !doc.expiresAt) return;
+      const expiresAt = new Date(doc.expiresAt).getTime();
+      if (!Number.isFinite(expiresAt) || expiresAt > now) return;
+      if (doc.localPath) {
+        const absPath = path.resolve(ROOT, String(doc.localPath).replace(/^\.\//, ""));
+        const relative = path.relative(CLIENT_FILES_DIR, absPath);
+        if (relative && !relative.startsWith("..") && !path.isAbsolute(relative) && fsSync.existsSync(absPath)) {
+          try { fsSync.rmSync(absPath, { force: true }); } catch (_) {}
+        }
+      }
+      doc.deletedAt = new Date().toISOString();
+      doc.retentionStatus = "expired_deleted";
+      doc.localPath = null;
+      doc.contentBase64 = null;
+      client.updatedAt = doc.deletedAt;
+      changed = true;
+    });
+  });
+  if (changed) {
+    writeDb(db);
+    appendAuditLog({ user: { username: "system", role: "system" } }, "retention.documents_enforced", {});
+  }
 }
 
 function handleClientSubresource(req, res, parts) {
@@ -7548,7 +7883,7 @@ function handleClientSubresource(req, res, parts) {
       return true;
     }
     if (req.method === "DELETE" && parts.length === 5) {
-      if (!deleteCollectionItem(client, "documents", itemId)) { sendJson(res, 404, { error: "Document not found." }); return true; }
+      if (!deleteClientDocument(client, itemId)) { sendJson(res, 404, { error: "Document not found." }); return true; }
       writeDb(db);
       appendAuditLog(req, "client.document_deleted", { clientId: client.id, documentId: itemId });
       sendJson(res, 200, { ok: true, client });
@@ -7660,7 +7995,7 @@ function handleClientApi(req, res, requestUrl) {
     readJsonBody(req).then((payload) => {
       const db = readDb();
       const now = new Date().toISOString();
-      const client = { id: crypto.randomUUID(), ...pickClientFields(payload), name: String(payload.name || "Unnamed client").trim(), ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now };
+      const client = { id: crypto.randomUUID(), tenantId: req.user?.tenantId || DEFAULT_TENANT_ID, ...pickClientFields(payload), name: String(payload.name || "Unnamed client").trim(), ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now };
       db.clients[client.id] = client;
       writeDb(db);
       appendAuditLog(req, "client.created", { clientId: client.id, name: client.name });
@@ -8418,10 +8753,11 @@ function handleSessionApi(req, res, requestUrl) {
     readJsonBody(req).then((payload) => {
       const db = readDb();
       const client = getOrCreateClient(db, payload.client || payload);
+      client.tenantId = client.tenantId || req.user?.tenantId || DEFAULT_TENANT_ID;
       client.ownerUsername = client.ownerUsername || username;
       client.createdBy = client.createdBy || username;
       const now = new Date().toISOString();
-      const session = normalizeSession({ ...payload, id: crypto.randomUUID(), clientId: client.id, returnType: payload.returnType || client.returnType || "", ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now });
+      const session = normalizeSession({ ...payload, id: crypto.randomUUID(), tenantId: client.tenantId || req.user?.tenantId || DEFAULT_TENANT_ID, clientId: client.id, returnType: payload.returnType || client.returnType || "", ownerUsername: username, createdBy: username, createdAt: now, updatedAt: now });
       db.sessions[session.id] = session;
       writeDb(db);
       appendAuditLog(req, "session.created", { sessionId: session.id, clientId: client.id });
@@ -8798,6 +9134,9 @@ async function handleHealth(_req, res) {
     ok: true,
     service: "ai-tax-agent",
     apiKeyConfigured: Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim()),
+    databaseConfigured: DATABASE_PERSISTENCE_ENABLED,
+    databaseReady,
+    databaseLastError: databaseSyncLastError ? "present" : "",
   });
 }
 
@@ -14094,7 +14433,7 @@ function serveLegalPage(res, title, bodyHtml) {
 function servePrivacyPolicy(res) {
   serveLegalPage(res, "Privacy Policy", `
     <h1>Privacy Policy</h1>
-    <p><strong>Last updated: June 25, 2026</strong></p>
+    <p><strong>Last updated: June 30, 2026</strong></p>
     <p>RAG Tax AI ("RAG Tax AI", "we", "us", or "the App") provides AI-assisted tax return review, workpaper preparation, client request workflows, tax research support, document analysis, accounting software integrations, and related CPA firm productivity tools. This Privacy Policy explains what information we collect, how we use it, how we protect it, and what choices authorized users have.</p>
     <p>This policy is written for firms and professionals using RAG Tax AI in connection with tax, accounting, and advisory work. The App is not intended for children, consumer social use, or unrelated personal data processing.</p>
 
@@ -14121,7 +14460,7 @@ function servePrivacyPolicy(res) {
     </ul>
 
     <h2>3. AI processing</h2>
-    <p>RAG Tax AI uses third-party AI model providers, including Anthropic Claude, to process prompts and user-provided materials for the requested workflows. Information submitted for AI-assisted review may be sent to those providers solely to generate the requested output. Users should review all AI-generated outputs before relying on them. The App is a professional assistance tool and does not replace qualified tax judgment, CPA review, or firm quality-control procedures.</p>
+    <p>RAG Tax AI uses third-party AI model providers, including Anthropic Claude, to process prompts and user-provided materials for the requested workflows. Information submitted for AI-assisted review may be sent to those providers solely to generate the requested output. We do not sell client data, and we do not use client tax documents, Google Workspace data, accounting data, or uploaded files to train generalized AI or machine-learning models. Users should review all AI-generated outputs before relying on them. The App is a professional assistance tool and does not replace qualified tax judgment, CPA review, or firm quality-control procedures.</p>
 
     <h2>4. Google API data</h2>
     <p>If you connect a Google account, RAG Tax AI uses Google data only to provide user-facing features requested inside the App, such as selecting Drive materials for review or creating Gmail drafts. The App does not sell Google user data, does not use Google user data for advertising, and does not transfer Google user data except as necessary to provide the requested feature, comply with law, or protect the App. OAuth tokens are stored server-side and are not exposed to the browser.</p>
@@ -14139,25 +14478,31 @@ function servePrivacyPolicy(res) {
     </ul>
 
     <h2>7. Data retention</h2>
-    <p>Retention depends on the type of information and the purpose for which it is used. Account records, audit logs, cost logs, workflow records, access requests, and OAuth tokens may be retained while needed to operate the App, maintain security, support firm workflows, comply with legal obligations, or preserve business records. Uploaded files may be processed temporarily or retained when a workflow requires persistent storage. Administrators may request deletion or revocation of user accounts, OAuth tokens, or stored records, subject to legal, tax, accounting, backup, and security requirements.</p>
+    <p>Retention depends on the type of information and the purpose for which it is used. Account records, audit logs, cost logs, workflow records, access requests, and OAuth tokens may be retained while needed to operate the App, maintain security, support firm workflows, comply with legal obligations, or preserve business records. Uploaded files may be processed temporarily or retained when a workflow requires persistent storage. Stored document metadata includes retention information, and retained local documents may be removed when the configured retention period expires. Administrators may request deletion or revocation of user accounts, OAuth tokens, or stored records, subject to legal, tax, accounting, backup, and security requirements.</p>
 
     <h2>8. Security</h2>
-    <p>RAG Tax AI uses administrative, technical, and organizational safeguards designed to protect information, including authenticated access, role separation, HTTPS transport, server-side token handling, password hashing, budget enforcement, rate limiting, and audit logging. No system can guarantee absolute security, so users should avoid uploading unnecessary sensitive information and should promptly report suspected unauthorized access.</p>
+    <p>RAG Tax AI uses administrative, technical, and organizational safeguards designed to protect information, including authenticated access, role separation, tenant or firm identifiers, HTTPS transport, server-side token handling, password hashing, budget enforcement, rate limiting, audit logging, and restricted server-side storage. No system can guarantee absolute security, so users should avoid uploading unnecessary sensitive information and should promptly report suspected unauthorized access.</p>
 
-    <h2>9. User responsibilities</h2>
+    <h2>9. Firm separation and access control</h2>
+    <p>The App is designed so users, client records, budgets, and audit events can be associated with a firm or organization. Administrators should create accounts only for authorized personnel, assign appropriate roles, disable inactive users, and avoid sharing credentials. Access-control features are a safeguard, but each firm remains responsible for deciding who may access client materials.</p>
+
+    <h2>10. Incident response</h2>
+    <p>If we become aware of unauthorized access, data loss, or another security incident affecting App data, we will take reasonable steps to investigate, mitigate, preserve relevant records, and notify affected administrators when legally or contractually required. Users should promptly report suspicious account activity, exposed credentials, or misdirected client data.</p>
+
+    <h2>11. User responsibilities</h2>
     <p>Users are responsible for ensuring they have authority to upload, connect, or process client materials in the App. Users should review generated outputs, preserve required source documents, follow firm policies, comply with applicable tax and privacy laws, and avoid sharing credentials or unauthorized access.</p>
 
-    <h2>10. Your choices</h2>
+    <h2>12. Your choices</h2>
     <ul>
       <li>You may disconnect Google, QuickBooks Online, Xero, or other connected services through the provider account or by contacting an administrator.</li>
       <li>You may request deletion or correction of account information where legally and operationally permitted.</li>
       <li>Administrators may disable accounts, reset passwords, change spending limits, or remove access.</li>
     </ul>
 
-    <h2>11. Changes to this policy</h2>
+    <h2>13. Changes to this policy</h2>
     <p>We may update this Privacy Policy as the App evolves, including when new integrations, workflows, vendors, or security features are added. The "Last updated" date reflects the latest version.</p>
 
-    <h2>12. Contact</h2>
+    <h2>14. Contact</h2>
     <p>For questions about this Privacy Policy, access, data deletion, or connected accounts, contact us at <a href="mailto:ramiroflores@ragtax-ia.com">ramiroflores@ragtax-ia.com</a>.</p>
   `);
 }
@@ -14165,7 +14510,7 @@ function servePrivacyPolicy(res) {
 function serveEula(res) {
   serveLegalPage(res, "End-User License Agreement", `
     <h1>End-User License Agreement (EULA)</h1>
-    <p><strong>Last updated: June 25, 2026</strong></p>
+    <p><strong>Last updated: June 30, 2026</strong></p>
     <p>This End-User License Agreement ("Agreement") governs access to and use of RAG Tax AI ("the App"). By accessing the App, you agree to use it only as authorized by your organization and in accordance with this Agreement, the Privacy Policy, and applicable professional, tax, data protection, and security obligations.</p>
 
     <h2>1. License grant</h2>
@@ -14181,7 +14526,7 @@ function serveEula(res) {
     </ul>
 
     <h2>3. Data and privacy</h2>
-    <p>Use of the App is subject to our <a href="/privacy">Privacy Policy</a>, which is incorporated into this Agreement by reference.</p>
+    <p>Use of the App is subject to our <a href="/privacy">Privacy Policy</a>, which is incorporated into this Agreement by reference. Users and their organizations are responsible for maintaining client authorizations, professional confidentiality obligations, tax records, and any required data processing or confidentiality agreements with their own clients.</p>
 
     <h2>4. Third-party services</h2>
     <p>The App integrates with third-party services including AI model providers, Google services, QuickBooks Online, Xero, and hosting or infrastructure providers. Your use of connected services may be subject to those providers' terms, privacy policies, account settings, rate limits, and authorization requirements.</p>
@@ -14198,10 +14543,13 @@ function serveEula(res) {
     <h2>8. Suspension and termination</h2>
     <p>We may suspend or terminate access at any time if we believe an account is unauthorized, insecure, abusive, non-compliant, inactive, or otherwise creates legal, security, operational, or business risk.</p>
 
-    <h2>9. Changes</h2>
+    <h2>9. Data retention, deletion, and security controls</h2>
+    <p>The App may retain account records, client workflow records, OAuth tokens, audit logs, usage logs, and uploaded materials as described in the Privacy Policy. Administrators may request deletion, token revocation, user deactivation, or retention changes where operationally and legally permitted. Security controls such as rate limits, budget limits, audit logging, firm separation, and administrator verification may be added or changed to protect the App.</p>
+
+    <h2>10. Changes</h2>
     <p>We may update this Agreement from time to time as the App, integrations, security controls, and business terms evolve. Continued use after an update means you accept the updated Agreement.</p>
 
-    <h2>10. Contact</h2>
+    <h2>11. Contact</h2>
     <p>For questions about this Agreement, contact us at <a href="mailto:ramiroflores@ragtax-ia.com">ramiroflores@ragtax-ia.com</a>.</p>
   `);
 }
