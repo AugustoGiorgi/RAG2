@@ -13,6 +13,8 @@ const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 
+const ROOT = __dirname;
+loadEnvFile(path.join(ROOT, ".env"));
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -29,7 +31,6 @@ const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_M
 const REVIEW_RETRY_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MIN_CHARS_PER_FILE || 3000);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
 const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-const ROOT = __dirname;
 const DATA_DIR = path.join(ROOT, "data");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const CLIENTS_PATH = path.join(DATA_DIR, "clients.json");
@@ -207,6 +208,28 @@ function loadLocalSecrets() {
   } catch (error) {
     console.warn("Could not read data/local-secrets.json:", error.message);
     return {};
+  }
+}
+
+function loadEnvFile(filePath) {
+  try {
+    if (!fsSync.existsSync(filePath)) return;
+    const lines = fsSync.readFileSync(filePath, "utf8").split(/\r?\n/);
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || process.env[key] !== undefined) continue;
+      let value = line.slice(eq + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      process.env[key] = value;
+    }
+  } catch (error) {
+    console.warn("[Env] Could not load .env:", error.message);
   }
 }
 
