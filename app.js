@@ -3385,7 +3385,6 @@ async function fetchQBOReports() {
     if (!response.ok) throw new Error(data.error || `Accounting API returned ${response.status}`);
     const files = (data.reports || []).map((report) => qboReportToFile(report));
     preparerFiles.packageFiles = mergeFiles(preparerFiles.packageFiles, files);
-    qboReportsForReview = mergeFiles(qboReportsForReview, files);
     renderPreparerFiles();
     els.qboFetchStatus.innerHTML += `<div class="qbo-fetch-summary">${files.length} report${files.length === 1 ? "" : "s"} added to Preparation files.${data.errors?.length ? ` ${data.errors.length} failed.` : ""}</div>`;
     showToast(`${files.length} accounting report${files.length === 1 ? "" : "s"} added.`, "success");
@@ -9230,9 +9229,37 @@ function toCleanWrittenReview(response, metadata = {}) {
   lines.push("", "FINAL CONCLUSION", "----------------");
   lines.push(safeText(structured.finalConclusion || structured.executiveSummary) || "Review complete.");
   if (structured.structuringFailed && structured.rawReviewOutput) {
-    lines.push("", "RAW MODEL OUTPUT SAVED", "----------------------");
-    lines.push("Automatic structuring failed. The raw Claude output is included below so the review content is not lost.");
-    lines.push(safeText(structured.rawReviewOutput));
+    // Try to re-parse the raw output on the client — the client parser is more
+    // robust than the server's and often recovers valid JSON the server dropped.
+    const reparsed = parseStructuredReview(structured.rawReviewOutput);
+    const reNormalized = reparsed && typeof reparsed === "object"
+      ? normalizeReviewForExport({ structured: reparsed }, metadata)
+      : null;
+    if (reNormalized && !reNormalized.structuringFailed && (reNormalized.issues?.length || reNormalized.executiveSummary)) {
+      // Successfully recovered — append the issues in standard format.
+      lines.push("", "ISSUES & ITEMS (RECOVERED FROM RAW OUTPUT)", "------------------------------------------");
+      const recoveredIssues = (reNormalized.issues || []).map(sanitizeIssue).sort((a, b) => priorityRank(a) - priorityRank(b));
+      recoveredIssues.forEach((issue, index) => {
+        lines.push(`Issue ${index + 1}: [${issue.priority}] ${issue.area}`);
+        lines.push(`Issue: ${issue.description}`);
+        if (issue.evidence) lines.push(`Evidence: ${issue.evidence}`);
+        if (issue.riskAnalysis || issue.whyItMatters) lines.push(`Risk analysis: ${issue.riskAnalysis || issue.whyItMatters}`);
+        if (issue.proposedSolution || issue.recommendedAction) lines.push(`Proposed solution: ${issue.proposedSolution || issue.recommendedAction}`);
+        if (issue.authority) lines.push(`Authority: ${issue.authority}`);
+        lines.push("");
+      });
+      if (reNormalized.finalConclusion) lines.push("CONCLUSION", "----------", safeText(reNormalized.finalConclusion), "");
+    } else {
+      // Can't parse — strip JSON syntax chars and dump as readable plain text.
+      lines.push("", "REVIEW OUTPUT (UNSTRUCTURED)", "----------------------------");
+      const plainText = structured.rawReviewOutput
+        .replace(/^\s*```(?:json)?|```\s*$/gm, "")
+        .replace(/[{}\[\]"]/g, "")
+        .replace(/,\s*\n/g, "\n")
+        .replace(/^\s*\w+\s*:\s*/gm, "")
+        .split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
+      lines.push(plainText || "Review output could not be structured. Please check the in-app display for results.");
+    }
   }
   return lines.filter((line) => line !== null && line !== undefined).map(safeText).join("\n");
 }
