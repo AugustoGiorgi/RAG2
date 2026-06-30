@@ -4213,7 +4213,10 @@ async function handleAdminUsersApi(req, res, requestUrl) {
 
   // GET is read-only — no lock needed.
   if (parts.length === 3 && req.method === "GET") {
-    sendJson(res, 200, { users: readUserStore().users.map(publicUser) });
+    const store = readUserStore();
+    const costEntries = readCostLog().entries || [];
+    const preloaded = { store, costEntries };
+    sendJson(res, 200, { users: store.users.map((u) => publicUser(u, preloaded)) });
     return;
   }
 
@@ -4570,8 +4573,8 @@ function parseAuthUsersJson() {
   }
 }
 
-function publicUser(user) {
-  const budget = userSpendBudget(user.username);
+function publicUser(user, preloaded = {}) {
+  const budget = userSpendBudget(user.username, preloaded);
   return {
     username: user.username,
     role: user.role === "admin" ? "admin" : "user",
@@ -4607,11 +4610,14 @@ function normalizedCostEntry(entry = {}) {
   const hasTokenUsage = Object.values(usage).some((value) => Number(value || 0) > 0);
   if (!hasTokenUsage) return { ...entry, totalCost: roundMoney(Number(entry.totalCost || 0)) };
   const cost = calculateCost(usage, entry.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514");
-  const originalTotalCost = roundMoney(Number(entry.totalCost || 0));
+  const storedTotal = roundMoney(Number(entry.totalCost || 0));
+  // Prefer the totalCost stored at billing time — it reflects the rates in effect when the
+  // call was made. Only fall back to the recalculated value for legacy entries that have
+  // token counts but no stored totalCost (storedTotal === 0).
   return {
     ...entry,
     ...cost,
-    originalTotalCost: Math.abs(originalTotalCost - cost.totalCost) >= 0.0001 ? originalTotalCost : undefined,
+    totalCost: storedTotal > 0 ? storedTotal : cost.totalCost,
   };
 }
 
@@ -4619,10 +4625,12 @@ function entryTotalCost(entry = {}) {
   return normalizedCostEntry(entry).totalCost;
 }
 
-function userSpendBudget(username) {
-  const store = readUserStore();
+// preloaded = { store, costEntries } — pass when computing budgets for multiple users in
+// one request so the caller can read both files once instead of once per user.
+function userSpendBudget(username, preloaded = {}) {
+  const store = preloaded.store || readUserStore();
+  const costEntries = preloaded.costEntries || readCostLog().entries || [];
   const user = store.users.find((item) => item.username === username);
-  const costEntries = readCostLog().entries || [];
 
   // If the user belongs to a budget group, aggregate spending across all members.
   if (user?.budgetGroupId) {
