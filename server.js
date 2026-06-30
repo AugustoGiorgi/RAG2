@@ -11650,22 +11650,25 @@ async function handleResearchClear(req, res) {
 function normalizeResearchHistory(messages) {
   return messages
     .filter((message) => message && (message.role === "user" || message.role === "assistant"))
-    .map((message) => ({ role: message.role, content: String(message.content || "").slice(0, 12000) }))
+    .map((message) => ({ role: message.role, content: String(message.content || "").slice(0, 8000) }))
     .filter((message) => message.content.trim())
-    .slice(-20);
+    .slice(-10);
 }
 
 async function callResearchClaude({ question, history, context, useThinking, webSearch }) {
   const model = "claude-sonnet-4-5-20251001";
-  const system = [{ type: "text", text: buildResearchSystemPrompt(context) }];
+  // cache_control on the system block tells Anthropic to cache the static instructions.
+  // User context travels in buildResearchQuestion (already there), so the system prompt
+  // is fully static and cache hits on every question in the same session.
+  const system = [{ type: "text", text: buildResearchSystemPrompt(), cache_control: { type: "ephemeral" } }];
   const messages = [...history, { role: "user", content: buildResearchQuestion(question, context) }];
   const baseBody = {
     model,
-    max_tokens: 16000,
+    max_tokens: 8000,
     system,
     messages,
   };
-  if (useThinking) baseBody.thinking = { type: "enabled", budget_tokens: 10000 };
+  if (useThinking) baseBody.thinking = { type: "enabled", budget_tokens: 5000 };
   if (WEB_SEARCH_ENABLED && webSearch) {
     baseBody.tools = [buildWebSearchTool()];
     baseBody.tool_choice = { type: "auto" };
@@ -11692,7 +11695,12 @@ async function callResearchClaude({ question, history, context, useThinking, web
 async function postClaudeResearchBody(body) {
   const response = await fetch(ANTHROPIC_URL, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": ANTHROPIC_VERSION },
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": ANTHROPIC_VERSION,
+      "anthropic-beta": "prompt-caching-2024-07-31",
+    },
     body: JSON.stringify(body),
   });
   const data = await response.json().catch(() => ({}));
@@ -11761,7 +11769,7 @@ function buildResearchQuestion(question, context = {}) {
   return `${contextLines.length ? `Context:\n${contextLines.join("\n")}\n\n` : ""}Question:\n${question}`;
 }
 
-function buildResearchSystemPrompt(context = {}) {
+function buildResearchSystemPrompt() {
   return `You are a senior US tax research specialist at a CPA firm with expertise across federal and all 50 state tax jurisdictions.
 
 YOUR PRIMARY JOB:
@@ -11785,12 +11793,6 @@ Regulations: https://www.ecfr.gov/current/title-26/chapter-I/subchapter-A/part-1
 
 STATE SOURCES:
 Use the official state revenue department website for any state-specific answer. Prefer irs.gov, uscode.house.gov, ecfr.gov, and official state tax authority domains over secondary commentary.
-
-CURRENT USER CONTEXT:
-Return type: ${context.returnType || "not specified"}
-Tax year: ${context.taxYear || "not specified"}
-State: ${context.state || "federal or not specified"}
-Client type: ${context.clientType || "not specified"}
 
 OUTPUT FORMAT:
 **Answer:**
