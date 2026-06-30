@@ -11661,7 +11661,16 @@ async function callResearchClaude({ question, history, context, useThinking, web
   // User context travels in buildResearchQuestion (already there), so the system prompt
   // is fully static and cache hits on every question in the same session.
   const system = [{ type: "text", text: buildResearchSystemPrompt(), cache_control: { type: "ephemeral" } }];
-  const messages = [...history, { role: "user", content: buildResearchQuestion(question, context) }];
+  // Cache the conversation history so subsequent questions in a session only pay
+  // for new content. cache_control on the last historical message tells Anthropic
+  // to cache everything up to that point (system + all prior turns) at $0.30/MTok
+  // instead of $3/MTok on re-reads. First question has no history so no marker needed.
+  const historyMessages = history.map((msg, i) =>
+    i === history.length - 1
+      ? { role: msg.role, content: [{ type: "text", text: String(msg.content || ""), cache_control: { type: "ephemeral" } }] }
+      : msg
+  );
+  const messages = [...historyMessages, { role: "user", content: buildResearchQuestion(question, context) }];
   const baseBody = {
     model,
     max_tokens: 8000,
