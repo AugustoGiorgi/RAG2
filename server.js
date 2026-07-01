@@ -9639,11 +9639,24 @@ function extractTextBlocksOnly(data) {
 }
 
 async function structureDirectReviewJson(apiKey, textBlocks, reviewRequest) {
+  // This is a purely mechanical text->JSON reformat of a review Sonnet already wrote.
+  // The tax analysis was done in the first call; here we only restructure existing text
+  // into the schema, so Haiku handles it identically at ~1/3 the cost. Sonnet stays as a
+  // fallback so reliability is unchanged if Haiku ever fails to produce valid JSON.
   return callAnthropicDirectWithFallbacks(apiKey, {
     max_tokens: 16000,
     system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences.",
     messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "").slice(0, 50000)}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
-  }, reviewModelCandidates());
+  }, structureModelCandidates());
+}
+
+function structureModelCandidates() {
+  // Haiku first (cheap, sufficient for reformatting), then the normal review models as
+  // a safety net so a Haiku hiccup never blocks the review from completing.
+  return Array.from(new Set([
+    "claude-haiku-4-5-20251001",
+    ...reviewModelCandidates(),
+  ].filter(Boolean)));
 }
 
 function normalizeDirectReview(review, reviewRequest) {
