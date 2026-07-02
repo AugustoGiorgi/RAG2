@@ -9470,6 +9470,8 @@ function reviewDocumentWeight(role) {
 function buildDirectReviewSystemPrompt(returnType, state) {
   return `You are a senior tax return reviewer at a CPA firm with 20+ years of experience reviewing ${returnType || "US tax"} returns. You review with meticulous attention to detail - you catch errors a partner would catch and the ones they would miss.
 
+WRITE LIKE A BUSY PARTNER, NOT A TREATISE. Every finding must be scannable in seconds. issueDescription is ONE short sentence naming what disagrees and the two amounts. Example of the ONLY acceptable style: "W-2 Box 1 shows $81,824.69 but return Line 1a shows $91,825; verify the entry." Do NOT write background, do NOT restate the same numbers in multiple fields, do NOT speculate about what an error "might indicate," do NOT chain hypotheticals. A finding longer than two sentences is wrong. Half-page findings are a failure.
+
 PRIMARY AUTHORITY: Base every judgment on official IRS guidance (IRS.gov publications, instructions, IRC sections, Treasury regulations) and, where relevant, the official state tax authority for ${state || "the applicable state"}. Cite the specific authority for material findings.
 
 You will be given multiple documents, each labeled with its role:
@@ -9750,7 +9752,47 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
     normalized.openQuestions.push("Complete and document the Schedule L balance sheet tie-out because the AI response did not return one.");
   }
+  enforceReviewConciseness(normalized);
   return normalized;
+}
+
+// The model reliably ignores "1-2 sentences max" instructions in the prompt and writes
+// paragraph-length findings. This trims each field to a hard sentence cap on the server so
+// conciseness is guaranteed regardless of the model output. Cuts at sentence boundaries so
+// nothing reads as truncated mid-thought; the actionable content (what is wrong, the amounts,
+// the fix) lives in the first sentences, the essays that follow are what gets dropped.
+function limitSentences(text, maxSentences, maxChars) {
+  const raw = String(text || "").trim();
+  if (!raw) return raw;
+  const sentences = raw.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [raw];
+  let out = sentences.slice(0, maxSentences).join(" ").replace(/\s+/g, " ").trim();
+  if (maxChars && out.length > maxChars) {
+    const clipped = out.slice(0, maxChars);
+    const lastStop = Math.max(clipped.lastIndexOf(". "), clipped.lastIndexOf("! "), clipped.lastIndexOf("? "));
+    out = lastStop > maxChars * 0.5 ? clipped.slice(0, lastStop + 1) : clipped.replace(/\s+\S*$/, "") + "…";
+  }
+  return out;
+}
+
+function enforceReviewConciseness(review) {
+  if (!review || typeof review !== "object") return;
+  review.executiveSummary = limitSentences(review.executiveSummary, 3, 500);
+  review.finalConclusion = limitSentences(review.finalConclusion, 3, 500);
+  if (Array.isArray(review.issues)) {
+    review.issues = review.issues.map((issue) => {
+      if (!issue || typeof issue !== "object") return issue;
+      const priority = String(issue.priority || issue.severity || "").toUpperCase();
+      return {
+        ...issue,
+        issueDescription: limitSentences(issue.issueDescription || issue.description || issue.issue, 2, 320),
+        evidence: limitSentences(issue.evidence, 2, 240),
+        // LOW findings are informational; a risk essay on them is exactly the noise to cut.
+        riskAnalysis: priority === "LOW" ? "" : limitSentences(issue.riskAnalysis || issue.whyItMatters, 1, 180),
+        proposedSolution: limitSentences(issue.proposedSolution || issue.recommendedAction || issue.recommendation, 2, 220),
+        needsMoreInfo: limitSentences(issue.needsMoreInfo || issue.needsClientInfo, 1, 160),
+      };
+    });
+  }
 }
 
 function buildDocumentsReadFromPayload(payload = {}) {
