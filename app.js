@@ -8496,6 +8496,7 @@ function renderReviewResult(payload, metadata) {
       ${renderIssueSummarySection(structured.issues)}
       ${renderIssueSection("Issues and response tracking", structured.issues)}
       ${renderCheckboxReviewSection(structured.checkboxReview)}
+      ${renderInfoConsistencySection(structured.infoConsistency)}
       ${renderTieOutSection(structured.tieOutResults)}
       ${renderBalanceSheetCheckSection(structured.balanceSheetCheck)}
       ${renderEfileDiagnosticsCta(structured, metadata)}
@@ -8587,6 +8588,7 @@ function normalizeReviewForExport(response = {}, metadata = {}) {
     feedbackApplied: normalizeReviewStringArray(source.feedbackApplied || source.firmFeedbackApplied),
     issues,
     checkboxReview: normalizeCheckboxReview(source.checkboxReview),
+    infoConsistency: normalizeInfoConsistency(source.infoConsistency),
     tieOutResults: normalizeTieOutResults(source.tieOutResults || source.tieOuts || source.numericTieOut),
     balanceSheetCheck: normalizeBalanceSheetCheck(source.balanceSheetCheck),
     questions: normalizeReviewStringArray(source.questions || source.openQuestions),
@@ -8641,6 +8643,18 @@ function normalizeCheckboxReview(value) {
     shouldBe: safeText(item.shouldBe || item.expectedState || item.correctState),
     explanation: safeText(item.explanation || item.note || item.reason),
   })).filter((item) => item.box || item.explanation);
+}
+
+function normalizeInfoConsistency(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => ({
+    item: safeText(item.item || item.field || item.dataPoint),
+    returnValue: safeText(item.returnValue || item.currentValue),
+    sourceValue: safeText(item.sourceValue || item.priorValue || item.documentValue),
+    source: safeText(item.source || item.document),
+    status: safeText(item.status || "").toUpperCase() === "MISMATCH" ? "MISMATCH" : "MATCH",
+    note: safeText(item.note || item.explanation),
+  })).filter((item) => item.item);
 }
 
 function normalizeTieOutResults(value) {
@@ -8960,6 +8974,11 @@ function renderCheckboxReviewSection(rows) {
 function renderTieOutSection(rows) {
   if (!Array.isArray(rows) || !rows.length) return "";
   return renderReviewTable("Numeric Tie-Out", ["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"], rows.map((row) => [row.lineItem, row.returnAmount, row.workpaperAmount, row.difference, row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("OUT") ? "danger-row" : "");
+}
+
+function renderInfoConsistencySection(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  return renderReviewTable("Informational Data Consistency", ["Item", "Return Value", "Source Value", "Source", "Status", "Note"], rows.map((row) => [row.item, row.returnValue, row.sourceValue, row.source, row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("MISMATCH") ? "danger-row" : "");
 }
 
 function renderBalanceSheetCheckSection(check) {
@@ -9379,6 +9398,7 @@ function toCleanWrittenReview(response, metadata = {}) {
   }
 
   addCheckboxReviewText(lines, structured.checkboxReview);
+  addInfoConsistencyText(lines, structured.infoConsistency);
   addTieOutText(lines, structured.tieOutResults);
   addBalanceSheetCheckText(lines, structured.balanceSheetCheck);
   addCleanPlainList(lines, structured.questions, "QUESTION");
@@ -9429,6 +9449,15 @@ function addCheckboxReviewText(lines, rows) {
     return;
   }
   rows.forEach((row) => lines.push(`- ${safeText(row.box)} | Current: ${safeText(row.currentState)} | Should be: ${safeText(row.shouldBe)} | ${safeText(row.explanation)}`));
+}
+
+function addInfoConsistencyText(lines, rows) {
+  lines.push("", "INFORMATIONAL DATA CONSISTENCY", "------------------------------");
+  if (!Array.isArray(rows) || !rows.length) {
+    lines.push("- None noted.");
+    return;
+  }
+  rows.forEach((row) => lines.push(`- [${safeText(row.status) || "MATCH"}] ${safeText(row.item)} | Return: ${safeText(row.returnValue)} | Source: ${safeText(row.sourceValue)}${row.source ? ` (${safeText(row.source)})` : ""}${row.note ? ` | ${safeText(row.note)}` : ""}`));
 }
 
 function addTieOutText(lines, rows) {

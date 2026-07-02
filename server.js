@@ -23,8 +23,12 @@ const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-h
   .split(",").map((m) => m.trim()).filter(Boolean);
 const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 16000);
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 140000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 55000);
+// 420k chars ≈ 110k tokens: a full 1040 package (current + prior return + consolidated
+// 1099s + K-1s + estimate vouchers) fits without middle-truncation. The old 140k budget
+// cut the middle of the current return, so forms like 8960/Sch D/8949 vanished and the
+// reviewer flagged them as missing. The timeout-retry path still compacts to 80k.
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 420000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 160000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
 const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
@@ -9487,7 +9491,21 @@ REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 7. Form-specific checks for ${returnType || "the return type"}.
 8. Every firm feedback item provided.
 
-For each error, provide risk analysis and a specific proposed solution.
+ROUNDING RULE (ABSOLUTE): Differences of less than $1.00 on any line are IRS whole-dollar rounding and are CORRECT. Never report them as issues at any priority. A return line of $81,825 supported by a W-2 showing $81,824.69 is right, not wrong. List rounding-only lines under verifiedItems if you mention them at all.
+
+PRIORITY RUBRIC:
+- HIGH: changes the tax outcome or blocks filing — a required form or schedule genuinely missing from the return, a material amount ($100+) with no supporting document, a tie-out that does not reconcile, a wrong SSN/EIN, an unfiled election that was required.
+- MEDIUM: needs verification and could change the return — an amount that reconciles only partially, documentation the reviewer must confirm exists, a prior-year inconsistency without a clear explanation.
+- LOW: informational — formatting, address style variations, presentation. Never escalate a LOW item by speculating about what it "might indicate."
+Do not use missing-document language for a form you can see in the documents. If a form is referenced (e.g., in the forms list of the client letter) and its pages appear in the return package, it is NOT missing.
+
+CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what disagrees, the two amounts, and which documents: "W-2 Box 1 shows $81,824.69 but the return Line 1a shows $91,825; verify the entry." evidence lists only the line references and amounts. riskAnalysis is one sentence maximum and empty for LOW items. proposedSolution is one sentence. No essays, no repetition of the same numbers across fields, no speculative chains.
+
+CHECKBOX CHECKLIST (REQUIRED): Enumerate EVERY checkbox and election visible on the current-year return in checkboxReview — including ones that are correct — each compared against the prior-year return state. currentState = what the current return shows, shouldBe = what the prior year and facts support, explanation = one short sentence.
+
+INFORMATIONAL DATA CHECK (REQUIRED): In infoConsistency, verify every informational item across ALL documents: taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info if present. One row per item with status MATCH or MISMATCH and the exact values compared.
+
+For each error, provide risk analysis and a specific proposed solution within the length limits above.
 
 CRITICAL OUTPUT RULE: Return your COMPLETE review as a single valid JSON object matching the schema in the user message. Every field is required. The issues array must list every finding. Do not return an empty issues array for a return that has problems. Write every string in clear, complete English. Do not write prose outside the JSON. Return ONLY the JSON object.`;
 }
@@ -9719,6 +9737,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (!Array.isArray(normalized.openQuestions) && Array.isArray(normalized.questions)) normalized.openQuestions = normalized.questions;
   if (!Array.isArray(normalized.missingDocuments) && Array.isArray(normalized.missingInformation)) normalized.missingDocuments = normalized.missingInformation;
   if (!Array.isArray(normalized.checkboxReview)) normalized.checkboxReview = [];
+  if (!Array.isArray(normalized.infoConsistency)) normalized.infoConsistency = [];
   if (!Array.isArray(normalized.tieOutResults)) normalized.tieOutResults = [];
   if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {
     normalized.balanceSheetCheck = {
@@ -12036,7 +12055,7 @@ async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
 }
 
 function reviewJsonSchemaText() {
-  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
+  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"infoConsistency":[{"item":"string","returnValue":"string","sourceValue":"string","source":"string","status":"MATCH|MISMATCH","note":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
 }
 
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
@@ -13045,7 +13064,10 @@ function detectReviewFileRole(file = {}, payload = {}) {
   const priorYear = taxYear ? String(taxYear - 1) : "";
   const name = String(file.name || "").toLowerCase();
   const ext = String(file.name || "").toLowerCase().split(".").pop() || "";
-  const text = String(file.text || "").slice(0, 16000).toLowerCase();
+  // Frontend sends the extracted content as extractedText; file.text only exists on
+  // some legacy paths. Reading the wrong field left detection filename-only, which is
+  // how "FRANZESE, JOSEPH A 1040.pdf" ended up as supporting_document.
+  const text = String(file.extractedText || file.text || "").slice(0, 16000).toLowerCase();
   const explicitRole = String(file.role || "").toLowerCase();
   const joined = `${name}\n${text}`;
   const canonicalRoles = new Set(["current_return", "prior_return", "current_workpaper", "prior_workpaper", "supporting_document"]);
@@ -13060,7 +13082,11 @@ function detectReviewFileRole(file = {}, payload = {}) {
     || (isSpreadsheet && /\b(book[-\s]?to[-\s]?tax|trial balance|balance sheet|p&l|profit\s*(and|&)?\s*loss|tax workpapers?)\b/.test(joined));
   const isSupporting = /\b(w-?2|w-?3|w-?9|1099|k-?1|pir\b|05-102|franchise|depreciation|fixed asset|bank statement|brokerage|payroll|invoice|receipt|support|backup|source document)\b/.test(joined)
     || (isZip && /\b(w-?2|w-?3|w-?9|1099|k-?1|pir|support|docs?|documents?|backup)\b/.test(joined));
-  const isReturn = /\b(form\s*(1040|1041|1065|1120|1120s|1120-s)|u\.s\.\s*(individual|income tax|corporation|partnership).*return|tax return|income tax return)\b/.test(joined)
+  // "form" is optional and "tax returns" (plural) counts: real packages arrive named
+  // "FRANZESE, JOSEPH A 1040.pdf" or "Joseph Franzese - 2024 tax returns.pdf".
+  // Supporting/workpaper checks still win first, so a "1099" or "K-1" file that
+  // mentions Form 1040 in its instructions is not misclassified as a return.
+  const isReturn = /\b((form\s*)?(1040|1041|1065|1120s?|1120-s|990)|u\.s\.\s*(individual|income tax|corporation|partnership).*return|tax returns?|income tax returns?)\b/.test(joined)
     && !isSupporting
     && !isWorkpaper;
   const mentionsCurrent = currentYear && (name.includes(currentYear) || joined.includes(`tax year ${currentYear}`) || joined.includes(`ty ${currentYear}`) || joined.includes(`year ended 12/31/${currentYear}`));
