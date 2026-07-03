@@ -12,6 +12,7 @@ const { buildPlanningDeck } = require("./lib/pptx-builder");
 const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
+const { PDFParse } = require("pdf-parse");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -1546,8 +1547,8 @@ function finalizePlanningScenario(profile, def, baseTotal, year, index) {
   };
 }
 
-function planningFileContent(files, promptText) {
-  const ctx = buildUploadedFileContext(Array.isArray(files) ? files : []);
+async function planningFileContent(files, promptText) {
+  const ctx = await buildUploadedFileContext(Array.isArray(files) ? files : []);
   const content = [
     ...ctx.documents.slice(0, 8).map((doc) => ({
       type: "document",
@@ -1637,7 +1638,7 @@ async function handlePlanningAnalyze(req, res) {
     '}',
   ].join("\n");
 
-  const { content, hasInput } = planningFileContent(payload.files, prompt);
+  const { content, hasInput } = await planningFileContent(payload.files, prompt);
   if (!hasInput && !instructions) {
     sendJson(res, 400, { error: "Upload at least one document or provide instructions before analyzing." });
     return;
@@ -2122,7 +2123,7 @@ async function generateStyleSummary(req, file, category) {
     '  "recommendationStyle": string, "clientLanguage": string',
     "}",
   ].join("\n");
-  const { content, hasInput } = planningFileContent([file], prompt);
+  const { content, hasInput } = await planningFileContent([file], prompt);
   if (!hasInput) return { error: "No readable content in the uploaded template." };
   const result = await callPlanningClaude(req, content, "You analyze a CPA firm's planning document and return only valid JSON describing its style.", "planning_style_summary", { category }, 3000);
   if (result.error) return result;
@@ -2384,7 +2385,7 @@ function estimatedTemplateContext(payload = {}) {
 async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
   const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
   if (!apiKey) return { error: "Claude API key is not configured. The estimated tax workpaper cannot be generated without AI extraction.", status: 400 };
-  const fileContext = buildEstimatedTaxFileContext(payload.files || []);
+  const fileContext = await buildEstimatedTaxFileContext(payload.files || []);
   const templateContext = estimatedTemplateContext(payload);
   if (!fileContext.hasText && !fileContext.documents.length && !fileContext.images.length) {
     return { error: "No readable text could be extracted from the uploaded files. Upload readable XLSX/PDF/CSV files.", status: 400 };
@@ -2785,7 +2786,7 @@ function estimatedCompletePaymentSummary(result = {}) {
 async function buildEstimatedTaxWorkbookWithClaude(req, payload, deterministicResult) {
   const apiKey = String(process.env.ANTHROPIC_API_KEY || "").trim();
   if (!apiKey) return { error: "Claude API key is not configured. The workbook was generated without AI calculations.", status: 400 };
-  const fileContext = buildEstimatedTaxFileContext(payload.files || []);
+  const fileContext = await buildEstimatedTaxFileContext(payload.files || []);
   if (!fileContext.hasText && !fileContext.images.length && !fileContext.documents.length) return { error: "No readable text could be extracted from the uploaded files. Upload readable XLSX/PDF/CSV files.", status: 400 };
   const content = [
     ...fileContext.documents.slice(0, 8).map((doc) => ({
@@ -3223,7 +3224,7 @@ function findEstimatedUpdateColumn(rows, rowIndex, columnLabel) {
   return -1;
 }
 
-function buildEstimatedTaxFileContext(files = []) {
+async function buildEstimatedTaxFileContext(files = []) {
   const normalizedFiles = Array.isArray(files) ? files.map((file) => ({
     ...file,
     estimatedRole: classifyEstimatedTaxFile(file),
@@ -3232,10 +3233,12 @@ function buildEstimatedTaxFileContext(files = []) {
   })) : [];
   const plFiles = normalizedFiles.filter((file) => file.detectedDocType === "PL_STATEMENT");
   const currentYearPl = chooseEstimatedCurrentYearPl(plFiles);
-  const grouped = {
-    financialReports: buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedCurrentYearFinancialRole(file.estimatedRole))),
-    priorYearTemplates: buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
-    supporting: buildUploadedFileContext(normalizedFiles.filter((file) => !isEstimatedCurrentYearFinancialRole(file.estimatedRole) && !isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
+  const [financialReports, priorYearTemplates, supporting] = await Promise.all([
+    buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedCurrentYearFinancialRole(file.estimatedRole))),
+    buildUploadedFileContext(normalizedFiles.filter((file) => isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
+    buildUploadedFileContext(normalizedFiles.filter((file) => !isEstimatedCurrentYearFinancialRole(file.estimatedRole) && !isEstimatedTemplateOrPriorReturnRole(file.estimatedRole))),
+  ]);
+  const grouped = { financialReports, priorYearTemplates, supporting,
   };
   const documents = [];
   for (const file of normalizedFiles) {
@@ -6807,7 +6810,7 @@ function extractPptxVisualTheme(buffer) {
   } catch (_) { return null; }
 }
 
-function extractZipPackageTextServer(buffer, packageName = "package.zip") {
+async function extractZipPackageTextServer(buffer, packageName = "package.zip") {
   const parts = [];
   for (const entry of listZipEntryBuffers(buffer, 80)) {
     const name = entry.name;
@@ -6816,7 +6819,7 @@ function extractZipPackageTextServer(buffer, packageName = "package.zip") {
     try {
       if (/\.docx$/i.test(name)) text = extractDocxText(entry.data);
       else if (/\.xlsx?$/i.test(name)) text = extractXlsxText(entry.data);
-      else if (/\.pdf$/i.test(name)) text = extractPdfPlainText(entry.data);
+      else if (/\.pdf$/i.test(name)) text = await extractPdfPlainText(entry.data);
       else if (/\.(csv|txt|md|json)$/i.test(name)) text = entry.data.toString("utf8");
       else continue;
     } catch (error) {
@@ -10104,7 +10107,7 @@ async function handlePresentationsGenerate(req, res) {
   if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
   if (!String(payload.instructions || "").trim()) { sendJson(res, 400, { error: "Write presentation instructions before generating." }); return; }
 
-  const context = buildUploadedFileContext(payload.files || []);
+  const context = await buildUploadedFileContext(payload.files || []);
   const content = buildPresentationContent(payload, context);
   const startedAt = Date.now();
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
@@ -10147,7 +10150,7 @@ async function handleCalculationsRun(req, res) {
   if (!apiKey) { sendJson(res, 400, { error: "Missing Claude API key. Set ANTHROPIC_API_KEY before starting the server." }); return; }
   if (!String(payload.instructions || "").trim()) { sendJson(res, 400, { error: "Write calculation instructions before running." }); return; }
 
-  const context = buildUploadedFileContext(payload.files || []);
+  const context = await buildUploadedFileContext(payload.files || []);
   const content = buildCalculationContent(payload, context);
   const startedAt = Date.now();
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
@@ -10201,7 +10204,7 @@ async function handleCalculationsRun(req, res) {
   });
 }
 
-function buildUploadedFileContext(files = []) {
+async function buildUploadedFileContext(files = []) {
   const textParts = [];
   const images = [];
   const documents = [];
@@ -10223,7 +10226,7 @@ function buildUploadedFileContext(files = []) {
       documents.push({ name, type: "application/pdf", content, role: file.role || "other" });
       let pdfText = String(file.text || "").trim();
       if (!pdfText || /could not extract/i.test(pdfText)) {
-        try { pdfText = extractPdfPlainText(Buffer.from(content, "base64")); } catch (_) { pdfText = ""; }
+        try { pdfText = await extractPdfPlainText(Buffer.from(content, "base64")); } catch (_) { pdfText = ""; }
       }
       if (pdfText && !/Server could not extract readable text/i.test(pdfText)) {
         textParts.push(`FILE: ${name}\nROLE: ${file.role || "other"}\n${pdfText.slice(0, 60000)}`);
@@ -10256,11 +10259,11 @@ function buildUploadedFileContext(files = []) {
       if (/\.pptx$/i.test(name) || type.includes("presentationml.presentation")) extracted = extractPptxText(buffer);
       else if (/\.docx$/i.test(name) || type.includes("wordprocessingml.document")) extracted = extractDocxText(buffer);
       else if (/\.xlsx$/i.test(name) || type.includes("spreadsheet")) extracted = extractXlsxText(buffer);
-      else if (/\.zip$/i.test(name) || type.includes("zip")) extracted = extractZipPackageTextServer(buffer, name);
+      else if (/\.zip$/i.test(name) || type.includes("zip")) extracted = await extractZipPackageTextServer(buffer, name);
       else if (/\.csv$/i.test(name) || type.includes("csv")) extracted = buffer.toString("utf8");
       else if (/\.json$/i.test(name) || type.includes("json")) extracted = buffer.toString("utf8");
       else if (/\.txt$/i.test(name) || type.startsWith("text/")) extracted = buffer.toString("utf8");
-      else if (/\.pdf$/i.test(name) || type.includes("pdf")) extracted = extractPdfPlainText(buffer);
+      else if (/\.pdf$/i.test(name) || type.includes("pdf")) extracted = await extractPdfPlainText(buffer);
       else extracted = buffer.toString("utf8").replace(/[^\x09\x0A\x0D\x20-\x7E]+/g, " ").slice(0, 12000);
     } catch (error) {
       extracted = `[Could not extract text from ${name}: ${error.message || "unknown error"}]`;
@@ -10275,11 +10278,25 @@ function buildUploadedFileContext(files = []) {
   return { text: textParts.join("\n\n---\n\n").slice(0, 180000), images, documents };
 }
 
-function extractPdfPlainText(buffer) {
-  const text = buffer.toString("latin1").replace(/\r/g, "\n");
-  const matches = Array.from(text.matchAll(/\(([^()]|\\.){3,}\)\s*Tj/g)).map((m) => m[0].replace(/\)\s*Tj$/, "").slice(1).replace(/\\([()\\])/g, "$1"));
-  const joined = matches.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return joined || "[PDF uploaded. Server could not extract readable text from this PDF; use visible document metadata and any image analysis if available.]";
+// Real PDF parser (pdf-parse, same lineage as the pdf.js already used client-side). The
+// previous implementation was a handwritten regex against raw PDF bytes that only matched
+// uncompressed "(...)Tj" operators — it returned nothing on the vast majority of real-world
+// PDFs (virtually all modern PDF generators compress content streams), and on some inputs
+// the alternation-heavy regex hit catastrophic backtracking and hung the single-threaded
+// Node event loop for the whole server, not just the one request. Confirmed against a real
+// client package: 3 of 6 PDFs hung >5s, the other 3 silently returned zero text.
+async function extractPdfPlainText(buffer) {
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    const joined = String(result?.text || "").replace(/\n{3,}/g, "\n\n").trim();
+    return joined || "[PDF uploaded. Server could not extract readable text from this PDF (likely a scanned/image-only PDF); use visible document metadata and any image analysis if available.]";
+  } catch (error) {
+    console.warn("[PDF] extraction failed:", error?.message || error);
+    return "[PDF uploaded. Server could not extract readable text from this PDF; use visible document metadata and any image analysis if available.]";
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
 }
 
 function extractXlsxText(buffer) {
