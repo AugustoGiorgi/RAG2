@@ -9899,12 +9899,25 @@ function isConfirmedRoundingNonIssue(issue) {
   return Boolean(diffMatch) && Math.abs(Number(diffMatch[1])) < 1;
 }
 
+// Broader version of the same defect, not limited to rounding: the model creates a formal
+// issue for a line it just finished confirming ties correctly ("Amounts tie correctly;
+// verified... No correction needed — amounts tie."). These duplicate a Numeric Tie-Out
+// TIE row or a verifiedItems entry that already exists, and inflate the HIGH/MEDIUM count
+// with nothing actionable in it. Unlike isConfirmedRoundingNonIssue this does not require
+// a dollar-difference match, since a "ties correctly" confirmation often mentions no
+// difference amount at all.
+function isSelfDeclaredNonIssue(issue) {
+  const text = [issue.issueDescription, issue.description, issue.issue, issue.riskAnalysis, issue.proposedSolution]
+    .filter(Boolean).join(" ").toLowerCase();
+  return /(no correction needed|amounts tie correctly|ties correctly|correctly ties|no action (is )?(needed|required)|verified;? (no|correct)|nothing (further )?to (verify|correct)|no further (action|verification) (is )?(needed|required))/.test(text);
+}
+
 function enforceReviewConciseness(review) {
   if (!review || typeof review !== "object") return;
   review.executiveSummary = limitSentences(review.executiveSummary, 3, 500);
   review.finalConclusion = limitSentences(review.finalConclusion, 3, 500);
   if (Array.isArray(review.issues)) {
-    review.issues = review.issues.filter((issue) => issue && !isConfirmedRoundingNonIssue(issue));
+    review.issues = review.issues.filter((issue) => issue && !isConfirmedRoundingNonIssue(issue) && !isSelfDeclaredNonIssue(issue));
     review.issues = review.issues.map((issue) => {
       if (!issue || typeof issue !== "object") return issue;
       const priority = String(issue.priority || issue.severity || "").toUpperCase();
