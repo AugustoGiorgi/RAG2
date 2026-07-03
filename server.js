@@ -9322,9 +9322,18 @@ async function handleReview(req, res) {
     const startedAt = Date.now();
     // Keep the proxy connection alive during the long model call to avoid a 504.
     startHeartbeatResponse(res);
+    // Firm context (master prompt form rules, Knowledge Base, Review Examples, historical
+    // corrections) was previously only wired into an orphaned legacy call path
+    // (callClaudeWithFallbacks) that nothing invoked — the UI advertised these as used in
+    // every review but the actual review call never saw them. Built once per request and
+    // marked cache_control:ephemeral since it is identical across reviews of the same
+    // return type until an admin changes the uploads.
+    const firmContext = await buildReviewFirmContextBlock(payload);
+    const systemBlocks = [{ type: "text", text: reviewRequest.systemPrompt }];
+    if (firmContext) systemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
-      system: reviewRequest.systemPrompt,
+      system: systemBlocks,
       messages: [{ role: "user", content: reviewRequest.userContent }],
     }, reviewModelCandidates());
     let retriedWithCompactPackage = false;
@@ -9335,9 +9344,14 @@ async function handleReview(req, res) {
         maxCharsPerFile: REVIEW_RETRY_MAX_CHARS_PER_FILE,
         minCharsPerFile: REVIEW_RETRY_MIN_CHARS_PER_FILE,
       });
+      const retrySystemBlocks = [{
+        type: "text",
+        text: `${reviewRequest.systemPrompt}\n\nThe first review attempt timed out. This retry uses a tighter document extract. Prioritize high-risk findings, tie-outs, missing support, elections, inconsistencies, and items that block filing. If detail is unavailable because a file was compacted, explicitly flag the document and area for manual follow-up.`,
+      }];
+      if (firmContext) retrySystemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
       result = await callAnthropicDirectWithFallbacks(apiKey, {
         max_tokens: REVIEW_MAX_TOKENS,
-        system: `${reviewRequest.systemPrompt}\n\nThe first review attempt timed out. This retry uses a tighter document extract. Prioritize high-risk findings, tie-outs, missing support, elections, inconsistencies, and items that block filing. If detail is unavailable because a file was compacted, explicitly flag the document and area for manual follow-up.`,
+        system: retrySystemBlocks,
         messages: [{ role: "user", content: reviewRequest.userContent }],
       }, reviewModelCandidates());
     }
@@ -9433,6 +9447,44 @@ function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
   };
 }
 
+async function buildReviewFirmContextBlock(payload = {}) {
+  // includeBackendOnly defaults to true (omitted here) so proprietary reference files
+  // (e.g. the firm's IRS instructions reference, agent notes) reach the model even though
+  // they are hidden from the admin file-list UI.
+  const [knowledgeBase, reviewExamples] = await Promise.all([
+    loadContextFiles(KNOWLEDGE_BASE_DIR, "knowledge_base"),
+    loadContextFiles(REVIEW_EXAMPLES_DIR, "review_examples"),
+  ]);
+  const masterPrompt = selectMasterPromptForReturn(payload);
+  const dbLines = CORRECTIONS_DB.map((c, i) => `${i + 1}. [${c.stage.toUpperCase()}][${c.type}] ${c.client}: ${c.desc}`).join("\n");
+  const sections = [];
+  if (masterPrompt) {
+    sections.push("=== FIRM MASTER REVIEW PROMPT: FORM-SPECIFIC RULES (AUTHORITY) ===", masterPrompt);
+  }
+  if (knowledgeBase.length) {
+    sections.push(
+      "=== CLIENT KNOWLEDGE BASE: TECHNICAL AUTHORITY ===",
+      "Apply these files before general reasoning whenever they address an issue. Cite the file name in source when it supports a finding.",
+      formatContextFiles(knowledgeBase)
+    );
+  }
+  if (reviewExamples.length) {
+    sections.push(
+      "=== CLIENT REVIEW EXAMPLES: TONE AND FORMAT ONLY ===",
+      "Use these only to match the firm's preferred wording, structure, and comment style. They are never tax authority — never copy facts, amounts, or findings from them into this review.",
+      formatContextFiles(reviewExamples)
+    );
+  }
+  if (CORRECTIONS_DB.length) {
+    sections.push(
+      `=== FIRM HISTORICAL CORRECTIONS DATABASE (${CORRECTIONS_DB.length} entries) ===`,
+      "Real errors this firm has caught on past reviews. Use as pattern hints for what to check closely (addresses, K-1 %, officer comp, etc.) — not as technical authority.",
+      dbLines
+    );
+  }
+  return sections.join("\n\n");
+}
+
 function compactReviewDocuments(documents = [], limits = {}) {
   if (!Array.isArray(documents) || documents.length === 0) return [];
   const maxTotalChars = Number(limits.maxTotalChars || REVIEW_MAX_TOTAL_CHARS);
@@ -9482,6 +9534,8 @@ You will be given multiple documents, each labeled with its role:
 - supporting_document: W-2, W-3, W-9, 1099, K-1, PIR, depreciation schedules, notices, and other support.
 
 Read and understand EVERY document before writing anything.
+
+FIRM CONTEXT PRIORITY: a second system block may follow with firm-specific context, in this priority order: (1) firm master review prompt and Knowledge Base = technical authority, apply before general reasoning when they address an issue; (2) historical corrections database = pattern hints for what to check closely, not authority; (3) review examples = tone and formatting reference ONLY, never copy facts or findings from them. If that block is absent, proceed on IRS/state authority and the documents provided.
 
 REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 1. Cross-document consistency: entity name, EIN/SSN, addresses, ownership percentages, tax year dates.
@@ -9557,7 +9611,12 @@ async function callAnthropicDirect(apiKey, requestBody) {
   try {
     const res = await fetch(ANTHROPIC_URL, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION },
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "anthropic-beta": "prompt-caching-2024-07-31",
+      },
       signal: controller.signal,
       body: JSON.stringify(requestBody),
     });
