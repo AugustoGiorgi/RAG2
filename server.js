@@ -9434,6 +9434,9 @@ function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
     taxYear,
     reviewStage,
     state,
+    // Carried through so normalizeSeniorReviewServer can verify the model actually
+    // addressed client facts rather than silently dropping them.
+    clientFacts: String(metadata.clientFacts || "").trim(),
     generatedDate: new Date().toLocaleDateString("en-US"),
     reviewerName: req?.user?.displayName || getSession(req)?.displayName || "",
   };
@@ -9546,6 +9549,10 @@ REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 6. Supporting documents: decide whether each belongs on the return and whether it is reflected correctly.
 7. Form-specific checks for ${returnType || "the return type"}.
 8. Every firm feedback item provided.
+
+CLIENT FACTS ARE MANDATORY TO CHECK (ABSOLUTE): every line under CLIENT FACTS TO VERIFY must be actively compared against the uploaded documents. If a client fact does not match what the documents show, you MUST report it — as an issues[] entry (priority per the rubric below) AND as an infoConsistency row with status MISMATCH. Never mark a client fact as MATCH without actually checking every digit/word against the documents, and never silently drop a client fact that does not match.
+
+USER REVIEW INSTRUCTIONS ARE MANDATORY TASKS (ABSOLUTE): every request under USER REVIEW INSTRUCTIONS must be explicitly fulfilled in your JSON output, not just acknowledged. If the user asks for a list, summary, or specific extra output (e.g. "list every EIN and SSN found in the return"), produce that exact list as its own set of entries in verifiedItems (prefixed "REQUESTED: ") so it is impossible to miss. Do not skip a requested task because it does not fit neatly into another section.
 
 ROUNDING RULE (ABSOLUTE): Differences of less than $1.00 on any line are IRS whole-dollar rounding and are CORRECT. Never report them as issues at any priority — not even to note that they are correct. A return line of $81,825 supported by a W-2 showing $81,824.69 is right, not wrong. Do NOT create an issues[] entry whose own conclusion is "this is correct" or "no correction needed" — if you find yourself writing that, delete the issue and put the line in verifiedItems or the Numeric Tie-Out (status TIE) instead. An issue exists only to report something that needs a person's attention.
 
@@ -9815,8 +9822,31 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
     normalized.openQuestions.push("Complete and document the Schedule L balance sheet tie-out because the AI response did not return one.");
   }
+  const clientFacts = String(payload.metadata?.clientFacts || "").trim();
+  if (clientFacts && !clientFactsWereAddressed(normalized, clientFacts)) {
+    normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
+    normalized.openQuestions.push(`REVIEWER FOLLOW-UP REQUIRED: Client Facts were provided but nothing in this review addresses them — verify manually against the documents: "${clientFacts}"`);
+  }
   enforceReviewConciseness(normalized);
   return normalized;
+}
+
+// Safety net for the prompt-level "CLIENT FACTS ARE MANDATORY TO CHECK" instruction: the
+// model has silently dropped client facts before (checked one review, ignored the next with
+// identical instructions — non-deterministic prompt compliance). This looks for a
+// distinctive token from the client facts text (a number with 3+ digits, or a word with 4+
+// letters) anywhere in the JSON response; if none appear, the fact was almost certainly never
+// checked, so a follow-up question is force-added rather than letting it disappear silently.
+function clientFactsWereAddressed(structured, clientFacts) {
+  const haystack = JSON.stringify(structured || {}).toLowerCase();
+  // Numbers (SSN/EIN digits, dollar amounts) are the distinctive, checkable part of a
+  // client fact — require one to appear verbatim when present. Generic words like
+  // "client" or "ends" are too common in a review to prove the fact was actually checked.
+  const numericTokens = clientFacts.match(/\d{3,}/g) || [];
+  if (numericTokens.length) return numericTokens.some((token) => haystack.includes(token));
+  const wordTokens = clientFacts.match(/[A-Za-z]{5,}/g) || [];
+  if (!wordTokens.length) return true;
+  return wordTokens.some((token) => haystack.includes(token.toLowerCase()));
 }
 
 // The model reliably ignores "1-2 sentences max" instructions in the prompt and writes
