@@ -8619,8 +8619,9 @@ function normalizeBalanceSheetCheck(value) {
 
 function normalizeFilingReadiness(value) {
   const text = safeText(value).toUpperCase();
-  if (text.includes("CONDITION")) return "READY WITH CONDITIONS";
   if (text.includes("NOT")) return "NOT READY";
+  if (text.includes("OPEN QUESTION")) return "READY - OPEN QUESTIONS REMAINING";
+  if (text.includes("CONDITION")) return "READY WITH CONDITIONS";
   if (text.includes("READY")) return "READY";
   return "";
 }
@@ -8883,7 +8884,7 @@ function renderDocumentSummary(summary) {
 function readinessTagClass(readiness) {
   const text = safeText(readiness).toUpperCase();
   if (text.includes("NOT")) return "danger";
-  if (text.includes("CONDITION")) return "warning";
+  if (text.includes("OPEN QUESTION") || text.includes("CONDITION")) return "warning";
   if (text.includes("READY")) return "success";
   return "neutral";
 }

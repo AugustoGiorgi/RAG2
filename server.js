@@ -9831,7 +9831,49 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     normalized.openQuestions.push(`REVIEWER FOLLOW-UP REQUIRED: Client Facts were provided but nothing in this review addresses them — verify manually against the documents: "${clientFacts}"`);
   }
   enforceReviewConciseness(normalized);
+  enforceInfoConsistencyStatus(normalized);
+  enforceFilingReadinessConsistency(normalized);
   return normalized;
+}
+
+// The model has repeatedly written a MISMATCH explanation in the note field ("Client fact
+// requirement: SSN ends in 123. Actual SSN ends in 0756. [MISMATCH ALERT]") while leaving the
+// structured status column as "MATCH" — so the row reads as fine at a glance and the actual
+// conflict only shows up if someone reads every note. Force the status to agree with what the
+// note itself says.
+function enforceInfoConsistencyStatus(review) {
+  if (!Array.isArray(review.infoConsistency)) return;
+  review.infoConsistency = review.infoConsistency.map((row) => {
+    if (!row || typeof row !== "object") return row;
+    const noteText = String(row.note || "").toLowerCase();
+    const looksMismatched = /mismatch|does not match|conflict|incorrect|does not equal/.test(noteText);
+    if (looksMismatched && String(row.status || "").toUpperCase() !== "MISMATCH") {
+      return { ...row, status: "MISMATCH" };
+    }
+    return row;
+  });
+}
+
+// Filing readiness must reflect what is actually in the review, not the model's own summary
+// judgment — it has said "READY / LOW risk" in the same response that lists an unresolved
+// SSN conflict, a $37,000 undocumented payment gap, and a possible late-filing question.
+// Recomputed deterministically from the review's own content instead of trusted as-is:
+//   - Any HIGH-priority issue -> NOT READY (something confirmed wrong blocks filing).
+//   - No HIGH issue, but open questions or missing documents remain -> a distinct status
+//     that says the return itself looks correct but named items still need checking, so a
+//     preparer can tell "clean, just confirm these" apart from "actually broken."
+//   - Nothing outstanding -> READY.
+function enforceFilingReadinessConsistency(review) {
+  const hasHighIssue = Array.isArray(review.issues) && review.issues.some((issue) => String(issue.priority || issue.severity || "").toUpperCase() === "HIGH");
+  const hasOpenItems = (Array.isArray(review.openQuestions) && review.openQuestions.length > 0)
+    || (Array.isArray(review.missingDocuments) && review.missingDocuments.length > 0);
+  if (hasHighIssue) {
+    review.filingReadiness = "NOT READY";
+  } else if (hasOpenItems) {
+    review.filingReadiness = "READY - OPEN QUESTIONS REMAINING";
+  } else {
+    review.filingReadiness = "READY";
+  }
 }
 
 // Safety net for the prompt-level "CLIENT FACTS ARE MANDATORY TO CHECK" instruction: the
