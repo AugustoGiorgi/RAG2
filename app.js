@@ -8918,9 +8918,24 @@ function renderInfoConsistencySection(rows) {
   return renderReviewTable("Informational Data Consistency", ["Item", "Return Value", "Source Value", "Source", "Status", "Note"], rows.map((row) => [row.item, row.returnValue, row.sourceValue, row.source, row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("MISMATCH") ? "danger-row" : "");
 }
 
+function isBlankOrZeroAmount(value) {
+  const text = safeText(value).trim();
+  if (!text) return true;
+  const num = Number(text.replace(/[^0-9.-]/g, ""));
+  return !Number.isFinite(num) || num === 0;
+}
+
+function isBalanceSheetNotApplicable(check) {
+  // A real Schedule L always has nonzero totals on both sides. When the model returns
+  // totalAssets as the string "0" (not empty), that string is truthy in JS, so a plain
+  // falsy check misses it and the review renders "BALANCED" for a 1040 with no balance
+  // sheet at all. Check the parsed numeric value instead.
+  return isBlankOrZeroAmount(check.totalAssets) || isBlankOrZeroAmount(check.totalLiabEquity);
+}
+
 function renderBalanceSheetCheckSection(check) {
   if (!check) return "";
-  const notApplicable = !check.totalAssets && !check.totalLiabEquity && !check.difference;
+  const notApplicable = isBalanceSheetNotApplicable(check);
   const status = notApplicable ? "N/A" : check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${check.difference}` : ""}`;
   return `
     <article>
@@ -9425,7 +9440,7 @@ function addBalanceSheetCheckText(lines, check) {
     lines.push("- None noted.");
     return;
   }
-  const notApplicable = !check.totalAssets && !check.totalLiabEquity && !check.difference;
+  const notApplicable = isBalanceSheetNotApplicable(check);
   const status = notApplicable ? "N/A" : check.balanced ? "BALANCED" : `OUT OF BALANCE by ${safeText(check.difference)}`;
   lines.push(`Total Assets: ${safeText(check.totalAssets)} | Total Liabilities & Equity: ${safeText(check.totalLiabEquity)} | ${status}`);
   if (check.note) lines.push(safeText(check.note));

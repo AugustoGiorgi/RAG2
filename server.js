@@ -9547,7 +9547,7 @@ REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 7. Form-specific checks for ${returnType || "the return type"}.
 8. Every firm feedback item provided.
 
-ROUNDING RULE (ABSOLUTE): Differences of less than $1.00 on any line are IRS whole-dollar rounding and are CORRECT. Never report them as issues at any priority. A return line of $81,825 supported by a W-2 showing $81,824.69 is right, not wrong. List rounding-only lines under verifiedItems if you mention them at all.
+ROUNDING RULE (ABSOLUTE): Differences of less than $1.00 on any line are IRS whole-dollar rounding and are CORRECT. Never report them as issues at any priority — not even to note that they are correct. A return line of $81,825 supported by a W-2 showing $81,824.69 is right, not wrong. Do NOT create an issues[] entry whose own conclusion is "this is correct" or "no correction needed" — if you find yourself writing that, delete the issue and put the line in verifiedItems or the Numeric Tie-Out (status TIE) instead. An issue exists only to report something that needs a person's attention.
 
 PRIORITY RUBRIC:
 - HIGH: a CONFIRMED error that changes the tax outcome or blocks filing — a tie-out that does not reconcile against a document you have, a wrong SSN/EIN, an unfiled election that was required, a material amount ($100+) that actively contradicts a document you have.
@@ -9852,11 +9852,29 @@ function limitSentences(text, maxSentences, maxChars) {
   return out;
 }
 
+// The ROUNDING RULE prompt instruction gets followed in spirit but not in letter: the
+// model correctly concludes a sub-$1 difference is fine, then still emits a formal issue
+// saying so ("this is correct, not an error") instead of dropping it. That inflates the
+// HIGH/MEDIUM count with noise the Numeric Tie-Out section already covers as a TIE row.
+// This is a hard filter so it can never slip through regardless of prompt compliance.
+function isConfirmedRoundingNonIssue(issue) {
+  const text = [issue.issueDescription, issue.description, issue.issue, issue.riskAnalysis, issue.proposedSolution]
+    .filter(Boolean).join(" ").toLowerCase();
+  const declaredFine = /(this is correct|not an error|no correction needed|is (irs )?whole-dollar rounding|correct,? not (an )?error)/.test(text);
+  if (!declaredFine) return false;
+  // "difference" can appear before or after the dollar amount ("$0.31 difference" or
+  // "difference of $0.31") — check both orders.
+  const diffMatch = text.match(/differ(?:ence|s)?\s*(?:of|is|by)?\s*\$?(-?\d+(?:\.\d+)?)/)
+    || text.match(/\$(-?\d+(?:\.\d+)?)\s*differ(?:ence|s)?/);
+  return Boolean(diffMatch) && Math.abs(Number(diffMatch[1])) < 1;
+}
+
 function enforceReviewConciseness(review) {
   if (!review || typeof review !== "object") return;
   review.executiveSummary = limitSentences(review.executiveSummary, 3, 500);
   review.finalConclusion = limitSentences(review.finalConclusion, 3, 500);
   if (Array.isArray(review.issues)) {
+    review.issues = review.issues.filter((issue) => issue && !isConfirmedRoundingNonIssue(issue));
     review.issues = review.issues.map((issue) => {
       if (!issue || typeof issue !== "object") return issue;
       const priority = String(issue.priority || issue.severity || "").toUpperCase();
