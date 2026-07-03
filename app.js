@@ -8920,10 +8920,11 @@ function renderInfoConsistencySection(rows) {
 
 function renderBalanceSheetCheckSection(check) {
   if (!check) return "";
-  const status = check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${check.difference}` : ""}`;
+  const notApplicable = !check.totalAssets && !check.totalLiabEquity && !check.difference;
+  const status = notApplicable ? "N/A" : check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${check.difference}` : ""}`;
   return `
     <article>
-      <span class="tag ${check.balanced ? "success" : "danger"}">Schedule L</span>
+      <span class="tag ${notApplicable ? "neutral" : check.balanced ? "success" : "danger"}">Schedule L</span>
       <h3>Balance Sheet Check</h3>
       <p><strong>Total Assets:</strong> ${escapeHtml(check.totalAssets || "Not provided")} | <strong>Total Liabilities & Equity:</strong> ${escapeHtml(check.totalLiabEquity || "Not provided")} | <strong>${escapeHtml(status)}</strong></p>
       ${check.note ? `<p>${escapeHtml(check.note)}</p>` : ""}
@@ -9424,7 +9425,9 @@ function addBalanceSheetCheckText(lines, check) {
     lines.push("- None noted.");
     return;
   }
-  lines.push(`Total Assets: ${safeText(check.totalAssets)} | Total Liabilities & Equity: ${safeText(check.totalLiabEquity)} | ${check.balanced ? "BALANCED" : `OUT OF BALANCE by ${safeText(check.difference)}`}`);
+  const notApplicable = !check.totalAssets && !check.totalLiabEquity && !check.difference;
+  const status = notApplicable ? "N/A" : check.balanced ? "BALANCED" : `OUT OF BALANCE by ${safeText(check.difference)}`;
+  lines.push(`Total Assets: ${safeText(check.totalAssets)} | Total Liabilities & Equity: ${safeText(check.totalLiabEquity)} | ${status}`);
   if (check.note) lines.push(safeText(check.note));
 }
 
@@ -9657,6 +9660,18 @@ function resetFiles() {
   els.exportActions.hidden = true;
   els.progressList.hidden = true;
   els.reviewStatus.textContent = "Ready";
+  // Client name, return type, and client facts are plain form fields that survive a file
+  // clear on their own — nothing ties them to the uploaded package. A prior client's stale
+  // "Return Type: 1120" or client fact left in these fields produces confident-looking but
+  // fabricated HIGH findings on the next client's review ("return type mismatch", "EIN
+  // doesn't match"). Clearing them here makes "Clear files" a true reset between clients.
+  document.getElementById("clientName").value = "";
+  document.getElementById("entityName").value = "";
+  document.getElementById("statesIncluded").value = "";
+  document.getElementById("returnType").value = "";
+  document.getElementById("reviewStage").value = "Initial review";
+  document.getElementById("userNotes").value = "";
+  document.getElementById("clientFacts").value = "";
   refreshDeliverableStatus();
   renderFiles();
   renderValidation(validateBeforeReview({ showWarnings: true }));

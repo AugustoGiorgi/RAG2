@@ -9507,7 +9507,7 @@ ENTITY-TYPE GUARD: only compare identifiers that apply to the entity in question
 
 CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what disagrees, the two amounts, and which documents: "W-2 Box 1 shows $81,824.69 but the return Line 1a shows $91,825; verify the entry." evidence lists only the line references and amounts. riskAnalysis is one sentence maximum and empty for LOW items. proposedSolution is one sentence. No essays, no repetition of the same numbers across fields, no speculative chains.
 
-CHECKBOX CHECKLIST (REQUIRED): Enumerate EVERY checkbox and election visible on the current-year return in checkboxReview — including ones that are correct — each compared against the prior-year return state. currentState = what the current return shows, shouldBe = what the prior year and facts support, explanation = one short sentence.
+CHECKBOX CHECKLIST (REQUIRED): Enumerate EVERY checkbox and election visible on the current-year return in checkboxReview — including ones that are correct — each compared against the prior-year return state. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
 
 INFORMATIONAL DATA CHECK (REQUIRED): In infoConsistency, verify every informational item across ALL documents: taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info if present. One row per item with status MATCH or MISMATCH and the exact values compared.
 
@@ -9832,8 +9832,15 @@ function buildDocumentsReadFromPayload(payload = {}) {
 }
 
 function hasBalanceSheetRelevantFiles(payload = {}) {
-  const text = JSON.stringify((payload.files || []).map((file) => ({ name: file.name, type: file.type, role: file.reviewRole || file.canonicalRole || file.role }))).toLowerCase();
-  return /1120|1120-s|1120s|1065|1041|workpaper|balance|schedule l|taxreturn|taxreturns/.test(text);
+  // Only entity returns (corp/S-corp/partnership/trust) file a Schedule L. Checking
+  // metadata.returnType directly avoids false positives: the old version grepped file
+  // names/types for "taxreturn(s)", which matched the client-side upload category
+  // "taxReturns" present on every review regardless of entity type — a 1040 with zero
+  // balance-sheet relevance was flagging "OUT OF BALANCE" on every run.
+  const returnType = String(payload.metadata?.returnType || "").toLowerCase().replace(/\s+/g, "");
+  if (/^(1120|1120s|1120-s|1065|1041)$/.test(returnType)) return true;
+  const text = JSON.stringify((payload.files || []).map((file) => ({ name: file.name, role: file.reviewRole || file.canonicalRole || file.role }))).toLowerCase();
+  return /\bworkpaper\b|\bbalance sheet\b|\bschedule l\b/.test(text);
 }
 
 function buildIncompleteReviewResult(payload = {}, raw = "") {
