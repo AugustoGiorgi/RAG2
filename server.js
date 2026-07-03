@@ -9764,7 +9764,22 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
 function limitSentences(text, maxSentences, maxChars) {
   const raw = String(text || "").trim();
   if (!raw) return raw;
-  const sentences = raw.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [raw];
+  // Split only where sentence-ending punctuation is followed by whitespace AND the next
+  // token starts a new sentence (capital letter, digit, quote, or paren). A decimal like
+  // "$81,824.69" has no space after the dot, so it is never split — that bug dropped the
+  // first half of findings and left stray fragments like "69 but return Line 1a shows...".
+  const parts = raw.split(/(?<=[.!?])\s+(?=["'(\[]?[A-Z0-9])/);
+  // Re-join fragments that split after a common abbreviation ("W-2 vs. Return", "Reg.",
+  // "Inc.", "e.g."), which otherwise cut a finding short at a false sentence boundary.
+  const abbrev = /\b(vs|no|nos|inc|llc|ltd|corp|co|mr|mrs|ms|dr|sec|reg|pub|est|approx|dept|fig|al|e\.g|i\.e|etc)\.$/i;
+  const sentences = [];
+  for (const part of parts) {
+    if (sentences.length && abbrev.test(sentences[sentences.length - 1])) {
+      sentences[sentences.length - 1] += " " + part;
+    } else {
+      sentences.push(part);
+    }
+  }
   let out = sentences.slice(0, maxSentences).join(" ").replace(/\s+/g, " ").trim();
   if (maxChars && out.length > maxChars) {
     const clipped = out.slice(0, maxChars);
