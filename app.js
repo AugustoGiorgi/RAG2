@@ -7082,69 +7082,6 @@ function sanitizeIssue(issue = {}) {
   };
 }
 
-function compactOneLine(value, maxLength = 180) {
-  const text = safeText(value).replace(/\s+/g, " ").trim();
-  if (!text || text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
-}
-
-function issueSummaryLine(issue) {
-  const item = sanitizeIssue(issue);
-  return issueProblemPhrase(item);
-}
-
-function issueProblemPhrase(issue) {
-  const text = [
-    issue.area,
-    issue.description,
-    issue.evidence,
-    issue.riskAnalysis,
-    issue.proposedSolution,
-    issue.recommendedAction,
-  ].filter(Boolean).join(" ").toLowerCase();
-
-  if (/(schedule\s*l|balance\s*sheet|assets|liabilities|equity)/.test(text) && /(not balance|out[- ]of[- ]balance|does not equal|do not equal|mismatch|difference|variance|tie)/.test(text)) {
-    return "Schedule L not balanced";
-  }
-  if (/(w-?2|wage statement|payroll)/.test(text) && /(salary|salaries|wage|wages|compensation)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
-    return "W-2 does not match salary information";
-  }
-  if (/(k-?1|schedule\s*k)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
-    return "Schedule K-1 does not match return information";
-  }
-  if (/(depreciation|fixed asset|asset schedule)/.test(text) && /(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
-    return "Depreciation schedule does not match return";
-  }
-  if (/(checkbox|box|election)/.test(text) && /(incorrect|missing|not selected|selected|wrong|review)/.test(text)) {
-    return "Checkbox or election needs review";
-  }
-  if (/(missing|not provided|unavailable|not included|absent)/.test(text)) {
-    return `${issueSummarySubject(issue)} support missing`;
-  }
-  if (/(mismatch|does not match|not match|difference|variance|tie|reconcile|inconsistent)/.test(text)) {
-    return `${issueSummarySubject(issue)} does not match support`;
-  }
-  return compactProblemPhrase(issue.description || issue.area || "Review item needs follow-up");
-}
-
-function issueSummarySubject(issue) {
-  return compactOneLine(safeText(issue.area || issue.category || "Review item").replace(/\s+/g, " "), 48) || "Review item";
-}
-
-function compactProblemPhrase(value) {
-  const text = safeText(value).replace(/\s+/g, " ").trim();
-  const firstClause = text.split(/[.;]/)[0] || text;
-  return compactOneLine(firstClause.replace(/^(issue|finding|problem)\s*[:.-]\s*/i, ""), 120);
-}
-
-function buildIssueSummaryLines(issues = []) {
-  return [...(Array.isArray(issues) ? issues : [])]
-    .map(sanitizeIssue)
-    .filter((issue) => issue.description || issue.area)
-    .sort((a, b) => priorityRank(a) - priorityRank(b))
-    .map((issue) => issueSummaryLine(issue));
-}
-
 function sanitizeExcelCell(value) {
   const text = safeText(value);
   return text || "";
@@ -9017,16 +8954,31 @@ function renderIssueSection(title, issues) {
     </article>`;
 }
 
+function issuePriorityCounts(issues = []) {
+  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+  (Array.isArray(issues) ? issues : []).forEach((issue) => {
+    const priority = safePriority(issue.priority || issue.severity);
+    if (counts[priority] !== undefined) counts[priority]++;
+  });
+  return counts;
+}
+
+function issuePriorityCountLabel(issues = []) {
+  const counts = issuePriorityCounts(issues);
+  const parts = [];
+  if (counts.HIGH) parts.push(`${counts.HIGH} HIGH`);
+  if (counts.MEDIUM) parts.push(`${counts.MEDIUM} MEDIUM`);
+  if (counts.LOW) parts.push(`${counts.LOW} LOW`);
+  if (counts.INFO) parts.push(`${counts.INFO} INFO`);
+  return parts.length ? parts.join(" · ") : "No issues identified";
+}
+
 function renderIssueSummarySection(issues = []) {
-  const summaryLines = buildIssueSummaryLines(issues);
-  if (!summaryLines.length) return "";
+  if (!Array.isArray(issues) || !issues.length) return "";
   return `
     <article>
       <span class="tag warning">Summary</span>
-      <h3>Issues & Items to Review Summary</h3>
-      <ul class="issue-summary-list">
-        ${summaryLines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
-      </ul>
+      <h3>${escapeHtml(issuePriorityCountLabel(issues))}</h3>
     </article>`;
 }
 
@@ -9363,12 +9315,9 @@ function toCleanWrittenReview(response, metadata = {}) {
     "----------------------------",
     ...(structured.feedbackApplied?.length ? structured.feedbackApplied.map((item) => `- ${safeText(item)}`) : ["- None noted."]),
     "",
-    "ISSUES & ITEMS TO REVIEW SUMMARY",
-    "--------------------------------",
-    ...(() => {
-      const summaryLines = buildIssueSummaryLines(structured.issues);
-      return summaryLines.length ? summaryLines.map((line) => `- ${line}`) : ["- No issues identified in the structured review."];
-    })(),
+    "ISSUES SUMMARY",
+    "--------------",
+    issuePriorityCountLabel(structured.issues),
     "",
     "ISSUES & ITEMS TO REVIEW",
     "------------------------",

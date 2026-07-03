@@ -9496,10 +9496,14 @@ REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 ROUNDING RULE (ABSOLUTE): Differences of less than $1.00 on any line are IRS whole-dollar rounding and are CORRECT. Never report them as issues at any priority. A return line of $81,825 supported by a W-2 showing $81,824.69 is right, not wrong. List rounding-only lines under verifiedItems if you mention them at all.
 
 PRIORITY RUBRIC:
-- HIGH: changes the tax outcome or blocks filing — a required form or schedule genuinely missing from the return, a material amount ($100+) with no supporting document, a tie-out that does not reconcile, a wrong SSN/EIN, an unfiled election that was required.
-- MEDIUM: needs verification and could change the return — an amount that reconciles only partially, documentation the reviewer must confirm exists, a prior-year inconsistency without a clear explanation.
+- HIGH: a CONFIRMED error that changes the tax outcome or blocks filing — a tie-out that does not reconcile against a document you have, a wrong SSN/EIN, an unfiled election that was required, a material amount ($100+) that actively contradicts a document you have.
+- MEDIUM: needs verification, not yet confirmed wrong — a K-1 or other source document not yet provided so an amount cannot be checked, documentation the reviewer must confirm exists, a prior-year inconsistency without a clear explanation. Missing a supporting document is MEDIUM, not HIGH, unless the amount on the return actively contradicts a document you DO have.
 - LOW: informational — formatting, address style variations, presentation. Never escalate a LOW item by speculating about what it "might indicate."
 Do not use missing-document language for a form you can see in the documents. If a form is referenced (e.g., in the forms list of the client letter) and its pages appear in the return package, it is NOT missing.
+
+NO DUPLICATE ISSUES: one root cause is ONE issue. If a wrong amount also causes a wrong penalty or a wrong downstream total, that is a single issue — state the cause and mention the downstream effect in the same issueDescription, never as a second issue. Before finalizing, scan your issues array and merge any two issues that reference the same line, the same document, or the same underlying number.
+
+ENTITY-TYPE GUARD: only compare identifiers that apply to the entity in question. Do not compare an EIN against an individual's SSN (or vice versa) unless the source explicitly labels them as the same identifier — if a client fact is ambiguous or refers to a different entity than the one on the return, note it under openQuestions instead of issues.
 
 CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what disagrees, the two amounts, and which documents: "W-2 Box 1 shows $81,824.69 but the return Line 1a shows $91,825; verify the entry." evidence lists only the line references and amounts. riskAnalysis is one sentence maximum and empty for LOW items. proposedSolution is one sentence. No essays, no repetition of the same numbers across fields, no speculative chains.
 
@@ -9806,6 +9810,15 @@ function enforceReviewConciseness(review) {
         proposedSolution: limitSentences(issue.proposedSolution || issue.recommendedAction || issue.recommendation, 2, 220),
         needsMoreInfo: limitSentences(issue.needsMoreInfo || issue.needsClientInfo, 1, 160),
       };
+    });
+  }
+  // Documents Read is an index, not a report — one line per file is enough to confirm
+  // it was actually opened. Long per-document summaries were pushing the review to
+  // half a page before the findings even started.
+  if (Array.isArray(review.documentsRead)) {
+    review.documentsRead = review.documentsRead.map((doc) => {
+      if (!doc || typeof doc !== "object") return doc;
+      return { ...doc, summary: limitSentences(doc.summary, 1, 140) };
     });
   }
 }
