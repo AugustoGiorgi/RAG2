@@ -10360,7 +10360,13 @@ function extractXlsxText(buffer) {
         if (/\bt="s"/.test(attrs)) value = shared[Number(value)] || value;
         values.push(value);
       }
-      if (values.some(Boolean)) rows.push(values.join(", "));
+      // Join columns with " | " rather than ", ". QBO/bank transaction exports put long
+      // free-text descriptions (e.g. "WELLS FARGO BANK, N.A. FORT PIERCE,FL ...") in one
+      // cell, and those descriptions contain many commas. With a comma delimiter the model
+      // cannot tell where the description ends and the Amount column begins, so it marked
+      // real dollar amounts as "TBD / not in source". A pipe never appears in the data, so
+      // every column boundary — including the Amount — stays unambiguous.
+      if (values.some(Boolean)) rows.push(values.join(" | "));
       if (rows.length >= 100) break;
     }
     if (rows.length) parts.push(`Sheet ${index}\n${rows.join("\n")}`);
