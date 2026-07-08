@@ -6244,21 +6244,30 @@ async function revokeAccountingTokens(softwareId, tokens = {}) {
     };
     const url = revokeUrls[softwareId];
     if (!url) return;
-    if (softwareId === "quickbooks") {
-      await fetch(url, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
-        body: JSON.stringify({ token }),
-      });
-    } else {
-      await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
-        body: new URLSearchParams({ token }),
-      });
+    // Hard timeout so a slow/unreachable provider revoke endpoint can never hang forever.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    try {
+      if (softwareId === "quickbooks") {
+        await fetch(url, {
+          method: "POST",
+          headers: { accept: "application/json", "content-type": "application/json", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
+          body: JSON.stringify({ token }),
+          signal: controller.signal,
+        });
+      } else {
+        await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}` },
+          body: new URLSearchParams({ token }),
+          signal: controller.signal,
+        });
+      }
+    } finally {
+      clearTimeout(timer);
     }
   } catch (_) {
-    // Revocation is best-effort; ignore provider errors.
+    // Revocation is best-effort; ignore provider errors (including the abort timeout).
   }
 }
 
@@ -9277,19 +9286,26 @@ async function handleAccountingApi(req, res, requestUrl) {
   }
   if (parts.length === 4 && parts[3] === "disconnect" && req.method === "POST") {
     const softwareId = parts[2];
-    // Revoke at the provider (best-effort) before removing the local record.
+    // Remove the local token record FIRST — that is what actually disconnects the user.
+    // Provider-side revocation was previously awaited BEFORE deletion, so a slow or
+    // unreachable Intuit/Xero revoke endpoint (the fetch had no timeout) hung the request
+    // and the local token was never deleted — the UI then re-read the still-present token
+    // and flipped back to "connected". Capture the tokens, delete locally, respond, then
+    // revoke at the provider in the background where it cannot block or undo the disconnect.
+    let tokensToRevoke = [];
     if (softwareId === "quickbooks") {
       const companies = getQboUserStore(username).companies || {};
-      for (const realmId of Object.keys(companies)) {
-        await revokeAccountingTokens("quickbooks", companies[realmId]?.tokens || {});
-      }
+      tokensToRevoke = Object.keys(companies).map((realmId) => companies[realmId]?.tokens || {});
       deleteQboUser(username);
     } else {
       const record = getAccountingRecord(username, softwareId);
-      await revokeAccountingTokens(softwareId, record.tokens || {});
+      tokensToRevoke = [record.tokens || {}];
       deleteAccountingRecord(username, softwareId);
     }
     sendJson(res, 200, { ok: true });
+    for (const tokens of tokensToRevoke) {
+      revokeAccountingTokens(softwareId, tokens).catch(() => {});
+    }
     return;
   }
   sendJson(res, 404, { error: "Accounting route not found." });
