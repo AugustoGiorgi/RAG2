@@ -13,7 +13,7 @@ const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
-const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
+const { buildStyledWorkpaperXlsx, parseNum: parseXlsxNum } = require("./lib/xlsx-workpaper");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -10951,6 +10951,14 @@ async function handlePrepareWorkpaper(req, res) {
     }
 
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
+
+    // Compute the book-to-tax running subtotals (Adjusted Net Income, Ordinary Income,
+    // Taxable Income) in code instead of trusting the model. This guarantees the
+    // reconciliation always reaches the final total (one run left them as "preparer to
+    // compute") and that every subtotal equals the running total of the components the
+    // model listed — deterministic and always complete.
+    enforceReconciliationSubtotals(workbook);
+
     appendEntryGuideSheetToWorkbook(workbook, entryGuide);
 
     // Append every uploaded financial report (P&L, Balance Sheet, asset detail, etc.) as
@@ -12955,6 +12963,8 @@ function buildPreparerContent(payload) {
       "3. GL detail: reconcile supporting detail to refreshed P&L and balance sheet lines where GL detail is provided.",
       "4. Book-to-tax: start from current-year net income per books from current_financials. Then apply current-year supported addbacks/deductions and tax adjustments. Always evaluate meals, entertainment, depreciation timing, penalties, federal income tax, Section 163(j), officer life insurance, state tax, charitable contributions, and any other prior-year recurring adjustment category. If an adjustment has no current-year support, do not use prior-year amount; mark it 0/blank and flag as not supported.",
       "5. M-1/M-3: taxable income must foot from book income plus/minus book-to-tax adjustments. If it does not foot, include an unreconciled difference row and flag it.",
+      "5a. COMPLETE EVERY SUBTOTAL: always carry the book-to-tax reconciliation all the way through to the final Adjusted Net Income, Ordinary/Business Income, and Taxable Income. Never leave a subtotal blank or write 'preparer to compute' / 'preparer to finalize' — compute each subtotal from the components you listed above it.",
+      "5b. CONSISTENT ENTITY TYPE AND DIRECTIONS: state the assumed entity/return type once at the top of the reconciliation, then apply every adjustment's direction (addback vs. subtraction) consistently for that entity type. Do NOT present the same item (e.g. owner healthcare premiums, home-office reclass) as an addback in one place and a subtraction in another. If an item's treatment depends on entity type, pick the treatment for the stated return type and note the assumption — do not flip it.",
       "6. M-2 / retained earnings: tie beginning retained earnings, book income, distributions/dividends, and ending retained earnings to the balance sheet or flag the difference.",
       "7. Source every material number in a nearby source/notes column or AI Notes. Every current-year amount must be traceable to a current_financials line, GL line, or explicit user instruction.",
       "",
@@ -13665,6 +13675,48 @@ function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
     guide = buildFallbackEntryGuideFromWorkbook(workbook, fallback);
   }
   return guide;
+}
+
+// Recomputes the running subtotals on the Book-to-Tax / M-1 reconciliation sheet in code.
+// Anchors on "Net Income per Books", then treats every numeric line as a component that
+// moves a running total and every subtotal line (Adjusted Net Income, Ordinary Income,
+// Taxable Income) as = running total at that point. Overwrites the subtotal cells so they
+// are always present and always internally consistent with the listed components. Lines
+// whose amount the model could not compute (blank/text) contribute 0 and stay flagged in
+// AI Notes — code never invents a missing component.
+function enforceReconciliationSubtotals(workbook) {
+  if (!workbook || !Array.isArray(workbook.sheets)) return workbook;
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  for (const sheet of workbook.sheets) {
+    if (sheet.verbatim) continue;
+    if (!/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(sheet.name || ""))) continue;
+    const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+    // Anchor: the "Net Income per Books" row (the starting book income), and the column
+    // its dollar amount sits in.
+    let amountCol = -1;
+    let startRow = -1;
+    for (let r = 0; r < rows.length && startRow === -1; r++) {
+      const label = String((rows[r] || [])[0] || "");
+      if (/net\s+income.*per\s+books/i.test(label) && !/adjusted/i.test(label)) {
+        for (let c = 1; c < (rows[r] || []).length; c++) {
+          if (parseXlsxNum(rows[r][c]) !== null) { amountCol = c; startRow = r; break; }
+        }
+      }
+    }
+    if (startRow === -1 || amountCol === -1) continue;
+    let running = parseXlsxNum(rows[startRow][amountCol]) || 0;
+    for (let r = startRow + 1; r < rows.length; r++) {
+      const label = String((rows[r] || [])[0] || "");
+      const isSubtotal = /adjusted\s+net\s+income|ordinary\s+(business\s+)?income|taxable\s+(ordinary\s+)?income|taxable\s+income/i.test(label);
+      if (isSubtotal) {
+        rows[r][amountCol] = round2(running);
+      } else {
+        const v = parseXlsxNum((rows[r] || [])[amountCol]);
+        if (v !== null) running += v;
+      }
+    }
+  }
+  return workbook;
 }
 
 // Adds one verbatim tab per sheet of every uploaded spreadsheet (P&L, Balance Sheet,
