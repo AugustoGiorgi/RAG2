@@ -13,6 +13,7 @@ const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
+const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -10963,9 +10964,22 @@ async function handlePrepareWorkpaper(req, res) {
     const nec_1099s  = normalize1099s(parsed.nec_1099s,  ["tsj","payer","ein","box1","box4"]);
     const misc_1099s = normalize1099s(parsed.misc_1099s, ["tsj","payer","ein","box3","box7","box4"]);
 
+    // Render a fully-styled .xlsx server-side (real numbers, currency formatting, navy
+    // headers, shaded totals, and code-verified SUM formulas). Best-effort: if generation
+    // fails for any reason, the response still ships the JSON workbook so the browser can
+    // fall back to the legacy SheetJS build — the download never breaks.
+    let xlsxBase64 = "";
+    try {
+      const buffer = await buildStyledWorkpaperXlsx(workbook);
+      xlsxBase64 = Buffer.from(buffer).toString("base64");
+    } catch (xlsxError) {
+      console.warn("[Preparation] styled xlsx generation failed, falling back to client build:", xlsxError?.message || xlsxError);
+    }
+
     endHeartbeatResponse(res, {
       workbook,
       entryGuide,
+      ...(xlsxBase64 ? { xlsxBase64 } : {}),
       ...(transactions8949.length ? { transactions8949 } : {}),
       ...(assets4562.length        ? { assets4562 }        : {}),
       ...(w2s.length               ? { w2s }               : {}),

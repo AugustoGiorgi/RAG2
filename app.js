@@ -6376,9 +6376,28 @@ function workbookSummary(workbook) {
   };
 }
 
+// Prefer the server-built, fully-styled .xlsx (real numbers, colors, verified formulas)
+// when present. Fall back to the legacy in-browser SheetJS build if it is not.
+function downloadServerXlsxIfPresent(baseName) {
+  const b64 = lastPreparerOutput?.response?.xlsxBase64;
+  if (!b64) return false;
+  const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${baseName}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
+}
+
 async function downloadPreparerWord() {
   if (!lastPreparerOutput) return;
   const baseName = "preparation-workpaper";
+  if (downloadServerXlsxIfPresent(baseName)) return;
   downloadWorkbook(`${baseName}.xlsx`, lastPreparerOutput.response.workbook);
 }
 
