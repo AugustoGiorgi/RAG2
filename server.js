@@ -10953,6 +10953,11 @@ async function handlePrepareWorkpaper(req, res) {
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
     appendEntryGuideSheetToWorkbook(workbook, entryGuide);
 
+    // Append every uploaded financial report (P&L, Balance Sheet, asset detail, etc.) as
+    // its own verbatim tab, so the preparer always has the original source alongside the
+    // tax workpaper and nothing that was uploaded is lost.
+    appendSourceReportSheets(workbook, payload.files || []);
+
     // Pass through Drake-specific extraction arrays (optional, omitted when empty)
     const transactions8949 = normalizeTransactions8949(parsed.transactions8949);
     const assets4562        = normalizeAssets4562(parsed.assets4562);
@@ -13660,6 +13665,40 @@ function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
     guide = buildFallbackEntryGuideFromWorkbook(workbook, fallback);
   }
   return guide;
+}
+
+// Adds one verbatim tab per sheet of every uploaded spreadsheet (P&L, Balance Sheet,
+// asset reports, prior-year workpaper, etc.). The client already parses each xlsx into
+// workbookTemplate(s) = { sourceFileName, sheets:[{ name, rows }] }, so we reuse those
+// exact rows. Tabs are marked verbatim so the styled generator formats them but never
+// injects formulas or rewrites a number inside the client's original report.
+function appendSourceReportSheets(workbook, files) {
+  if (!workbook || !Array.isArray(workbook.sheets)) return workbook;
+  const MAX_SOURCE_SHEETS = 40;
+  let added = 0;
+  for (const file of Array.isArray(files) ? files : []) {
+    const templates = [file?.workbookTemplate, ...(Array.isArray(file?.workbookTemplates) ? file.workbookTemplates : [])]
+      .filter((t) => t && Array.isArray(t.sheets) && t.sheets.length);
+    if (!templates.length) continue;
+    const fileBase = String(file?.name || templates[0].sourceFileName || "Source")
+      .replace(/\.[a-z0-9]+$/i, "").trim() || "Source";
+    for (const template of templates) {
+      const sheets = template.sheets.filter((s) => Array.isArray(s.rows) && s.rows.some((row) => (row || []).some((c) => String(c ?? "").trim())));
+      const multi = sheets.length > 1;
+      for (const s of sheets) {
+        if (added >= MAX_SOURCE_SHEETS) return workbook;
+        const label = multi ? `${fileBase} - ${s.name || ""}`.trim() : (fileBase || s.name || "Source");
+        workbook.sheets.push({
+          name: String(label).slice(0, 31),
+          rows: normalizeRows(s.rows),
+          styles: [],
+          verbatim: true,
+        });
+        added += 1;
+      }
+    }
+  }
+  return workbook;
 }
 
 function appendEntryGuideSheetToWorkbook(workbook, guide) {
