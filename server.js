@@ -14,6 +14,7 @@ const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
+const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -10925,6 +10926,20 @@ async function handlePrepareWorkpaper(req, res) {
   try {
     workbook = normalizeWorkbook(parsed, raw, payload);
 
+    // If the AI returned a structured reconciliation, replace its free-form Book-to-Tax
+    // sheet with the fixed-structure, formula-linked M-1 built in code. Fixed line set +
+    // live subtotal formulas = runs converge AND editing any line reflows the totals. If
+    // no structured reconciliation was returned, keep the AI's sheet (zero regression).
+    if (hasReconciliation(parsed.reconciliation)) {
+      const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
+      const m1Sheet = buildM1Sheet(parsed.reconciliation, entityType);
+      const withoutOldRecon = workbook.sheets.filter((s) => !/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(s.name || "")));
+      // Insert the M-1 near the front (after any Lead Sheet), before the detail tabs.
+      const insertAt = withoutOldRecon.findIndex((s) => !/lead\s*sheet|summary/i.test(String(s.name || "")));
+      withoutOldRecon.splice(insertAt < 0 ? 0 : insertAt, 0, m1Sheet);
+      workbook.sheets = withoutOldRecon;
+    }
+
     // Diagnostics: surface, inside the workbook itself, exactly which code path ran.
     // This makes it possible to confirm a deploy is live and to see whether the AI
     // actually produced the workbook or the safety fallback had to be used.
@@ -12968,6 +12983,15 @@ function buildPreparerContent(payload) {
       "5b. CONSISTENT ENTITY TYPE AND DIRECTIONS: state the assumed entity/return type once at the top of the reconciliation, then apply every adjustment's direction (addback vs. subtraction) consistently for that entity type. Do NOT present the same item (e.g. owner healthcare premiums, home-office reclass) as an addback in one place and a subtraction in another. If an item's treatment depends on entity type, pick the treatment for the stated return type and note the assumption — do not flip it.",
       "6. M-2 / retained earnings: tie beginning retained earnings, book income, distributions/dividends, and ending retained earnings to the balance sheet or flag the difference.",
       "7. Source every material number in a nearby source/notes column or AI Notes. Every current-year amount must be traceable to a current_financials line, GL line, or explicit user instruction.",
+      "",
+      "STRUCTURED RECONCILIATION (REQUIRED): in addition to the sheets, return a top-level 'reconciliation' object. The app rebuilds the Book-to-Tax (M-1) sheet from this object with a fixed structure and live formulas, so it must be complete and use exactly these keys:",
+      '  "reconciliation": {',
+      '    "netIncomePerBooks": number (current-year net income per books from the P&L),',
+      '    "ajes": [ { "label": string, "amount": number (SIGNED: negative reduces book income), "note": string } ],',
+      '    "m1": { "meals50": number, "entertainment": number, "penalties": number, "politicalLobbying": number, "officerLifeInsurance": number, "federalIncomeTax": number, "charitable": number, "taxExemptInterest": number, "depreciationBookVsTax": number, "sec179Bonus": number, "gainLossBookVsTax": number, "section163j": number, "otherPermanent": number, "otherTiming": number },',
+      '    "separatelyStated": [ { "label": string, "amount": number, "note": string } ]',
+      "  }",
+      "Every m1 value is a SIGNED amount that adjusts book income toward taxable income (+ increases, − decreases). Use 0 for any line that does not apply — never omit a key. Put interest, dividends, capital gains, and any pass-through separately-stated items in separatelyStated (they must NOT be folded into ordinary business income). The 'ajes' amounts must match the AJE worksheet. Do not compute the subtotals yourself — the app computes Adjusted Net Income and Ordinary Business Income from these components.",
       "",
       "Rules for entryGuide:",
       "Generate entryGuide in the same JSON response. Do not leave entryGuide empty.",
