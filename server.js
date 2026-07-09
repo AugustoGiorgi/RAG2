@@ -13,7 +13,7 @@ const planningTax = require("./lib/tax-calculations");
 const { QBOConnector }     = require("./qbo-connector");
 const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
-const { buildStyledWorkpaperXlsx, parseNum: parseXlsxNum } = require("./lib/xlsx-workpaper");
+const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -10952,12 +10952,13 @@ async function handlePrepareWorkpaper(req, res) {
 
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
 
-    // Compute the book-to-tax running subtotals (Adjusted Net Income, Ordinary Income,
-    // Taxable Income) in code instead of trusting the model. This guarantees the
-    // reconciliation always reaches the final total (one run left them as "preparer to
-    // compute") and that every subtotal equals the running total of the components the
-    // model listed — deterministic and always complete.
-    enforceReconciliationSubtotals(workbook);
+    // NOTE: a naive code recompute of the book-to-tax running subtotals was tried and
+    // reverted — the reconciliation structure varies too much run to run (differently
+    // worded subtotal labels, "separately stated" sections that must not be summed into
+    // ordinary income, duplicated lines), so summing the model's free-form rows produced
+    // a confident but WRONG taxable income. The real fix is a fixed reconciliation template
+    // (a set order of adjustment lines the model fills, then code sums that fixed shape).
+    // Until then, completeness/consistency is pushed via prompt rules 5a/5b.
 
     appendEntryGuideSheetToWorkbook(workbook, entryGuide);
 
@@ -13675,48 +13676,6 @@ function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
     guide = buildFallbackEntryGuideFromWorkbook(workbook, fallback);
   }
   return guide;
-}
-
-// Recomputes the running subtotals on the Book-to-Tax / M-1 reconciliation sheet in code.
-// Anchors on "Net Income per Books", then treats every numeric line as a component that
-// moves a running total and every subtotal line (Adjusted Net Income, Ordinary Income,
-// Taxable Income) as = running total at that point. Overwrites the subtotal cells so they
-// are always present and always internally consistent with the listed components. Lines
-// whose amount the model could not compute (blank/text) contribute 0 and stay flagged in
-// AI Notes — code never invents a missing component.
-function enforceReconciliationSubtotals(workbook) {
-  if (!workbook || !Array.isArray(workbook.sheets)) return workbook;
-  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-  for (const sheet of workbook.sheets) {
-    if (sheet.verbatim) continue;
-    if (!/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(sheet.name || ""))) continue;
-    const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
-    // Anchor: the "Net Income per Books" row (the starting book income), and the column
-    // its dollar amount sits in.
-    let amountCol = -1;
-    let startRow = -1;
-    for (let r = 0; r < rows.length && startRow === -1; r++) {
-      const label = String((rows[r] || [])[0] || "");
-      if (/net\s+income.*per\s+books/i.test(label) && !/adjusted/i.test(label)) {
-        for (let c = 1; c < (rows[r] || []).length; c++) {
-          if (parseXlsxNum(rows[r][c]) !== null) { amountCol = c; startRow = r; break; }
-        }
-      }
-    }
-    if (startRow === -1 || amountCol === -1) continue;
-    let running = parseXlsxNum(rows[startRow][amountCol]) || 0;
-    for (let r = startRow + 1; r < rows.length; r++) {
-      const label = String((rows[r] || [])[0] || "");
-      const isSubtotal = /adjusted\s+net\s+income|ordinary\s+(business\s+)?income|taxable\s+(ordinary\s+)?income|taxable\s+income/i.test(label);
-      if (isSubtotal) {
-        rows[r][amountCol] = round2(running);
-      } else {
-        const v = parseXlsxNum((rows[r] || [])[amountCol]);
-        if (v !== null) running += v;
-      }
-    }
-  }
-  return workbook;
 }
 
 // Adds one verbatim tab per sheet of every uploaded spreadsheet (P&L, Balance Sheet,
