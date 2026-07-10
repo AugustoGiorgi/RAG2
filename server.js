@@ -15,6 +15,7 @@ const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
+const { canonicalizeWorkbookSheets, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -10926,35 +10927,42 @@ async function handlePrepareWorkpaper(req, res) {
   try {
     workbook = normalizeWorkbook(parsed, raw, payload);
 
-    // If the AI returned a structured reconciliation, replace its free-form Book-to-Tax
-    // sheet with the fixed-structure, formula-linked M-1 built in code. Fixed line set +
-    // live subtotal formulas = runs converge AND editing any line reflows the totals. If
-    // no structured reconciliation was returned, keep the AI's sheet (zero regression).
-    // Only business entities with a Schedule M-1 (1065, 1120, 1120-S) get the fixed-structure
-    // code M-1. A 1040 individual and a 990 have no book-to-tax M-1, so the template does not
-    // apply — those keep the AI's own workpaper sheets.
-    // Entity gate. Only 1040 individuals, 990 exempt orgs, and 1041 fiduciary returns have
-    // NO Schedule M-1 — everything else (partnerships, C/S corps, and the common case where the
-    // preparer left the return-type field blank) DOES. So the rule is permissive by default:
-    // build the code M-1 whenever the AI returned a reconciliation object, UNLESS the return
-    // type is explicitly one of the no-M-1 forms. A blank return type must never silently
-    // disable the deterministic M-1 (that was the 56/57 bug).
+    // Entity gate for the fixed-structure reconciliation sheet:
+    //   • 1065 / 1120 / 1120-S / blank return type → Schedule M-1 (blank must never silently
+    //     disable the deterministic M-1 — that was the 56/57 bug).
+    //   • 1040 → "Book to Tax (Sch C-E)" business reconciliation, but ONLY when the model
+    //     returned a reconciliation (i.e. business financials were uploaded). A personal
+    //     organizer 1040 legitimately has none, so no fallback call and no warning for it.
+    //   • 990 / 1041 → excluded entirely (no book-to-tax template applies).
     const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
-    const isNoM1Entity = /^(1040|990|1041)$/i.test(entityType.replace(/\s+/g, ""));
+    const normalizedEntity = entityType.replace(/\s+/g, "");
+    const isNoReconEntity = /^(990|1041)$/i.test(normalizedEntity);
+    const is1040 = /^1040$/i.test(normalizedEntity);
     let m1Status = "";
-    if (hasReconciliation(parsed.reconciliation) && !isNoM1Entity) {
+
+    // GUARANTEE PATH: an M-1 entity whose main response lacked the structured object gets a
+    // dedicated small second call that asks for just the reconciliation. Cost only on failure.
+    if (!hasReconciliation(parsed.reconciliation) && !isNoReconEntity && !is1040) {
+      const fallback = await requestReconciliationFallback(apiKey, workbook, entityType, { userId: req.user?.email || req.user?.id || "unknown" });
+      if (fallback) {
+        parsed.reconciliation = fallback.reconciliation;
+        logClaudeCost(req, fallback.result, "preparation", "preparation_recon_fallback", payload, startedAt);
+        m1Status = "Book-to-Tax (M-1): the main response was missing the structured reconciliation, so a dedicated follow-up call rebuilt it. ";
+      }
+    }
+
+    if (hasReconciliation(parsed.reconciliation) && !isNoReconEntity) {
       const m1Sheet = buildM1Sheet(parsed.reconciliation, entityType);
       const withoutOldRecon = workbook.sheets.filter((s) => !/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(s.name || "")));
       // Insert the M-1 near the front (after any Lead Sheet), before the detail tabs.
       const insertAt = withoutOldRecon.findIndex((s) => !/lead\s*sheet|summary/i.test(String(s.name || "")));
       withoutOldRecon.splice(insertAt < 0 ? 0 : insertAt, 0, m1Sheet);
       workbook.sheets = withoutOldRecon;
-      m1Status = `Book-to-Tax (M-1): rebuilt in code from the structured reconciliation object (fixed lines + live formulas — deterministic across runs)${entityType ? ` [return type: ${entityType}]` : " [return type not set — assumed a Schedule M-1 entity; set the Return Type field to be explicit]"}.`;
-    } else if (!isNoM1Entity) {
-      // A Schedule-M1 entity (or unspecified) but the model did not return the structured
-      // reconciliation object. This is the non-deterministic path we are eliminating — flag it
-      // LOUDLY so the preparer re-runs instead of trusting a free-form (divergent) reconciliation.
-      m1Status = "⚠ NEEDS REVIEW — the AI did NOT return the structured reconciliation object, so the deterministic Book-to-Tax (M-1) could not be built. Re-run the preparation; if this persists, set the Return Type field explicitly (1065 / 1120 / 1120-S).";
+      m1Status = `${m1Status}${m1Sheet.name}: rebuilt in code from the structured reconciliation object (fixed lines + live formulas — deterministic across runs)${entityType ? ` [return type: ${entityType}]` : " [return type not set — assumed a Schedule M-1 entity; set the Return Type field to be explicit]"}.`;
+    } else if (!isNoReconEntity && !is1040) {
+      // Even the dedicated fallback failed — flag it LOUDLY so the preparer re-runs instead
+      // of trusting a free-form (divergent) reconciliation.
+      m1Status = "⚠ NEEDS REVIEW — the AI did NOT return the structured reconciliation object (and the dedicated follow-up call also failed), so the deterministic Book-to-Tax (M-1) could not be built. Re-run the preparation; if this persists, set the Return Type field explicitly (1065 / 1120 / 1120-S).";
     }
 
     // Diagnostics: surface, inside the workbook itself, exactly which code path ran.
@@ -11000,8 +11008,13 @@ async function handlePrepareWorkpaper(req, res) {
     // tax workpaper and nothing that was uploaded is lost.
     appendSourceReportSheets(workbook, payload.files || []);
 
-    // Link the Data Entry Guide amounts back to the M-1 by formula (unique-match only), so
-    // editing a reconciliation number flows into the entry guide automatically.
+    // Canonical tab names + fixed order (must run BEFORE formula linking, which references
+    // sheets by name inside the generated formulas).
+    canonicalizeWorkbookSheets(workbook);
+
+    // Cross-tab formula chain (unique-match only, IFERROR-wrapped): P&L net income → M-1,
+    // AJE Worksheet → M-1 AJE rows, M-1 → Data Entry Guide. Editing the P&L reflows the
+    // M-1 subtotals and the entry guide automatically.
     linkEntryGuideToWorkpaper(workbook);
 
     // Pass through Drake-specific extraction arrays (optional, omitted when empty)
@@ -12240,6 +12253,53 @@ function parseClaudeJson(raw) {
 // that actually contains usable workbook sheets instead of just the first object that parses.
 // This is what was causing intermittent "0 sheets -> template fallback" results: a small
 // fragment parsed first and won, so the real workbook was ignored.
+// Dedicated fallback: when the main preparation call did not return the structured
+// reconciliation object, ask for JUST that object in a small second call. The context is
+// the sheets the AI itself just generated (current-year P&L / Balance Sheet / AJE rows) —
+// compact and already role-filtered, so the uploaded files are not resent. Best-effort:
+// any failure returns null and the caller falls back to the NEEDS REVIEW flag.
+async function requestReconciliationFallback(apiKey, workbook, entityType, options = {}) {
+  try {
+    const wanted = (workbook.sheets || [])
+      .filter((s) => !s.verbatim && /profit|p&l|income statement|balance sheet|aje|adjusting|fixed asset/i.test(String(s.name || "")))
+      .slice(0, 5);
+    if (!wanted.length) return null;
+    const sheetText = wanted
+      .map((s) => `--- ${s.name} ---\n${(s.rows || []).map((row) => (Array.isArray(row) ? row : [row]).map((c) => String(c ?? "")).join(" | ")).join("\n")}`)
+      .join("\n\n")
+      .slice(0, 60000);
+    const content = [{
+      type: "text",
+      text: [
+        `Return type: ${entityType || "business entity (assume partnership Form 1065 unless the data indicates otherwise)"}.`,
+        "From the current-year workpaper data below, produce ONLY the structured book-to-tax reconciliation.",
+        ...RECONCILIATION_PROMPT_LINES,
+        "",
+        'Respond with ONLY this JSON inside ```json``` fences and nothing else: {"reconciliation":{ ... }}',
+        "",
+        "=== CURRENT-YEAR WORKPAPER DATA (generated from the client's current-year financials) ===",
+        sheetText,
+      ].join("\n"),
+    }];
+    const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
+      maxTokens: 3500,
+      models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+      webSearch: false,
+      feature: "preparation_recon_fallback",
+      userId: options.userId,
+      system: [{ type: "text", text: "You are a senior US tax preparer. Be precise, use only amounts present in the provided data, never invent values, and return ONLY valid JSON." }],
+    });
+    if (!result.ok) return null;
+    const raw = extractText(result.data);
+    const parsed = parseClaudeJson(raw);
+    const rec = parsed && typeof parsed === "object" ? (parsed.reconciliation || parsed) : null;
+    return hasReconciliation(rec) ? { reconciliation: rec, result } : null;
+  } catch (err) {
+    console.warn("[Preparation] reconciliation fallback failed:", err?.message || err);
+    return null;
+  }
+}
+
 function parseWorkpaperJson(raw) {
   const text = String(raw || "").trim();
   const rawCandidates = [];
@@ -12941,6 +13001,28 @@ function buildUserPrompt(payload, context = { knowledgeBase: [], reviewExamples:
   ].join("\n");
 }
 
+// Shared between the main preparation prompt and the dedicated reconciliation fallback
+// call, so the schema and treatment rules can never drift apart between the two.
+const RECONCILIATION_PROMPT_LINES = [
+  "STRUCTURED RECONCILIATION (MANDATORY — the workbook is WRONG without it): the top-level 'reconciliation' object is the ONLY place the book-to-tax reconciliation is returned (there is no reconciliation worksheet — the app builds it from this object). You must always include this object, fully populated, whenever the return has a Schedule M-1 (Forms 1065, 1120, 1120-S) — and also for a 1040 with business financials (Schedule C/E), using the same keys. Use exactly these keys:",
+  '  "reconciliation": {',
+  '    "netIncomePerBooks": number (current-year net income per books from the P&L),',
+  '    "ajes": [ { "label": string, "amount": number (SIGNED: negative reduces book income), "note": string } ],',
+  '    "m1": { "meals50": number, "entertainment": number, "penalties": number, "politicalLobbying": number, "officerLifeInsurance": number, "federalIncomeTax": number, "charitable": number, "ownerHealthcare": number, "homeOffice": number, "creditCardRewards": number, "taxExemptInterest": number, "depreciationBookVsTax": number, "sec179Bonus": number, "gainLossBookVsTax": number, "assetSaleIncomeRemoval": number, "portfolioIncomeRemoval": number, "foreignTaxesPaid": number, "section163j": number, "otherPermanent": number, "otherTiming": number },',
+  '    "separatelyStated": [ { "label": string, "amount": number, "note": string } ]',
+  "  }",
+  "Every m1 value is a SIGNED amount that adjusts book income toward taxable income (+ increases, − decreases). Use 0 for any line that does not apply — never omit a key. CRITICAL FOR CONSISTENCY: owner healthcare premiums, home office, and credit card rewards each have their OWN fixed key (ownerHealthcare, homeOffice, creditCardRewards) — always put them there with the correct signed amount, and NEVER instead place them in 'ajes', 'otherPermanent', or 'otherTiming'. Reserve otherPermanent/otherTiming only for items with no dedicated key. Put interest, dividends, capital gains, and any pass-through separately-stated items in separatelyStated (they must NOT be folded into ordinary business income). The 'ajes' amounts must match the AJE worksheet. Do not compute the subtotals yourself — the app computes Adjusted Net Income and Ordinary Business Income from these components.",
+  "NO DOUBLE COUNTING (the app adds Net Income + all ajes + all m1 keys): every economic item must appear in EXACTLY ONE of 'ajes' or the 'm1' keys — never both. In particular, the removal of asset-sale proceeds/gain that were booked as P&L income goes ONLY in m1.assetSaleIncomeRemoval (negative); do NOT also enter it as an AJE. If the same dollar amount would appear in both an AJE and an m1 key, keep it in the m1 key and remove it from ajes. 'separatelyStated' is informational only (it is NOT summed into ordinary income), so an item may legitimately appear both as an m1 addback that removes it from ordinary AND in separatelyStated for the K-1 (e.g. charitable, Section 1231 gain) — that is not double counting.",
+  "FIXED TREATMENT RULES (apply consistently every run — these are the correct pass-through treatments; for a C corporation (1120) note the exception in parentheses):",
+  "  • ownerHealthcare: for a partnership/1065 or 1120-S, partner/>2% shareholder health premiums are a GUARANTEED PAYMENT / W-2 wage — deductible by the entity (or, if booked to equity/owner draw, never in book income). Either way this is NOT a positive addback to ordinary income: set ownerHealthcare to 0 unless there is a specifically nondeductible portion. Report the premium in separatelyStated as informational (partner deducts SE health on the 1040). (C-corp: fully deductible employee benefit — also 0.)",
+  "  • homeOffice: a partner's home office is deductible as an Unreimbursed Partnership Expense (UPE) on the partner's Schedule E or reimbursed via an accountable plan — it is deductible, NOT an addback. Set homeOffice to 0 (or a NEGATIVE amount only if you are recording an additional current-year deduction). NEVER enter home office as a positive addback that increases ordinary income.",
+  "  • gainLossBookVsTax: this line is ONLY for a book-vs-tax basis DIFFERENCE on a disposition. The gain/proceeds itself from selling a business asset (Section 1231) is SEPARATELY STATED (K-1 box 10 for pass-throughs) — put it in separatelyStated, NOT in ordinary income. Leave gainLossBookVsTax at 0 unless book and tax basis genuinely differ. (C-corp: the 1231 gain IS in taxable income — then use gainLossBookVsTax for the amount.)",
+  "  • assetSaleIncomeRemoval: if asset-sale proceeds or gain were RECORDED IN THE P&L as income (e.g. an 'Other Income' / 'Sale of asset' line), that amount is inside Net Income per Books and must be REMOVED from ordinary income. Enter the amount that was booked as income here as a NEGATIVE number (for a pass-through the Section 1231 gain is separately stated, not ordinary). Do this HERE, not as an AJE. Also list the Form 4797 / Section 1231 gain in separatelyStated. If no asset-sale income was booked in the P&L, use 0.",
+  "  • federalIncomeTax: for a partnership (1065) or S-corporation (1120-S) there is NO entity-level federal income tax — set federalIncomeTax to 0. Only a C-corporation (1120) that expensed federal income tax on its books adds it back here.",
+  "  • portfolioIncomeRemoval: if interest income, dividends (domestic or foreign), or other portfolio income was booked in the P&L (so it is inside Net Income per Books), enter the TOTAL as a NEGATIVE number here to remove it from ordinary business income — for a pass-through, portfolio income is separately stated (K-1 lines 5/6a/6b). ALSO list each portfolio item in separatelyStated. Even a small interest amount must be removed here — do NOT leave it in ordinary income and do NOT use otherTiming for this. (C-corp: portfolio income stays in taxable income — use 0.)",
+  "  • foreignTaxesPaid: if foreign taxes paid/withheld (e.g. on foreign dividends) were expensed on the books, add them back here as a POSITIVE number — they are not an ordinary deduction; they are separately stated so the partners/shareholders can claim the Foreign Tax Credit (K-1 box 21 / Schedule K-3). ALSO list the foreign tax in separatelyStated with a note to evaluate Form 1116/FTC, and flag foreign-source income in aiNotes for Schedule K-2/K-3 filing requirements. If none, 0.",
+];
+
 function buildPreparerContent(payload) {
   const metadata = payload.metadata || {};
   const taxYearNum = Number(String(metadata.taxYear || payload.taxYear || "").match(/\d{4}/)?.[0] || 0);
@@ -12970,8 +13052,8 @@ function buildPreparerContent(payload) {
       "Each top-level sheets item MUST include a name and a non-empty rows array. Each rows item MUST be an array of primitive cell values.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"w2s":[],"int_1099s":[],"div_1099s":[],"ret_1099rs":[],"ssa_1099s":[],"nec_1099s":[],"misc_1099s":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"},"reconciliation":{"netIncomePerBooks":0,"ajes":[{"label":"string","amount":0,"note":"string"}],"m1":{"meals50":0,"entertainment":0,"penalties":0,"politicalLobbying":0,"officerLifeInsurance":0,"federalIncomeTax":0,"charitable":0,"ownerHealthcare":0,"homeOffice":0,"creditCardRewards":0,"taxExemptInterest":0,"depreciationBookVsTax":0,"sec179Bonus":0,"gainLossBookVsTax":0,"assetSaleIncomeRemoval":0,"section163j":0,"otherPermanent":0,"otherTiming":0},"separatelyStated":[{"label":"string","amount":0,"note":"string"}]}}',
-      "The 'reconciliation' object is REQUIRED for any return with a Schedule M-1 (1065, 1120, 1120-S) — it is detailed in the STRUCTURED RECONCILIATION section below and is the ONLY place the book-to-tax reconciliation is returned. Omit it only for a 1040/990/1041.",
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"w2s":[],"int_1099s":[],"div_1099s":[],"ret_1099rs":[],"ssa_1099s":[],"nec_1099s":[],"misc_1099s":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"},"reconciliation":{"netIncomePerBooks":0,"ajes":[{"label":"string","amount":0,"note":"string"}],"m1":{"meals50":0,"entertainment":0,"penalties":0,"politicalLobbying":0,"officerLifeInsurance":0,"federalIncomeTax":0,"charitable":0,"ownerHealthcare":0,"homeOffice":0,"creditCardRewards":0,"taxExemptInterest":0,"depreciationBookVsTax":0,"sec179Bonus":0,"gainLossBookVsTax":0,"assetSaleIncomeRemoval":0,"portfolioIncomeRemoval":0,"foreignTaxesPaid":0,"section163j":0,"otherPermanent":0,"otherTiming":0},"separatelyStated":[{"label":"string","amount":0,"note":"string"}]}}',
+      "The 'reconciliation' object is REQUIRED for any return with a Schedule M-1 (1065, 1120, 1120-S) AND for a 1040 whose uploads include business financials (P&L / balance sheet — Schedule C or E business) — it is detailed in the STRUCTURED RECONCILIATION section below and is the ONLY place the book-to-tax reconciliation is returned. Omit it only for a 990/1041 or a purely personal 1040 (W-2s/1099s with no business P&L).",
       "",
       "DRAKE IMPORT ARRAYS (include only when the relevant source documents are present in the uploads):",
       "transactions8949: Extract every capital gain/loss transaction you can find in uploaded 1099-B forms, brokerage statements, or Schedule D source documents. Each element: { description, dateAcquired, dateSold, proceeds, basis, form8949Box, adjCode, adjAmount, washSaleLoss, tsj }. Dates must be in MM/DD/YYYY format. form8949Box: 'A' (short-term, basis reported), 'B' (short-term, basis NOT reported), 'C' (short-term, other), 'D' (long-term, basis reported), 'E' (long-term, basis NOT reported), 'F' (long-term, other). If no capital gain documents are uploaded, omit this key or return an empty array.",
@@ -12987,6 +13069,7 @@ function buildPreparerContent(payload) {
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
+      "CANONICAL SHEET NAMES (use these EXACT names so every run produces the same tabs): 'Profit and Loss' for the current-year P&L workpaper tab, 'Balance Sheet' for the balance sheet tab, 'AJE Worksheet' for adjusting journal entries, 'Fixed Assets' for fixed asset additions/depreciation detail. Additional tabs beyond these may use descriptive names of your choice.",
       "At least one sheet must be a real workpaper sheet with calculated/updated values, not a placeholder and not a JSON/text dump.",
       "When a workbookTemplate is provided for an uploaded Excel file, mirror that template's sheets, headers, labels, row order, and column order as closely as possible.",
       "Keep the same workpaper-style layout from the prior-year workbook, updating year labels and values for the current-year request. Preserve columns widths, merged cells, underlined words, boxed sections, and obvious title/header formatting by returning cols, merges, and styles entries where available.",
@@ -13006,21 +13089,7 @@ function buildPreparerContent(payload) {
       "6. M-2 / retained earnings: tie beginning retained earnings, book income, distributions/dividends, and ending retained earnings to the balance sheet or flag the difference.",
       "7. Source every material number in a nearby source/notes column or AI Notes. Every current-year amount must be traceable to a current_financials line, GL line, or explicit user instruction.",
       "",
-      "STRUCTURED RECONCILIATION (MANDATORY — the workbook is WRONG without it): the top-level 'reconciliation' object is the ONLY place the book-to-tax reconciliation is returned (there is no reconciliation worksheet — the app builds it from this object). You must always include this object, fully populated, whenever the return has a Schedule M-1 (Forms 1065, 1120, 1120-S). Use exactly these keys:",
-      '  "reconciliation": {',
-      '    "netIncomePerBooks": number (current-year net income per books from the P&L),',
-      '    "ajes": [ { "label": string, "amount": number (SIGNED: negative reduces book income), "note": string } ],',
-      '    "m1": { "meals50": number, "entertainment": number, "penalties": number, "politicalLobbying": number, "officerLifeInsurance": number, "federalIncomeTax": number, "charitable": number, "ownerHealthcare": number, "homeOffice": number, "creditCardRewards": number, "taxExemptInterest": number, "depreciationBookVsTax": number, "sec179Bonus": number, "gainLossBookVsTax": number, "assetSaleIncomeRemoval": number, "section163j": number, "otherPermanent": number, "otherTiming": number },',
-      '    "separatelyStated": [ { "label": string, "amount": number, "note": string } ]',
-      "  }",
-      "Every m1 value is a SIGNED amount that adjusts book income toward taxable income (+ increases, − decreases). Use 0 for any line that does not apply — never omit a key. CRITICAL FOR CONSISTENCY: owner healthcare premiums, home office, and credit card rewards each have their OWN fixed key (ownerHealthcare, homeOffice, creditCardRewards) — always put them there with the correct signed amount, and NEVER instead place them in 'ajes', 'otherPermanent', or 'otherTiming'. Reserve otherPermanent/otherTiming only for items with no dedicated key. Put interest, dividends, capital gains, and any pass-through separately-stated items in separatelyStated (they must NOT be folded into ordinary business income). The 'ajes' amounts must match the AJE worksheet. Do not compute the subtotals yourself — the app computes Adjusted Net Income and Ordinary Business Income from these components.",
-      "NO DOUBLE COUNTING (the app adds Net Income + all ajes + all m1 keys): every economic item must appear in EXACTLY ONE of 'ajes' or the 'm1' keys — never both. In particular, the removal of asset-sale proceeds/gain that were booked as P&L income goes ONLY in m1.assetSaleIncomeRemoval (negative); do NOT also enter it as an AJE. If the same dollar amount would appear in both an AJE and an m1 key, keep it in the m1 key and remove it from ajes. 'separatelyStated' is informational only (it is NOT summed into ordinary income), so an item may legitimately appear both as an m1 addback that removes it from ordinary AND in separatelyStated for the K-1 (e.g. charitable, Section 1231 gain) — that is not double counting.",
-      "FIXED TREATMENT RULES (apply consistently every run — these are the correct pass-through treatments; for a C corporation (1120) note the exception in parentheses):",
-      "  • ownerHealthcare: for a partnership/1065 or 1120-S, partner/>2% shareholder health premiums are a GUARANTEED PAYMENT / W-2 wage — deductible by the entity (or, if booked to equity/owner draw, never in book income). Either way this is NOT a positive addback to ordinary income: set ownerHealthcare to 0 unless there is a specifically nondeductible portion. Report the premium in separatelyStated as informational (partner deducts SE health on the 1040). (C-corp: fully deductible employee benefit — also 0.)",
-      "  • homeOffice: a partner's home office is deductible as an Unreimbursed Partnership Expense (UPE) on the partner's Schedule E or reimbursed via an accountable plan — it is deductible, NOT an addback. Set homeOffice to 0 (or a NEGATIVE amount only if you are recording an additional current-year deduction). NEVER enter home office as a positive addback that increases ordinary income.",
-      "  • gainLossBookVsTax: this line is ONLY for a book-vs-tax basis DIFFERENCE on a disposition. The gain/proceeds itself from selling a business asset (Section 1231) is SEPARATELY STATED (K-1 box 10 for pass-throughs) — put it in separatelyStated, NOT in ordinary income. Leave gainLossBookVsTax at 0 unless book and tax basis genuinely differ. (C-corp: the 1231 gain IS in taxable income — then use gainLossBookVsTax for the amount.)",
-      "  • assetSaleIncomeRemoval: if asset-sale proceeds or gain were RECORDED IN THE P&L as income (e.g. an 'Other Income' / 'Sale of asset' line), that amount is inside Net Income per Books and must be REMOVED from ordinary income. Enter the amount that was booked as income here as a NEGATIVE number (for a pass-through the Section 1231 gain is separately stated, not ordinary). Do this HERE, not as an AJE. Also list the Form 4797 / Section 1231 gain in separatelyStated. If no asset-sale income was booked in the P&L, use 0.",
-      "  • federalIncomeTax: for a partnership (1065) or S-corporation (1120-S) there is NO entity-level federal income tax — set federalIncomeTax to 0. Only a C-corporation (1120) that expensed federal income tax on its books adds it back here.",
+      ...RECONCILIATION_PROMPT_LINES,
       "",
       "Rules for entryGuide:",
       "Generate entryGuide in the same JSON response. Do not leave entryGuide empty.",
@@ -13738,50 +13807,8 @@ function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
 // number in the M-1 flows into the entry guide. SAFE by construction: only links a value
 // that matches EXACTLY ONE cell in the M-1 (unique match), skips 0/tiny amounts, and leaves
 // everything else static — an ambiguous or missing match never produces a broken reference.
-function linkEntryGuideToWorkpaper(workbook) {
-  if (!workbook || !Array.isArray(workbook.sheets)) return workbook;
-  const guide = workbook.sheets.find((s) => /data entry guide/i.test(String(s.name || "")));
-  const m1 = workbook.sheets.find((s) => /book to tax \(m-1\)/i.test(String(s.name || "")));
-  if (!guide || !m1 || !Array.isArray(guide.rows) || !Array.isArray(m1.rows)) return workbook;
-
-  const cellNum = (v) => {
-    if (v && typeof v === "object" && Number.isFinite(Number(v.value))) return Number(v.value);
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-    const s = String(v == null ? "" : v).trim();
-    if (!/^\(?-?\$?\s?[\d,]*\.?\d+\)?$/.test(s)) return null;
-    const neg = /^\(.*\)$/.test(s);
-    const n = Number(s.replace(/[()$,\s]/g, ""));
-    return Number.isFinite(n) ? (neg ? -Math.abs(n) : n) : null;
-  };
-  const colLetter = (c) => { let name = "", n = c; while (n > 0) { name = String.fromCharCode(65 + (n - 1) % 26) + name; n = Math.floor((n - 1) / 26); } return name; };
-
-  // Index the M-1 amount column (col index 1 / "B") by value -> [addresses]. Rounded to cents.
-  const index = new Map();
-  m1.rows.forEach((row, r) => {
-    const v = cellNum((row || [])[1]);
-    if (v === null || Math.abs(v) < 1) return;
-    const key = Math.round(v * 100);
-    const addr = `B${r + 1}`;
-    (index.get(key) || index.set(key, []).get(key)).push(addr);
-  });
-
-  const m1Ref = `'${String(m1.name).replace(/'/g, "''")}'`;
-  // The entry-guide amount column is index 3 (header "# | Screen | Form Line | Amount | ...").
-  const AMOUNT_COL = 3;
-  for (const row of guide.rows) {
-    if (!Array.isArray(row) || row.length <= AMOUNT_COL) continue;
-    // Only the actual data-entry field rows (column 0 is a field number) — skip tie-out
-    // rows and section headers, whose column 3 is a "difference" not a value to link.
-    if (!/^\d+$/.test(String(row[0] ?? "").trim())) continue;
-    const v = cellNum(row[AMOUNT_COL]);
-    if (v === null || Math.abs(v) < 1) continue;
-    const matches = index.get(Math.round(v * 100));
-    if (matches && matches.length === 1) {
-      row[AMOUNT_COL] = { formula: `${m1Ref}!${matches[0]}`, value: v };
-    }
-  }
-  return workbook;
-}
+// linkEntryGuideToWorkpaper and canonicalizeWorkbookSheets live in lib/workbook-postprocess.js
+// so they can be unit-tested without loading the server.
 
 // Adds one verbatim tab per sheet of every uploaded spreadsheet (P&L, Balance Sheet,
 // asset reports, prior-year workpaper, etc.). The client already parses each xlsx into
