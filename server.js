@@ -13625,7 +13625,10 @@ function normalizeEntryGuide(parsed, fallback) {
       fieldName: String(field.fieldName || field.field || "Field"),
       fieldDescription: String(field.fieldDescription || ""),
       lineReference: field.lineReference ? String(field.lineReference) : "",
-      value: formatEntryGuideValue(field.value ?? field.amount, field.dataType),
+      // Coalesce across the amount keys the model uses inconsistently (value / amount), and
+      // treat an empty string as absent — otherwise a field with value:"" and amount:1542.31
+      // would show a blank amount, because ?? only falls through on null/undefined, not "".
+      value: formatEntryGuideValue(firstNonEmptyValue(field.value, field.amount, field.enteredValue), field.dataType),
       valueSource: String(field.valueSource || field.amountSource || "Workpaper data"),
       tieOutStatus: field.tieOutStatus ? String(field.tieOutStatus) : "",
       status: normalizeEntryStatus(field.status),
@@ -14051,6 +14054,18 @@ function entryGuideStatusText(status) {
 function normalizeEntryStatus(status) {
   const normalized = String(status || "ready").toLowerCase().replace(/[\s-]+/g, "_");
   return ["ready", "decision_needed", "verify", "review_issue", "not_applicable"].includes(normalized) ? normalized : "ready";
+}
+
+// Returns the first argument that is neither null/undefined nor an empty/whitespace string.
+// Preserves the ORIGINAL type (numbers stay numbers) so formatEntryGuideValue can format
+// currency/percentage correctly. Falls back to "" when every candidate is empty.
+function firstNonEmptyValue(...candidates) {
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    if (typeof candidate === "string" && candidate.trim() === "") continue;
+    return candidate;
+  }
+  return "";
 }
 
 function formatEntryGuideValue(value, dataType) {
