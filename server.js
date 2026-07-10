@@ -10982,6 +10982,10 @@ async function handlePrepareWorkpaper(req, res) {
     // tax workpaper and nothing that was uploaded is lost.
     appendSourceReportSheets(workbook, payload.files || []);
 
+    // Link the Data Entry Guide amounts back to the M-1 by formula (unique-match only), so
+    // editing a reconciliation number flows into the entry guide automatically.
+    linkEntryGuideToWorkpaper(workbook);
+
     // Pass through Drake-specific extraction arrays (optional, omitted when empty)
     const transactions8949 = normalizeTransactions8949(parsed.transactions8949);
     const assets4562        = normalizeAssets4562(parsed.assets4562);
@@ -12992,6 +12996,10 @@ function buildPreparerContent(payload) {
       '    "separatelyStated": [ { "label": string, "amount": number, "note": string } ]',
       "  }",
       "Every m1 value is a SIGNED amount that adjusts book income toward taxable income (+ increases, − decreases). Use 0 for any line that does not apply — never omit a key. CRITICAL FOR CONSISTENCY: owner healthcare premiums, home office, and credit card rewards each have their OWN fixed key (ownerHealthcare, homeOffice, creditCardRewards) — always put them there with the correct signed amount, and NEVER instead place them in 'ajes', 'otherPermanent', or 'otherTiming'. Reserve otherPermanent/otherTiming only for items with no dedicated key. Put interest, dividends, capital gains, and any pass-through separately-stated items in separatelyStated (they must NOT be folded into ordinary business income). The 'ajes' amounts must match the AJE worksheet. Do not compute the subtotals yourself — the app computes Adjusted Net Income and Ordinary Business Income from these components.",
+      "FIXED TREATMENT RULES (apply consistently every run — these are the correct pass-through treatments; for a C corporation (1120) note the exception in parentheses):",
+      "  • ownerHealthcare: for a partnership/1065 or 1120-S, partner/>2% shareholder health premiums are a GUARANTEED PAYMENT / W-2 wage — deductible by the entity (or, if booked to equity/owner draw, never in book income). Either way this is NOT a positive addback to ordinary income: set ownerHealthcare to 0 unless there is a specifically nondeductible portion. Report the premium in separatelyStated as informational (partner deducts SE health on the 1040). (C-corp: fully deductible employee benefit — also 0.)",
+      "  • homeOffice: a partner's home office is deductible as an Unreimbursed Partnership Expense (UPE) on the partner's Schedule E or reimbursed via an accountable plan — it is deductible, NOT an addback. Set homeOffice to 0 (or a NEGATIVE amount only if you are recording an additional current-year deduction). NEVER enter home office as a positive addback that increases ordinary income.",
+      "  • gainLossBookVsTax: this line is ONLY for a book-vs-tax basis DIFFERENCE on a disposition. The gain/proceeds itself from selling a business asset (Section 1231) is SEPARATELY STATED (K-1 box 10 for pass-throughs) — put it in separatelyStated, NOT in ordinary income. Leave gainLossBookVsTax at 0 unless book and tax basis genuinely differ. (C-corp: the 1231 gain IS in taxable income — then use gainLossBookVsTax for the amount.)",
       "",
       "Rules for entryGuide:",
       "Generate entryGuide in the same JSON response. Do not leave entryGuide empty.",
@@ -13700,6 +13708,55 @@ function normalizeOrBuildEntryGuide(parsed, workbook, payload) {
     guide = buildFallbackEntryGuideFromWorkbook(workbook, fallback);
   }
   return guide;
+}
+
+// Links the Data Entry Guide amounts to the M-1 reconciliation by formula, so editing a
+// number in the M-1 flows into the entry guide. SAFE by construction: only links a value
+// that matches EXACTLY ONE cell in the M-1 (unique match), skips 0/tiny amounts, and leaves
+// everything else static — an ambiguous or missing match never produces a broken reference.
+function linkEntryGuideToWorkpaper(workbook) {
+  if (!workbook || !Array.isArray(workbook.sheets)) return workbook;
+  const guide = workbook.sheets.find((s) => /data entry guide/i.test(String(s.name || "")));
+  const m1 = workbook.sheets.find((s) => /book to tax \(m-1\)/i.test(String(s.name || "")));
+  if (!guide || !m1 || !Array.isArray(guide.rows) || !Array.isArray(m1.rows)) return workbook;
+
+  const cellNum = (v) => {
+    if (v && typeof v === "object" && Number.isFinite(Number(v.value))) return Number(v.value);
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    const s = String(v == null ? "" : v).trim();
+    if (!/^\(?-?\$?\s?[\d,]*\.?\d+\)?$/.test(s)) return null;
+    const neg = /^\(.*\)$/.test(s);
+    const n = Number(s.replace(/[()$,\s]/g, ""));
+    return Number.isFinite(n) ? (neg ? -Math.abs(n) : n) : null;
+  };
+  const colLetter = (c) => { let name = "", n = c; while (n > 0) { name = String.fromCharCode(65 + (n - 1) % 26) + name; n = Math.floor((n - 1) / 26); } return name; };
+
+  // Index the M-1 amount column (col index 1 / "B") by value -> [addresses]. Rounded to cents.
+  const index = new Map();
+  m1.rows.forEach((row, r) => {
+    const v = cellNum((row || [])[1]);
+    if (v === null || Math.abs(v) < 1) return;
+    const key = Math.round(v * 100);
+    const addr = `B${r + 1}`;
+    (index.get(key) || index.set(key, []).get(key)).push(addr);
+  });
+
+  const m1Ref = `'${String(m1.name).replace(/'/g, "''")}'`;
+  // The entry-guide amount column is index 3 (header "# | Screen | Form Line | Amount | ...").
+  const AMOUNT_COL = 3;
+  for (const row of guide.rows) {
+    if (!Array.isArray(row) || row.length <= AMOUNT_COL) continue;
+    // Only the actual data-entry field rows (column 0 is a field number) — skip tie-out
+    // rows and section headers, whose column 3 is a "difference" not a value to link.
+    if (!/^\d+$/.test(String(row[0] ?? "").trim())) continue;
+    const v = cellNum(row[AMOUNT_COL]);
+    if (v === null || Math.abs(v) < 1) continue;
+    const matches = index.get(Math.round(v * 100));
+    if (matches && matches.length === 1) {
+      row[AMOUNT_COL] = { formula: `${m1Ref}!${matches[0]}`, value: v };
+    }
+  }
+  return workbook;
 }
 
 // Adds one verbatim tab per sheet of every uploaded spreadsheet (P&L, Balance Sheet,
