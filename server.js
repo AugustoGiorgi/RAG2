@@ -10930,8 +10930,12 @@ async function handlePrepareWorkpaper(req, res) {
     // sheet with the fixed-structure, formula-linked M-1 built in code. Fixed line set +
     // live subtotal formulas = runs converge AND editing any line reflows the totals. If
     // no structured reconciliation was returned, keep the AI's sheet (zero regression).
-    if (hasReconciliation(parsed.reconciliation)) {
-      const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
+    // Only business entities with a Schedule M-1 (1065, 1120, 1120-S) get the fixed-structure
+    // code M-1. A 1040 individual and a 990 have no book-to-tax M-1, so the template does not
+    // apply — those keep the AI's own workpaper sheets.
+    const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
+    const hasScheduleM1 = /^(1065|1120|1120-?s)$/i.test(entityType.replace(/\s+/g, ""));
+    if (hasReconciliation(parsed.reconciliation) && hasScheduleM1) {
       const m1Sheet = buildM1Sheet(parsed.reconciliation, entityType);
       const withoutOldRecon = workbook.sheets.filter((s) => !/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(s.name || "")));
       // Insert the M-1 near the front (after any Lead Sheet), before the detail tabs.
