@@ -10935,6 +10935,7 @@ async function handlePrepareWorkpaper(req, res) {
     // apply — those keep the AI's own workpaper sheets.
     const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
     const hasScheduleM1 = /^(1065|1120|1120-?s)$/i.test(entityType.replace(/\s+/g, ""));
+    let m1Status = "";
     if (hasReconciliation(parsed.reconciliation) && hasScheduleM1) {
       const m1Sheet = buildM1Sheet(parsed.reconciliation, entityType);
       const withoutOldRecon = workbook.sheets.filter((s) => !/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(s.name || "")));
@@ -10942,6 +10943,12 @@ async function handlePrepareWorkpaper(req, res) {
       const insertAt = withoutOldRecon.findIndex((s) => !/lead\s*sheet|summary/i.test(String(s.name || "")));
       withoutOldRecon.splice(insertAt < 0 ? 0 : insertAt, 0, m1Sheet);
       workbook.sheets = withoutOldRecon;
+      m1Status = "Book-to-Tax (M-1): rebuilt in code from the structured reconciliation object (fixed lines + live formulas — deterministic across runs).";
+    } else if (hasScheduleM1) {
+      // Schedule-M1 entity but the model did not return the structured reconciliation object.
+      // This is the non-deterministic path we are trying to eliminate — flag it LOUDLY so the
+      // preparer re-runs instead of trusting a free-form (possibly divergent) reconciliation.
+      m1Status = "⚠ NEEDS REVIEW — the AI did NOT return the structured reconciliation, so the deterministic M-1 could not be built. Any book-to-tax figures here are the AI's free-form output and may vary between runs. Re-run the preparation to get the fixed-structure M-1.";
     }
 
     // Diagnostics: surface, inside the workbook itself, exactly which code path ran.
@@ -10958,6 +10965,7 @@ async function handlePrepareWorkpaper(req, res) {
       `AI returned ${claudeSheetCount} sheet(s); ${workbook.usedTemplateFallback ? "TEMPLATE FALLBACK USED (AI output unusable)" : "AI-generated workbook used"}.`,
       wasTruncated ? "WARNING: AI response hit the max_tokens limit and was truncated. Re-run; if it persists the workbook is too large." : "AI response completed (not truncated).",
       `File roles: ${roleSummary || "(none)"}`,
+      ...(m1Status ? [m1Status] : []),
     ];
     if (workbook.usedTemplateFallback) {
       diagnostics.push("ACTION REQUIRED: The AI did not return a usable workbook, so only the empty prior-year structure was provided (all amounts blank). Re-run the preparation to get populated current-year numbers.");
@@ -12986,13 +12994,12 @@ function buildPreparerContent(payload) {
       "2. P&L: current-year values must come from current_financials. Map current-year accounts into the prior_workpaper structure; add new accounts when needed; set prior-year accounts with no current-year activity to 0 or blank.",
       "3. GL detail: reconcile supporting detail to refreshed P&L and balance sheet lines where GL detail is provided.",
       "4. Book-to-tax: start from current-year net income per books from current_financials. Then apply current-year supported addbacks/deductions and tax adjustments. Always evaluate meals, entertainment, depreciation timing, penalties, federal income tax, Section 163(j), officer life insurance, state tax, charitable contributions, and any other prior-year recurring adjustment category. If an adjustment has no current-year support, do not use prior-year amount; mark it 0/blank and flag as not supported.",
-      "5. M-1/M-3: taxable income must foot from book income plus/minus book-to-tax adjustments. If it does not foot, include an unreconciled difference row and flag it.",
-      "5a. COMPLETE EVERY SUBTOTAL: always carry the book-to-tax reconciliation all the way through to the final Adjusted Net Income, Ordinary/Business Income, and Taxable Income. Never leave a subtotal blank or write 'preparer to compute' / 'preparer to finalize' — compute each subtotal from the components you listed above it.",
-      "5b. CONSISTENT ENTITY TYPE AND DIRECTIONS: state the assumed entity/return type once at the top of the reconciliation, then apply every adjustment's direction (addback vs. subtraction) consistently for that entity type. Do NOT present the same item (e.g. owner healthcare premiums, home-office reclass) as an addback in one place and a subtraction in another. If an item's treatment depends on entity type, pick the treatment for the stated return type and note the assumption — do not flip it.",
+      "5. CRITICAL — HOW TO OUTPUT THE BOOK-TO-TAX RECONCILIATION: express it ONLY through the top-level 'reconciliation' object (schema in STRUCTURED RECONCILIATION below). The app rebuilds the Schedule M-1 sheet from that object with fixed lines and live subtotal formulas. Therefore you MUST NOT create any worksheet for it: do NOT put a sheet named or containing 'Book to Tax', 'Book-to-Tax', 'M-1', 'M-3', 'Reconciliation', or 'Schedule M' in the sheets array. Do NOT compute the reconciliation subtotals yourself (Adjusted Net Income, Ordinary/Business Income, Taxable Income) — supply only the signed component amounts in the object and the app foots them. Returning the reconciliation as a sheet instead of the object produces a WRONG, inconsistent workbook.",
+      "5b. CONSISTENT ENTITY TYPE AND DIRECTIONS: put the assumed entity/return type in the reconciliation, and apply every adjustment's sign (addback = +, subtraction = −) consistently for that entity type. Do NOT flip the same item (e.g. owner healthcare premiums, home-office reclass) between + and −. Follow the FIXED TREATMENT RULES below for the standard items.",
       "6. M-2 / retained earnings: tie beginning retained earnings, book income, distributions/dividends, and ending retained earnings to the balance sheet or flag the difference.",
       "7. Source every material number in a nearby source/notes column or AI Notes. Every current-year amount must be traceable to a current_financials line, GL line, or explicit user instruction.",
       "",
-      "STRUCTURED RECONCILIATION (REQUIRED): in addition to the sheets, return a top-level 'reconciliation' object. The app rebuilds the Book-to-Tax (M-1) sheet from this object with a fixed structure and live formulas, so it must be complete and use exactly these keys:",
+      "STRUCTURED RECONCILIATION (MANDATORY — the workbook is WRONG without it): the top-level 'reconciliation' object is the ONLY place the book-to-tax reconciliation is returned (there is no reconciliation worksheet — the app builds it from this object). You must always include this object, fully populated, whenever the return has a Schedule M-1 (Forms 1065, 1120, 1120-S). Use exactly these keys:",
       '  "reconciliation": {',
       '    "netIncomePerBooks": number (current-year net income per books from the P&L),',
       '    "ajes": [ { "label": string, "amount": number (SIGNED: negative reduces book income), "note": string } ],',
