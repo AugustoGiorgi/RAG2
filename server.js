@@ -10933,22 +10933,28 @@ async function handlePrepareWorkpaper(req, res) {
     // Only business entities with a Schedule M-1 (1065, 1120, 1120-S) get the fixed-structure
     // code M-1. A 1040 individual and a 990 have no book-to-tax M-1, so the template does not
     // apply — those keep the AI's own workpaper sheets.
+    // Entity gate. Only 1040 individuals, 990 exempt orgs, and 1041 fiduciary returns have
+    // NO Schedule M-1 — everything else (partnerships, C/S corps, and the common case where the
+    // preparer left the return-type field blank) DOES. So the rule is permissive by default:
+    // build the code M-1 whenever the AI returned a reconciliation object, UNLESS the return
+    // type is explicitly one of the no-M-1 forms. A blank return type must never silently
+    // disable the deterministic M-1 (that was the 56/57 bug).
     const entityType = String(payload.metadata?.returnType || payload.returnType || "").trim();
-    const hasScheduleM1 = /^(1065|1120|1120-?s)$/i.test(entityType.replace(/\s+/g, ""));
+    const isNoM1Entity = /^(1040|990|1041)$/i.test(entityType.replace(/\s+/g, ""));
     let m1Status = "";
-    if (hasReconciliation(parsed.reconciliation) && hasScheduleM1) {
+    if (hasReconciliation(parsed.reconciliation) && !isNoM1Entity) {
       const m1Sheet = buildM1Sheet(parsed.reconciliation, entityType);
       const withoutOldRecon = workbook.sheets.filter((s) => !/book.?to.?tax|reconciliation|\bm-?1\b/i.test(String(s.name || "")));
       // Insert the M-1 near the front (after any Lead Sheet), before the detail tabs.
       const insertAt = withoutOldRecon.findIndex((s) => !/lead\s*sheet|summary/i.test(String(s.name || "")));
       withoutOldRecon.splice(insertAt < 0 ? 0 : insertAt, 0, m1Sheet);
       workbook.sheets = withoutOldRecon;
-      m1Status = "Book-to-Tax (M-1): rebuilt in code from the structured reconciliation object (fixed lines + live formulas — deterministic across runs).";
-    } else if (hasScheduleM1) {
-      // Schedule-M1 entity but the model did not return the structured reconciliation object.
-      // This is the non-deterministic path we are trying to eliminate — flag it LOUDLY so the
-      // preparer re-runs instead of trusting a free-form (possibly divergent) reconciliation.
-      m1Status = "⚠ NEEDS REVIEW — the AI did NOT return the structured reconciliation, so the deterministic M-1 could not be built. Any book-to-tax figures here are the AI's free-form output and may vary between runs. Re-run the preparation to get the fixed-structure M-1.";
+      m1Status = `Book-to-Tax (M-1): rebuilt in code from the structured reconciliation object (fixed lines + live formulas — deterministic across runs)${entityType ? ` [return type: ${entityType}]` : " [return type not set — assumed a Schedule M-1 entity; set the Return Type field to be explicit]"}.`;
+    } else if (!isNoM1Entity) {
+      // A Schedule-M1 entity (or unspecified) but the model did not return the structured
+      // reconciliation object. This is the non-deterministic path we are eliminating — flag it
+      // LOUDLY so the preparer re-runs instead of trusting a free-form (divergent) reconciliation.
+      m1Status = "⚠ NEEDS REVIEW — the AI did NOT return the structured reconciliation object, so the deterministic Book-to-Tax (M-1) could not be built. Re-run the preparation; if this persists, set the Return Type field explicitly (1065 / 1120 / 1120-S).";
     }
 
     // Diagnostics: surface, inside the workbook itself, exactly which code path ran.
@@ -12964,7 +12970,8 @@ function buildPreparerContent(payload) {
       "Each top-level sheets item MUST include a name and a non-empty rows array. Each rows item MUST be an array of primitive cell values.",
       "",
       "Required JSON schema:",
-      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"w2s":[],"int_1099s":[],"div_1099s":[],"ret_1099rs":[],"ssa_1099s":[],"nec_1099s":[],"misc_1099s":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"}}',
+      '{"sheets":[{"name":"Workpaper","rows":[["Header 1","Header 2"],["value","value"]],"merges":[],"cols":[{"wch":18}],"styles":[{"r":0,"c":0,"bold":true,"underline":true,"border":true}]}],"aiNotes":["What could not be done","Missing information needed to finish"],"transactions8949":[],"assets4562":[],"w2s":[],"int_1099s":[],"div_1099s":[],"ret_1099rs":[],"ssa_1099s":[],"nec_1099s":[],"misc_1099s":[],"entryGuide":{"returnType":"string","taxYear":"string","software":"string","clientName":"string","ein":"string","generatedAt":"ISO timestamp","totalFields":number,"fieldsNeedingDecision":number,"fieldsFromReviewIssues":number,"allTiesOut":boolean,"tieOutChecks":[{"check":"Income lines vs CY P&L","guideAmount":0,"financialAmount":0,"difference":0,"status":"OK|NEEDS_REVIEW","note":"string"}],"completenessFlags":["string"],"screens":[{"screenNumber":number,"screenPath":"string","screenDescription":"string","softwareNavigation":"string","fields":[{"fieldNumber":number,"fieldName":"string","fieldDescription":"string","lineReference":"string","value":"string","amount":"string or number","valueSource":"string","amountSource":"string","tieOutStatus":"OK|NEEDS_REVIEW|N/A","status":"ready|decision_needed|verify|review_issue|not_applicable","statusNote":"string or null","dataType":"currency|percentage|date|text|checkbox|dropdown|integer","reviewIssueRef":"string or null"}],"screenNotes":"string or null"}],"decisionItems":[],"reviewIssueFields":[],"entryOrder":"string","estimatedEntryTime":"string"},"reconciliation":{"netIncomePerBooks":0,"ajes":[{"label":"string","amount":0,"note":"string"}],"m1":{"meals50":0,"entertainment":0,"penalties":0,"politicalLobbying":0,"officerLifeInsurance":0,"federalIncomeTax":0,"charitable":0,"ownerHealthcare":0,"homeOffice":0,"creditCardRewards":0,"taxExemptInterest":0,"depreciationBookVsTax":0,"sec179Bonus":0,"gainLossBookVsTax":0,"assetSaleIncomeRemoval":0,"section163j":0,"otherPermanent":0,"otherTiming":0},"separatelyStated":[{"label":"string","amount":0,"note":"string"}]}}',
+      "The 'reconciliation' object is REQUIRED for any return with a Schedule M-1 (1065, 1120, 1120-S) — it is detailed in the STRUCTURED RECONCILIATION section below and is the ONLY place the book-to-tax reconciliation is returned. Omit it only for a 1040/990/1041.",
       "",
       "DRAKE IMPORT ARRAYS (include only when the relevant source documents are present in the uploads):",
       "transactions8949: Extract every capital gain/loss transaction you can find in uploaded 1099-B forms, brokerage statements, or Schedule D source documents. Each element: { description, dateAcquired, dateSold, proceeds, basis, form8949Box, adjCode, adjAmount, washSaleLoss, tsj }. Dates must be in MM/DD/YYYY format. form8949Box: 'A' (short-term, basis reported), 'B' (short-term, basis NOT reported), 'C' (short-term, other), 'D' (long-term, basis reported), 'E' (long-term, basis NOT reported), 'F' (long-term, other). If no capital gain documents are uploaded, omit this key or return an empty array.",
