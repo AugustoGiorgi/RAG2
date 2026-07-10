@@ -927,6 +927,22 @@
               <div id="prepSoftwareInfo" class="software-info-card"></div>
               <p id="prepSoftwareSource" class="software-source-note"></p>
             </div>
+            <div class="form-grid">
+              <label class="field compact">
+                <span>Return type</span>
+                <select id="prepReturnType">
+                  <option value="">Select</option>
+                  <option>1040</option>
+                  <option>1065</option>
+                  <option>1120</option>
+                  <option>1120-S</option>
+                  <option>990</option>
+                  <option>1041</option>
+                  <option>Other</option>
+                </select>
+                <small>Sets the correct book-to-tax (Schedule M-1) treatment. 1065 / 1120 / 1120-S build a fixed M-1; 1040 / 990 / 1041 have no M-1.</small>
+              </label>
+            </div>
             <label class="field full">
               <span>Instructions</span>
               <textarea id="prepNotes" rows="8" placeholder="Ex. Use the prior-year workpaper as the structure, update every line with current-year financial report values, add formulas where possible, and flag anything missing in AI Notes."></textarea>

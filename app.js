@@ -6110,7 +6110,7 @@ async function runPreparerWorkflow() {
         taxSoftware: prepState.taxSoftware,
         taxSoftwareLabel: prepState.taxSoftwareLabel,
         taxYear: document.getElementById("prepCurrentYear")?.value || document.getElementById("taxYear")?.value || "",
-        returnType: document.getElementById("returnType")?.value || document.getElementById("organizerReturnType")?.value || "",
+        returnType: document.getElementById("prepReturnType")?.value || document.getElementById("returnType")?.value || document.getElementById("organizerReturnType")?.value || "",
         clientId: activePreparationClient()?.id || "",
         clientName: activePreparationClient()?.name || document.getElementById("clientName")?.value.trim() || document.getElementById("entityName")?.value.trim() || "",
       },
