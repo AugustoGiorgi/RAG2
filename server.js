@@ -15,7 +15,7 @@ const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
-const { canonicalizeWorkbookSheets, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
+const { canonicalizeWorkbookSheets, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -11012,9 +11012,16 @@ async function handlePrepareWorkpaper(req, res) {
     // sheets by name inside the generated formulas).
     canonicalizeWorkbookSheets(workbook);
 
+    // Live in-sheet arithmetic on the P&L and Balance Sheet (Net Income = Income − COGS −
+    // Expenses ± Other, Total L&E = Liabilities + Equity, BS Net Income → P&L). This is the
+    // middle link that makes human edits propagate: detail/total edit → statement total →
+    // M-1 → Data Entry Guide.
+    injectFinancialStatementFormulas(workbook);
+
     // Cross-tab formula chain (unique-match only, IFERROR-wrapped): P&L net income → M-1,
-    // AJE Worksheet → M-1 AJE rows, M-1 → Data Entry Guide. Editing the P&L reflows the
-    // M-1 subtotals and the entry guide automatically.
+    // AJE Worksheet → M-1 AJE rows, M-1 → Data Entry Guide fields, and LIVE tie-out checks
+    // (difference = guide − financial as a real formula). Editing the P&L reflows the M-1,
+    // the entry guide, and the tie-outs automatically.
     linkEntryGuideToWorkpaper(workbook);
 
     // Pass through Drake-specific extraction arrays (optional, omitted when empty)
