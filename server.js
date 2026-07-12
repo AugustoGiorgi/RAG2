@@ -15,7 +15,7 @@ const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
-const { canonicalizeWorkbookSheets, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
+const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -11012,10 +11012,12 @@ async function handlePrepareWorkpaper(req, res) {
     // sheets by name inside the generated formulas).
     canonicalizeWorkbookSheets(workbook);
 
-    // Live in-sheet arithmetic on the P&L and Balance Sheet (Net Income = Income − COGS −
-    // Expenses ± Other, Total L&E = Liabilities + Equity, BS Net Income → P&L). This is the
-    // middle link that makes human edits propagate: detail/total edit → statement total →
-    // M-1 → Data Entry Guide.
+    // Section totals as live SUM chains on EVERY sheet (nested-aware: "Total Expenses" =
+    // loose accounts + inner section totals), then the statement-level arithmetic (Net
+    // Income = Income − COGS − Expenses ± Other, Total L&E = Liabilities + Equity, BS Net
+    // Income → P&L). This is the middle link that makes human edits propagate: detail edit
+    // → section total → statement total → M-1 → Data Entry Guide.
+    injectSectionTotalFormulas(workbook);
     injectFinancialStatementFormulas(workbook);
 
     // Cross-tab formula chain (unique-match only, IFERROR-wrapped): P&L net income → M-1,
