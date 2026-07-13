@@ -641,6 +641,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
     if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
     if (req.method === "GET" && req.url === "/request-access") { await handleAccessRequestPage(req, res); return; }
+    // Public marketing page: visitors without a session get the landing; authenticated
+    // users fall through to the app exactly as before. If landing.html is missing, the
+    // old behavior (redirect to /login) is preserved.
+    if (req.method === "GET" && requestUrl.pathname === "/" && !getSession(req)) { await handleLandingPage(req, res); return; }
     if (isApiRequest(req) && req.url !== "/api/login" && isRateLimited(req, "api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS)) {
       sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
       return;
@@ -4085,6 +4089,14 @@ function addMonths(date, months) {
 // ---------------------------------------------------------------------------
 async function handleLoginPage(_req, res) {
   sendHtml(res, 200, buildLoginPage());
+}
+
+async function handleLandingPage(_req, res) {
+  try {
+    sendHtml(res, 200, fsSync.readFileSync(path.join(ROOT, "landing.html"), "utf8"));
+  } catch (_) {
+    redirect(res, "/login"); // landing missing → previous behavior
+  }
 }
 
 async function handleAccessRequestPage(_req, res) {
