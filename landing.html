@@ -3,123 +3,287 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RAG Tax AI — AI-Powered Tax Workpapers for CPA Firms</title>
-<meta name="description" content="RAG Tax AI prepares Excel tax workpapers, reviews returns, and drafts notice responses with AI — while your preparers stay in control of every number." />
+<title>RAG Tax AI — The AI workpaper platform for tax firms</title>
+<meta name="description" content="RAG Tax AI runs your return workflow — Preparation, Review, Deliverable — on AI that drafts and flags, while your professionals keep control of every number." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --navy:#1F3864; --navy-dark:#16294a; --blue:#2563eb; --ink:#1a2333;
-    --muted:#5b6779; --bg:#f7f9fc; --card:#ffffff; --line:#e3e9f2;
-    --gold:#b98c1e;
+    --ink:#131f38;        /* deep ink navy — hero ground */
+    --paper:#fbfaf7;      /* warm paper — page ground */
+    --navy:#1f3864;       /* brand navy — headings, buttons */
+    --green:#2e6e4e;      /* ledger green — accent, ticks */
+    --gold:#c9971c;       /* pencil gold — small annotations */
+    --slate:#5a6577;      /* muted text */
+    --rule:#e6e2d8;       /* ledger rule lines */
+    --serif:"Fraunces",Georgia,serif;
+    --sans:"IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6}
-  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
-  header{background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
-  .nav{display:flex;align-items:center;justify-content:space-between;padding:14px 0}
-  .brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:1.15rem;color:var(--navy)}
-  .brand img{height:36px;width:36px;border-radius:8px}
-  .nav .actions{display:flex;gap:12px}
-  .btn{display:inline-block;padding:10px 22px;border-radius:8px;font-weight:600;text-decoration:none;font-size:.95rem;transition:opacity .15s}
-  .btn:hover{opacity:.88}
-  .btn-primary{background:var(--navy);color:#fff}
-  .btn-ghost{color:var(--navy);border:1px solid var(--line);background:var(--card)}
-  .hero{background:linear-gradient(180deg,var(--navy) 0%,var(--navy-dark) 100%);color:#fff;padding:84px 0 72px;text-align:center}
-  .hero h1{font-size:clamp(1.9rem,4.5vw,3rem);line-height:1.2;max-width:820px;margin:0 auto 18px;font-weight:800}
-  .hero p{font-size:1.15rem;color:#c9d6ea;max-width:640px;margin:0 auto 34px}
-  .hero .btn-primary{background:#fff;color:var(--navy);font-size:1.05rem;padding:13px 30px}
-  .hero .note{margin-top:16px;font-size:.85rem;color:#9fb2cf}
-  section{padding:64px 0}
-  h2{font-size:1.7rem;color:var(--navy);text-align:center;margin-bottom:8px}
-  .sub{color:var(--muted);text-align:center;max-width:620px;margin:0 auto 42px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:26px}
-  .card .icon{font-size:1.6rem;margin-bottom:10px}
-  .card h3{color:var(--navy);font-size:1.05rem;margin-bottom:8px}
-  .card p{color:var(--muted);font-size:.93rem}
-  .trust{background:var(--card);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-  .trust .grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
-  .trust .card{border:none;padding:18px;background:transparent}
-  .trust .card h3{display:flex;align-items:center;gap:8px}
-  .how{counter-reset:step}
-  .how .card{position:relative;padding-top:34px}
-  .how .card::before{counter-increment:step;content:counter(step);position:absolute;top:-16px;left:22px;width:32px;height:32px;border-radius:50%;background:var(--navy);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:.95rem}
-  .cta{background:var(--navy);color:#fff;text-align:center;border-radius:16px;padding:52px 28px;margin-bottom:64px}
-  .cta h2{color:#fff}
-  .cta p{color:#c9d6ea;max-width:560px;margin:0 auto 28px}
-  .cta .btn-primary{background:#fff;color:var(--navy)}
-  footer{border-top:1px solid var(--line);padding:26px 0;text-align:center;color:var(--muted);font-size:.85rem;background:var(--card)}
-  @media (max-width:560px){ .nav .btn-ghost{display:none} .hero{padding:60px 0 52px} section{padding:44px 0} }
+  html{scroll-behavior:smooth}
+  body{font-family:var(--sans);color:var(--ink);background:var(--paper);line-height:1.65;font-size:16.5px}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 28px}
+  a{color:var(--green)}
+  ::selection{background:#f3e3b8}
+
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:20;background:rgba(251,250,247,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
+  .nav{display:flex;align-items:center;justify-content:space-between;padding-top:14px;padding-bottom:14px}
+  .brand{display:flex;align-items:center;gap:11px;text-decoration:none}
+  .brand img{height:34px;width:34px;border-radius:7px}
+  .brand b{font-family:var(--serif);font-size:1.22rem;font-weight:600;color:var(--navy);letter-spacing:.01em}
+  .navlinks{display:flex;gap:26px;align-items:center}
+  .navlinks a.plain{color:var(--slate);text-decoration:none;font-size:.92rem}
+  .navlinks a.plain:hover{color:var(--navy)}
+  .btn{display:inline-block;padding:11px 24px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.95rem;transition:transform .12s ease,box-shadow .12s ease}
+  .btn:hover{transform:translateY(-1px)}
+  .btn-navy{background:var(--navy);color:#fff;box-shadow:0 1px 0 rgba(19,31,56,.25)}
+  .btn-paper{background:#fff;color:var(--navy);border:1px solid var(--rule)}
+
+  /* ---------- hero ---------- */
+  .hero{background:var(--ink);color:#f4f2ec;position:relative;overflow:hidden}
+  .hero::before{content:"";position:absolute;inset:0;background:
+    repeating-linear-gradient(to bottom,transparent 0 27px,rgba(255,255,255,.045) 27px 28px);
+    pointer-events:none}
+  .hero::after{content:"";position:absolute;top:0;bottom:0;left:8.5%;width:1px;background:rgba(201,151,28,.35);pointer-events:none}
+  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:88px;padding-bottom:92px;position:relative}
+  .eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);margin-bottom:18px}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(2.1rem,4.6vw,3.4rem);line-height:1.12;text-wrap:balance;margin-bottom:20px}
+  .hero h1 em{font-style:italic;color:#e8c56a}
+  .hero p.lede{font-size:1.12rem;color:#b9c2d4;max-width:33em;margin-bottom:34px}
+  .hero .cta-row{display:flex;gap:14px;flex-wrap:wrap}
+  .hero .btn-gold{background:#e8c56a;color:var(--ink)}
+  .hero .btn-line{color:#e9edf5;border:1px solid rgba(233,237,245,.35);background:transparent}
+  .hero .foot{margin-top:26px;font-family:var(--mono);font-size:.78rem;color:#7f8ba3}
+
+  /* mock workpaper */
+  .wp{background:#fff;color:var(--ink);border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;font-family:var(--mono);font-size:.8rem;transform:rotate(.4deg)}
+  .wp-bar{background:var(--navy);color:#fff;padding:9px 14px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center}
+  .wp-bar .dots{letter-spacing:3px;color:#8fa3c8}
+  .wp-formula{display:flex;gap:10px;align-items:center;border-bottom:1px solid #e8e6df;padding:8px 14px;background:#faf9f5;color:var(--slate)}
+  .wp-formula .fx{font-style:italic;color:var(--green);font-weight:500}
+  .wp-formula code{color:var(--ink)}
+  .wp table{width:100%;border-collapse:collapse}
+  .wp td{padding:7.5px 14px;border-bottom:1px solid #f0eee7;font-variant-numeric:tabular-nums}
+  .wp td:last-child{text-align:right}
+  .wp tr.sec td{color:var(--slate);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;padding-top:12px}
+  .wp tr.tot td{border-top:1.5px solid var(--ink);border-bottom:3px double var(--ink);font-weight:500;background:#f6f9f6}
+  .wp .neg{color:#9c3a2e}
+  .wp .link{color:var(--green)}
+  .wp .stamp{position:absolute;right:26px;bottom:22px;font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;color:var(--green);border:2px solid var(--green);border-radius:4px;padding:5px 12px;transform:rotate(-6deg);background:rgba(255,255,255,.9)}
+  .wp-holder{position:relative}
+  @media (prefers-reduced-motion:no-preference){
+    .wp tr{opacity:0;animation:rise .5s ease forwards}
+    .wp tr:nth-child(1){animation-delay:.1s}.wp tr:nth-child(2){animation-delay:.18s}.wp tr:nth-child(3){animation-delay:.26s}.wp tr:nth-child(4){animation-delay:.34s}.wp tr:nth-child(5){animation-delay:.42s}.wp tr:nth-child(6){animation-delay:.5s}.wp tr:nth-child(7){animation-delay:.58s}.wp tr:nth-child(8){animation-delay:.66s}
+    .wp .stamp{opacity:0;animation:stamp .35s ease .95s forwards}
+    @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+    @keyframes stamp{from{opacity:0;transform:rotate(-6deg) scale(1.4)}to{opacity:1;transform:rotate(-6deg) scale(1)}}
+  }
+
+  /* ---------- sections ---------- */
+  section{padding:78px 0}
+  .kicker{font-family:var(--mono);font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--green);margin-bottom:10px}
+  h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.6rem,3vw,2.2rem);color:var(--navy);text-wrap:balance;margin-bottom:12px}
+  .sub{color:var(--slate);max-width:44em;margin-bottom:46px}
+
+  /* workflow rail */
+  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:0;position:relative;counter-reset:step}
+  .flow::before{content:"";position:absolute;top:26px;left:8%;right:8%;height:1px;background:var(--rule)}
+  .step{padding:0 26px;position:relative}
+  .step + .step{border-left:1px dashed var(--rule)}
+  .step .n{counter-increment:step;width:52px;height:52px;border-radius:50%;background:var(--paper);border:1.5px solid var(--navy);color:var(--navy);font-family:var(--serif);font-size:1.35rem;font-weight:600;display:flex;align-items:center;justify-content:center;margin-bottom:20px;position:relative;z-index:1}
+  .step .n::before{content:counter(step)}
+  .step h3{font-family:var(--serif);font-size:1.28rem;font-weight:600;color:var(--navy);margin-bottom:4px}
+  .step .tag{font-family:var(--mono);font-size:.74rem;color:var(--gold);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px}
+  .step p{color:var(--slate);font-size:.95rem;margin-bottom:10px}
+  .step ul{list-style:none;margin-top:6px}
+  .step li{font-size:.9rem;padding:5px 0 5px 22px;position:relative;color:var(--ink)}
+  .step li::before{content:"✓";position:absolute;left:0;color:var(--green);font-weight:600}
+
+  /* tools */
+  .tools{background:#fff;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+  .tools-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .tool{border:1px solid var(--rule);border-radius:8px;padding:18px 20px;background:var(--paper);transition:transform .14s ease,box-shadow .14s ease}
+  .tool:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(19,31,56,.08)}
+  .tool b{display:block;font-family:var(--serif);font-weight:600;color:var(--navy);font-size:1.02rem;margin-bottom:3px}
+  .tool span{font-size:.87rem;color:var(--slate)}
+  .tool .m{font-family:var(--mono);font-size:.68rem;color:var(--gold);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px}
+
+  /* trust */
+  .trust-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:30px}
+  .trust-item{border-top:2px solid var(--navy);padding-top:16px}
+  .trust-item b{display:block;font-family:var(--serif);font-weight:600;color:var(--navy);margin-bottom:6px;font-size:1.02rem}
+  .trust-item p{font-size:.88rem;color:var(--slate)}
+
+  /* cta */
+  .cta{background:var(--ink);color:#f4f2ec;border-radius:14px;padding:58px 46px;display:flex;align-items:center;justify-content:space-between;gap:36px;margin-bottom:78px;position:relative;overflow:hidden}
+  .cta::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(to bottom,transparent 0 27px,rgba(255,255,255,.045) 27px 28px)}
+  .cta h2{color:#fff;margin-bottom:8px}
+  .cta p{color:#b9c2d4;max-width:34em}
+  .cta .btn-gold{background:#e8c56a;color:var(--ink);white-space:nowrap;position:relative}
+
+  footer{border-top:1px solid var(--rule);padding:30px 0;background:#fff}
+  footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;color:var(--slate);font-size:.84rem}
+  footer .fine{font-family:var(--mono);font-size:.72rem}
+
+  @media (max-width:880px){
+    .hero-grid{grid-template-columns:1fr;padding-top:56px;padding-bottom:60px}
+    .flow{grid-template-columns:1fr;gap:34px}
+    .flow::before{display:none}
+    .step + .step{border-left:none;border-top:1px dashed var(--rule);padding-top:30px}
+    .tools-grid{grid-template-columns:1fr 1fr}
+    .trust-grid{grid-template-columns:1fr 1fr}
+    .cta{flex-direction:column;text-align:center}
+  }
+  @media (max-width:560px){
+    .tools-grid,.trust-grid{grid-template-columns:1fr}
+    .navlinks a.plain{display:none}
+    .brand b{white-space:nowrap;font-size:1.05rem}
+    .navlinks{gap:8px}
+    .btn{padding:9px 14px;font-size:.86rem;white-space:nowrap}
+  }
 </style>
 </head>
 <body>
+
 <header>
   <div class="wrap nav">
-    <div class="brand"><img src="/assets/rag-r-logo.png" alt="RAG Tax AI logo" /> RAG Tax AI</div>
-    <div class="actions">
-      <a class="btn btn-ghost" href="/request-access">Request access</a>
-      <a class="btn btn-primary" href="/login">Sign in</a>
-    </div>
+    <a class="brand" href="/"><img src="/assets/rag-r-logo.png" alt="RAG Tax AI" /><b>RAG Tax AI</b></a>
+    <nav class="navlinks">
+      <a class="plain" href="#workflow">Return Workflow</a>
+      <a class="plain" href="#tools">Tax Tools</a>
+      <a class="plain" href="#trust">Why trust it</a>
+      <a class="btn btn-paper" href="/login">Sign in</a>
+      <a class="btn btn-navy" href="/request-access">Request access</a>
+    </nav>
   </div>
 </header>
 
 <div class="hero">
-  <div class="wrap">
-    <h1>AI-powered tax workpapers.<br/>Human-controlled results.</h1>
-    <p>RAG Tax AI turns client financials into review-ready Excel workpapers, second-reviews returns like a senior CPA, and drafts IRS notice responses — while your preparers keep control of every number.</p>
-    <a class="btn btn-primary" href="/request-access">Request access</a>
-    <div class="note">Built by tax professionals, for tax professionals.</div>
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">AI workpaper platform · built inside a tax firm</div>
+      <h1>The return gets done.<br/>Your firm stays <em>in control</em>.</h1>
+      <p class="lede">RAG Tax AI drafts the workpaper, second-reviews the return, and assembles the client deliverable — with every number traceable, every total a live formula, and every judgment call flagged for a professional.</p>
+      <div class="cta-row">
+        <a class="btn btn-gold" href="/request-access">Request access</a>
+        <a class="btn btn-line" href="#workflow">See the workflow</a>
+      </div>
+      <div class="foot">1040 · 1065 · 1120-S · 1120 &nbsp;—&nbsp; QuickBooks Online · Xero · ProConnect · Drake · CCH</div>
+    </div>
+    <div class="wp-holder">
+      <div class="wp" aria-hidden="true">
+        <div class="wp-bar"><span>WEM3 LLC — Book to Tax (M-1).xlsx</span><span class="dots">● ● ●</span></div>
+        <div class="wp-formula"><span class="fx">fx</span><code>=IFERROR('Profit and Loss'!B99, 244030.98)</code></div>
+        <table>
+          <tr><td>Net income (loss) per books</td><td class="link">244,030.98</td></tr>
+          <tr class="sec"><td colspan="2">Schedule M-1 adjustments</td></tr>
+          <tr><td>Meals — 50% nondeductible</td><td>1,542.31</td></tr>
+          <tr><td>Credit card rewards (nontaxable)</td><td class="neg">(39,628.10)</td></tr>
+          <tr><td>Asset sale → Form 4797</td><td class="neg">(77,221.62)</td></tr>
+          <tr><td>Owner health premiums → W-2</td><td>⚑ flagged</td></tr>
+          <tr class="tot"><td>Ordinary business income (tax)</td><td>153,741.37</td></tr>
+        </table>
+        <div class="stamp">TIES ✓ M-1</div>
+      </div>
+    </div>
   </div>
 </div>
 
-<section>
+<section id="workflow">
   <div class="wrap">
-    <h2>What it does</h2>
-    <p class="sub">One workspace for the heavy lifting of a tax practice — from source documents to data entry.</p>
-    <div class="grid">
-      <div class="card"><div class="icon">📊</div><h3>Workpaper Preparation</h3><p>Upload a P&amp;L, balance sheet, prior workpapers or scanned source documents. Get a formatted Excel workbook: book-to-tax reconciliation, AJEs, statement tabs — every total a live formula, every tab linked, so one edit flows through the whole workbook.</p></div>
-      <div class="card"><div class="icon">🔍</div><h3>Return Review</h3><p>A second set of eyes on 1040, 1065, 1120 and 1120-S returns: tie-outs against source financials, issue-spotting with authority citations, and a clear filing-readiness verdict.</p></div>
-      <div class="card"><div class="icon">📨</div><h3>Notices &amp; Research</h3><p>Upload an IRS or state notice and get the analysis plus a response letter draft. Ask research questions and get answers grounded in current guidance.</p></div>
-      <div class="card"><div class="icon">🔌</div><h3>Fits your stack</h3><p>Pulls financials directly from QuickBooks Online and Xero. Generates data-entry guides for ProConnect, Drake, CCH Axcess and more — screen by screen, field by field.</p></div>
+    <div class="kicker">The Return Workflow</div>
+    <h2>Three stations. One return, start to finish.</h2>
+    <p class="sub">The core of RAG Tax AI mirrors how a real engagement moves through your firm — and the AI does the heavy lifting at each station.</p>
+    <div class="flow">
+      <div class="step">
+        <div class="n"></div>
+        <h3>Preparation</h3>
+        <div class="tag">financials → workpaper</div>
+        <p>Upload the P&amp;L, balance sheet, prior workpapers, W-2s, 1099s — even phone-scanned PDFs, which the AI reads visually.</p>
+        <ul>
+          <li>Book-to-tax reconciliation (Schedule M-1) with fixed, deterministic treatment rules</li>
+          <li>Every total a live Excel formula; edit one number and every tab recomputes</li>
+          <li>Data-entry guide for your tax software, field by field, with live tie-out checks</li>
+        </ul>
+      </div>
+      <div class="step">
+        <div class="n"></div>
+        <h3>Review</h3>
+        <div class="tag">return → second opinion</div>
+        <p>Upload the completed return with its support and get the read a senior reviewer would give it.</p>
+        <ul>
+          <li>Tie-outs of return lines against source financials</li>
+          <li>Issues ranked by risk, with the authority behind each one</li>
+          <li>A clear filing-readiness verdict and open-question list</li>
+        </ul>
+      </div>
+      <div class="step">
+        <div class="n"></div>
+        <h3>Deliverable</h3>
+        <div class="tag">work → client-ready</div>
+        <p>Turn the reviewed engagement into something a client can actually read.</p>
+        <ul>
+          <li>Clean summaries of what was filed and why</li>
+          <li>Consistent, firm-branded document output</li>
+          <li>Ready to send — after your professional signs off</li>
+        </ul>
+      </div>
     </div>
   </div>
 </section>
 
-<section class="trust">
+<section class="tools" id="tools">
   <div class="wrap">
-    <h2>Built for professional responsibility</h2>
-    <p class="sub">AI does the heavy lifting. Your firm signs the return. The software is designed around that line.</p>
-    <div class="grid">
-      <div class="card"><h3>🧑‍💼 Human in the loop</h3><p>Every workpaper is a draft for a professional to review. Anything uncertain is flagged — never silently invented.</p></div>
-      <div class="card"><h3>🔎 Traceable numbers</h3><p>Each amount links back to its source line. Tie-out checks recompute live when your preparer edits, so nothing goes stale.</p></div>
-      <div class="card"><h3>🔒 Firm-level isolation</h3><p>Your firm's data is visible only to your firm's users. Credentials are hashed, integrations tokenized and encrypted.</p></div>
-      <div class="card"><h3>📁 Your originals, untouched</h3><p>Uploaded client reports are carried into the workbook verbatim, on their own tabs, exactly as sent.</p></div>
+    <div class="kicker">Beyond the return</div>
+    <h2>A full toolbox for the rest of the practice.</h2>
+    <p class="sub">The Return Workflow is the spine. Around it, RAG Tax AI ships the tools a firm reaches for every week.</p>
+    <div class="tools-grid">
+      <div class="tool"><span class="m">Planning</span><b>Estimated Taxes</b><span>Quarterly safe-harbor estimates computed from current-year books and prior returns.</span></div>
+      <div class="tool"><span class="m">Planning</span><b>Tax Planning</b><span>Scenario projections on a deterministic tax engine — the math is code, not guesswork.</span></div>
+      <div class="tool"><span class="m">Practice</span><b>Tax Tracker</b><span>Every engagement on one board: status, assignee, time, and filing deadlines by entity type.</span></div>
+      <div class="tool"><span class="m">Knowledge</span><b>Tax Research</b><span>Questions answered against current federal and state guidance, with sources.</span></div>
+      <div class="tool"><span class="m">Compliance</span><b>Notices</b><span>Upload an IRS or state notice; get the analysis and a ready-to-edit response letter.</span></div>
+      <div class="tool"><span class="m">Quality</span><b>Diagnostics</b><span>Cross-checks on returns and workpapers that catch the misses before a reviewer does.</span></div>
+      <div class="tool"><span class="m">Practice</span><b>Client Database</b><span>Clients, entities, years and documents organized — isolated per firm.</span></div>
+      <div class="tool"><span class="m">Client-facing</span><b>Client Presentations</b><span>Turn an engagement into a clean deck for the client meeting.</span></div>
+      <div class="tool"><span class="m">Utilities</span><b>Misc Calculations</b><span>The one-off computations of tax life, done and documented in Excel.</span></div>
     </div>
   </div>
 </section>
 
-<section class="how">
+<section id="trust">
   <div class="wrap">
-    <h2>How it works</h2>
-    <p class="sub">From client documents to data entry in minutes, not hours.</p>
-    <div class="grid">
-      <div class="card"><h3>Upload</h3><p>Client financials, prior-year workpapers, W-2s, 1099s — PDFs, Excel, even phone-scanned documents.</p></div>
-      <div class="card"><h3>Generate</h3><p>The AI builds the workpaper: reconciliations, adjustments, flags for anything that needs a professional's judgment.</p></div>
-      <div class="card"><h3>Review &amp; correct</h3><p>Your preparer reviews the flags and edits in Excel — formulas propagate changes across every tab automatically.</p></div>
-      <div class="card"><h3>Enter</h3><p>Follow the generated data-entry guide for your tax software, with tie-out checks that confirm everything still matches.</p></div>
+    <div class="kicker">Professional responsibility</div>
+    <h2>Designed around one line: your firm signs the return.</h2>
+    <p class="sub">AI drafts. Professionals decide. The software enforces that boundary instead of blurring it.</p>
+    <div class="trust-grid">
+      <div class="trust-item"><b>Flags, not guesses</b><p>Anything uncertain is marked NEEDS REVIEW or left blank with an explanation — never silently invented.</p></div>
+      <div class="trust-item"><b>Traceable numbers</b><p>Each amount links to its source line; tie-outs recompute live when your preparer edits the workpaper.</p></div>
+      <div class="trust-item"><b>Firm-level isolation</b><p>Your data is visible only to your firm's users. Hashed credentials, encrypted integration tokens, daily backups.</p></div>
+      <div class="trust-item"><b>Originals untouched</b><p>Client reports are carried into the workbook verbatim on their own tabs — the source is always beside the work.</p></div>
     </div>
   </div>
 </section>
 
 <div class="wrap">
   <div class="cta">
-    <h2>See it on your own returns</h2>
-    <p>We onboard a small number of firms at a time so every client gets direct support. Request access and we'll set up a walkthrough with your own files.</p>
-    <a class="btn btn-primary" href="/request-access">Request access</a>
+    <div>
+      <h2>See it on your own returns.</h2>
+      <p>We onboard a small number of firms at a time so every pilot gets direct support. Bring one real engagement — we'll walk it through the workflow with you.</p>
+    </div>
+    <a class="btn btn-gold" href="/request-access">Request access</a>
   </div>
 </div>
 
 <footer>
-  <div class="wrap">© 2026 RAG Tax AI · AI-assisted tax preparation software · The reviewing professional remains responsible for all filed returns.</div>
+  <div class="wrap">
+    <span>© 2026 RAG Tax AI</span>
+    <span class="fine">AI-assisted tax software — the reviewing professional remains responsible for all filed returns.</span>
+  </div>
 </footer>
+
 </body>
 </html>
