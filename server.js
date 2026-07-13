@@ -13082,7 +13082,7 @@ function buildPreparerContent(payload) {
       "",
       "Rules for sheets:",
       "Create one or more useful Excel sheets based on the request.",
-      "CANONICAL SHEET NAMES (use these EXACT names so every run produces the same tabs): 'Profit and Loss' for the current-year P&L workpaper tab, 'Balance Sheet' for the balance sheet tab, 'AJE Worksheet' for adjusting journal entries, 'Fixed Assets' for fixed asset additions/depreciation detail. Additional tabs beyond these may use descriptive names of your choice.",
+      "CANONICAL SHEET NAMES (use these EXACT names so every run produces the same tabs): 'Profit and Loss' for the current-year P&L workpaper tab, 'Balance Sheet' for the balance sheet tab, 'AJE Worksheet' for adjusting journal entries, 'Fixed Assets' for fixed asset additions/depreciation detail. Use each canonical name ONLY for a tab that actually contains that statement — never name a W-2 summary, source-document digest, or other content 'Profit and Loss'. Additional tabs beyond these may use descriptive names of your choice (e.g. 'W-2 Summary', 'K-1 Placeholder').",
       "At least one sheet must be a real workpaper sheet with calculated/updated values, not a placeholder and not a JSON/text dump.",
       "When a workbookTemplate is provided for an uploaded Excel file, mirror that template's sheets, headers, labels, row order, and column order as closely as possible.",
       "Keep the same workpaper-style layout from the prior-year workbook, updating year labels and values for the current-year request. Preserve columns widths, merged cells, underlined words, boxed sections, and obvious title/header formatting by returning cols, merges, and styles entries where available.",
@@ -13643,6 +13643,32 @@ function detectPreparationFileRole(file = {}, payload = {}) {
     return {
       id: "prior_workpaper",
       description: "Prior-year workpaper/template: use for workbook structure, labels, sheet order, formatting, and prior adjustment categories only.",
+    };
+  }
+
+  // 2b. Source income/deduction documents (W-2/W-2C, 1099 series, composite broker
+  // statements, 1098, SSA-1099, K-1 received) are CURRENT-year source documents whose
+  // amounts must be extracted — never prior_return, even though their text mentions
+  // schedules or "tax return" (run 66 bug: a ZIP of 2025 1099s was classified
+  // prior_return and its interest/dividends were ignored entirely). Guard: a file whose
+  // NAME says it is an actual tax return still falls through to rule 3.
+  // NOTE: (?![a-z0-9]) instead of a trailing \b — underscores are word chars, so \b fails
+  // on names like "1099_INT_Chase.pdf" ("int" is followed by "_"). The token check also
+  // runs against the HEAD of the extracted text so a ZIP of 1099s (generic zip name, inner
+  // filenames in the text) is caught — but only when the text head does not look like a
+  // FILED return, which mentions W-2s/1099s yet must stay prior_return.
+  const sourceDocTokenRe = /\b(w-?2c?|1099[-_\s]?(int|div|b|k|r|nec|misc|g|sa|q|composite)|consolidated\s+1099|composite\s+(statement|form)?\s*1099|1098|ssa-?1099|5498)(?![a-z0-9])/;
+  const headLooksLikeFiledReturn = /(form\s*10(40|41|65|20)|form\s*1120-?s)[^\n]{0,80}(u\.s\.|income tax return|tax year)/i.test(text.slice(0, 6000));
+  const looksLikeSourceDocs = sourceDocTokenRe.test(name)
+    || (!headLooksLikeFiledReturn && (
+      sourceDocTokenRe.test(text.slice(0, 6000))
+      || /\b(w-?2c?|1099[-_\s]?(int|div|b|k|r|nec|misc|g|sa|q)|1098-?[a-z]?|ssa-?1099)(?![a-z0-9])[^\n]{0,80}\b(wages|interest income|dividends|proceeds|payer|recipient|gross amount|box\s*\d)/i.test(text.slice(0, 8000))
+    ));
+  const nameSaysTaxReturn = /\b(tax\s*returns?|form\s*10(40|41|65|20)|1120-?s|return transcript)\b/.test(name);
+  if (looksLikeSourceDocs && !nameSaysTaxReturn) {
+    return {
+      id: "supporting_document",
+      description: "Current-year source tax document (W-2 / 1099 / 1098 / K-1 / broker composite): extract every reportable amount from it for the return — wages, withholding, interest, dividends, capital gain transactions, etc.",
     };
   }
 
