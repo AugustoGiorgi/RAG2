@@ -8119,6 +8119,7 @@ async function prepareFileForReview({ file, type }) {
         text: extracted.text,
         workbookTemplate: extracted.workbookTemplates[0] || null,
         workbookTemplates: extracted.workbookTemplates,
+        scannedPdfs: extracted.scannedPdfs || [],
       };
     } catch (error) {
       console.warn("ZIP package parse failed:", error);
@@ -8128,7 +8129,17 @@ async function prepareFileForReview({ file, type }) {
 
   if (base.mediaType === "application/pdf" || ext === "pdf") {
     try {
-      return { ...base, encoding: "pdf-text", text: await extractPdfText(file) };
+      const text = await extractPdfText(file);
+      const prepared = { ...base, encoding: "pdf-text", text };
+      // Scanned/image-only PDF (no extractable text): ship the original bytes too, so the
+      // backend can attach it as a native PDF document and Claude reads it visually.
+      if (isImageOnlyPdfText(text) && file.size <= 8 * 1024 * 1024) {
+        try {
+          prepared.scannedPdfBase64 = await readAsBase64(file);
+          prepared.scannedPdfName = displayFileName(file);
+        } catch (_) { /* best effort — text-only fallback */ }
+      }
+      return prepared;
     } catch (error) {
       console.warn("PDF text parse failed:", error);
       return { ...base, encoding: "metadata-only" };
@@ -8169,6 +8180,7 @@ async function extractZipPackage(file) {
   const innerFiles = await extractZipFiles(file);
   const sections = [];
   const workbookTemplates = [];
+  const scannedPdfs = [];
   for (const innerFile of innerFiles) {
     const ext = fileExtension(innerFile.name).toLowerCase();
     try {
@@ -8177,8 +8189,17 @@ async function extractZipPackage(file) {
         const nested = await extractZipPackage(innerFile);
         text = nested.text;
         workbookTemplates.push(...nested.workbookTemplates);
+        scannedPdfs.push(...(nested.scannedPdfs || []).slice(0, Math.max(0, 6 - scannedPdfs.length)));
       }
-      else if (ext === "pdf") text = await extractPdfText(innerFile);
+      else if (ext === "pdf") {
+        text = await extractPdfText(innerFile);
+        // Image-only scan inside the ZIP: keep the original bytes so the backend can
+        // attach it as a native PDF document for visual reading (run 67: the 1099-INTs
+        // and broker composites were scans and their data was silently lost).
+        if (isImageOnlyPdfText(text) && innerFile.size <= 8 * 1024 * 1024 && scannedPdfs.length < 6) {
+          try { scannedPdfs.push({ name: displayFileName(innerFile), data: await readAsBase64(innerFile) }); } catch (_) {}
+        }
+      }
       else if (["xlsx", "xls"].includes(ext)) {
         const extracted = await extractXlsxWithTemplate(innerFile);
         text = extracted.text;
@@ -8199,7 +8220,18 @@ async function extractZipPackage(file) {
   return {
     text: sections.length ? sections.join("\n\n") : "No readable files found inside ZIP package.",
     workbookTemplates,
+    scannedPdfs,
   };
+}
+
+// pdf.js on a scanned/image-only page yields no real text (just whitespace or page
+// markers like "-- 1 of 2 --"). Under ~200 meaningful chars for a whole PDF means the
+// document is an image scan and must be shipped as bytes for visual reading.
+function isImageOnlyPdfText(text) {
+  const stripped = String(text || "")
+    .replace(/--\s*\d+\s*of\s*\d+\s*--/gi, "")
+    .replace(/\s+/g, "");
+  return stripped.length < 200;
 }
 
 async function extractXlsx(file) {

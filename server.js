@@ -13189,6 +13189,44 @@ function buildPreparerContent(payload) {
     });
   }
 
+  // Scanned/image-only PDFs (no extractable text — e.g. scanned 1099s and broker
+  // composites) are attached as NATIVE PDF documents so the model reads them visually.
+  // Caps stay well under the API's 100-page / request-size limits: max 5 docs, 5 MB each,
+  // 15 MB total. Anything beyond the caps is announced as NOT attached so the model
+  // flags it instead of silently missing data.
+  const scannedDocs = [];
+  const skippedScans = [];
+  for (const file of payload.files || []) {
+    const candidates = [
+      ...(file.scannedPdfBase64 ? [{ name: file.scannedPdfName || file.name || "scanned.pdf", data: file.scannedPdfBase64 }] : []),
+      ...(Array.isArray(file.scannedPdfs) ? file.scannedPdfs : []),
+    ];
+    for (const candidate of candidates) {
+      const data = String(candidate?.data || "");
+      if (!data) continue;
+      const bytes = Math.floor(data.length * 0.75);
+      const total = scannedDocs.reduce((sum, d) => sum + d.bytes, 0);
+      if (scannedDocs.length >= 5 || bytes > 5 * 1024 * 1024 || total + bytes > 15 * 1024 * 1024) {
+        skippedScans.push(String(candidate.name || "scanned.pdf"));
+        continue;
+      }
+      scannedDocs.push({ name: String(candidate.name || "scanned.pdf"), data, bytes });
+    }
+  }
+  if (scannedDocs.length) {
+    content.push({
+      type: "text",
+      text: `SCANNED SOURCE DOCUMENTS ATTACHED (${scannedDocs.length}): the following uploads are image-based PDFs with no extractable text; each is attached below as a document. READ THEM VISUALLY and extract every reportable amount exactly as printed (payer, box numbers, amounts, withholding, transactions). Do NOT report these documents as missing: ${scannedDocs.map((d) => d.name).join("; ")}.${skippedScans.length ? ` NOT ATTACHED (size limits — flag as pending in aiNotes): ${skippedScans.join("; ")}.` : ""}`,
+    });
+    for (const doc of scannedDocs) {
+      content.push({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: doc.data },
+        title: doc.name.slice(0, 120),
+      });
+    }
+  }
+
   return content;
 }
 
