@@ -13734,11 +13734,22 @@ function detectPreparationFileRole(file = {}, payload = {}) {
         description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
       };
     }
-    // Excel file with financial content: only treat as current_financials when current year is in the name
+    // Excel file with financial content: current_financials when the current year is in
+    // the name — or, when the NAME has no year at all, when the CONTENT carries it (QBO/
+    // Xero exports print the period in the header: "January - December, 2025"). Run 69
+    // bug: "Activa LLC_Profit and Loss (1).xlsx" (current-year P&L, year-less name) fell
+    // through to prior_workpaper and had every amount stripped.
     if (currentYear && name.includes(currentYear)) {
       return {
         id: "current_financials",
         description: "Current-year financials: source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
+      };
+    }
+    const nameHasAnyYear = /\b(19|20)\d{2}\b/.test(name);
+    if (!nameHasAnyYear && currentYear && text.includes(currentYear)) {
+      return {
+        id: "current_financials",
+        description: "Current-year financials (year detected in the report header): source of truth for all current-year P&L, balance sheet, trial balance, and GL amounts.",
       };
     }
     // Excel file with financial content but no clear current-year indicator → safer to treat as prior reference
