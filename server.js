@@ -4815,8 +4815,13 @@ function ensureDatabase() {
 // One-time, idempotent ownership migration. Under firm-based access an ownerless record
 // is admin-only, so every legacy record (created before ownership existed) is assigned to
 // the primary admin. Their firm-mates keep seeing them (same tenant); other firms never
-// see them. Runs at every boot; writes only when something actually changed.
+// see them. Runs once per process; writes only when something actually changed.
+// The entry guard also breaks the cycle ensureDatabase → migrate → readDb → ensureDatabase.
+// (A function property is used instead of a module-level let: ensureDatabase runs at module
+// load, before top-level let declarations further down the file are initialized.)
 function migrateOwnerlessRecords() {
+  if (migrateOwnerlessRecords.done) return;
+  migrateOwnerlessRecords.done = true;
   try {
     const users = readUserStore().users || [];
     const primaryAdmin = users.find((user) => user.role === "admin" && user.active !== false)?.username
