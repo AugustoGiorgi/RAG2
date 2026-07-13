@@ -884,7 +884,7 @@ function writeTracker(tracker) {
 async function handleTrackerApi(req, res, requestUrl) {
   const tracker = readTracker();
   const parts = requestUrl.pathname.split("/").filter(Boolean);
-  if (req.method === "GET" && requestUrl.pathname === "/api/tracker") { sendJson(res, 200, publicTrackerData(tracker)); return; }
+  if (req.method === "GET" && requestUrl.pathname === "/api/tracker") { sendJson(res, 200, publicTrackerData(tracker, req)); return; }
   if (req.method === "GET" && requestUrl.pathname === "/api/tracker/statuses") { sendJson(res, 200, sortByOrder(tracker.globalStatuses)); return; }
   if (req.method === "GET" && parts[2] === "statuses" && parts[3] === "section" && parts[4]) { sendJson(res, 200, statusesForSection(tracker, decodeURIComponent(parts[4]))); return; }
   if (req.method === "POST" && requestUrl.pathname === "/api/tracker/statuses") {
@@ -1138,8 +1138,17 @@ async function handlePtoApi(req, res, requestUrl) {
   sendJson(res, 404, { error: "PTO route not found." });
 }
 
-function publicTrackerData(tracker) {
-  return { sections: sortSections(tracker), statuses: sortByOrder(tracker.globalStatuses), sectionStatuses: tracker.sectionStatuses, tasks: Object.values(tracker.tasks).sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)), pto: { entries: sortPto(Object.values(tracker.pto.entries)), settings: tracker.pto.settings } };
+function publicTrackerData(tracker, req = null) {
+  // Firm scoping: tasks and PTO entries are only returned to users of the creator's firm
+  // (tracker boards carry client names). Without a request context (internal callers),
+  // the data is returned unfiltered.
+  const visible = (owner) => !req || canAccessOwner(req, String(owner || ""));
+  const tasks = Object.values(tracker.tasks)
+    .filter((task) => visible(task.createdBy || task.ownerUsername))
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0));
+  const ptoEntries = sortPto(Object.values(tracker.pto.entries))
+    .filter((entry) => visible(entry.userId || entry.username || entry.createdBy));
+  return { sections: sortSections(tracker), statuses: sortByOrder(tracker.globalStatuses), sectionStatuses: tracker.sectionStatuses, tasks, pto: { entries: ptoEntries, settings: tracker.pto.settings } };
 }
 
 function sortByOrder(list) {
@@ -4535,6 +4544,7 @@ function getAuthUsers() {
     .filter((user) => user && typeof user.username === "string" && typeof user.passwordHash === "string" && user.active !== false)
     .map((user) => ({
       ...user,
+      tenantId: String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID),
       role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
       displayName: String(user.displayName || user.username),
       spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
@@ -4589,6 +4599,7 @@ function publicUser(user, preloaded = {}) {
     username: user.username,
     role: user.role === "admin" ? "admin" : "user",
     displayName: user.displayName || user.username,
+    tenantId: String(user.tenantId || DEFAULT_TENANT_ID),
     active: user.active !== false,
     spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
     spendUsedUsd: budget.usedUsd,
@@ -4729,10 +4740,36 @@ function requireAdmin(req, res) {
   return true;
 }
 
+// Firm-based access: users who share a tenantId (same firm) see each other's records;
+// users from a different firm are fully isolated. Rules:
+//   • admin → everything (application administrator).
+//   • record without owner → admin only (legacy records are assigned an owner by the
+//     startup migration, so this only guards records created through unexpected paths —
+//     the old behavior of "ownerless = visible to everyone" was a cross-firm leak).
+//   • otherwise → visible when the record owner's firm matches the requester's firm.
+let tenantLookupCache = null;
+function userTenantId(username) {
+  if (!username) return "";
+  const now = Date.now();
+  if (!tenantLookupCache || now - tenantLookupCache.at > 30000) {
+    const map = {};
+    try {
+      for (const user of readUserStore().users) map[String(user.username)] = String(user.tenantId || DEFAULT_TENANT_ID);
+    } catch (_) {}
+    tenantLookupCache = { at: now, map };
+  }
+  // Unknown owner (user deleted): fall back to the default tenant so the firm that has
+  // always operated the app keeps seeing its historical records.
+  return tenantLookupCache.map[String(username)] || DEFAULT_TENANT_ID;
+}
+
 function canAccessOwner(req, ownerUsername) {
   const session = req.user || getSession(req);
   if (!session?.username) return false;
-  return session.role === "admin" || !ownerUsername || ownerUsername === session.username;
+  if (session.role === "admin") return true;
+  if (!ownerUsername) return false;
+  if (ownerUsername === session.username) return true;
+  return userTenantId(ownerUsername) === userTenantId(session.username);
 }
 
 function requireOwnerAccess(req, res, ownerUsername) {
@@ -4772,6 +4809,44 @@ function ensureDatabase() {
   if (!fsSync.existsSync(COST_LOG_PATH)) writeJsonFile(COST_LOG_PATH, { entries: [] });
   if (!fsSync.existsSync(AUDIT_LOG_PATH)) writeJsonFile(AUDIT_LOG_PATH, { entries: [] });
   if (!fsSync.existsSync(ACCESS_REQUESTS_PATH)) writeJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
+  migrateOwnerlessRecords();
+}
+
+// One-time, idempotent ownership migration. Under firm-based access an ownerless record
+// is admin-only, so every legacy record (created before ownership existed) is assigned to
+// the primary admin. Their firm-mates keep seeing them (same tenant); other firms never
+// see them. Runs at every boot; writes only when something actually changed.
+function migrateOwnerlessRecords() {
+  try {
+    const users = readUserStore().users || [];
+    const primaryAdmin = users.find((user) => user.role === "admin" && user.active !== false)?.username
+      || users.find((user) => user.username === "augusto")?.username
+      || "augusto";
+    let dbChanges = 0;
+    const db = readDb();
+    for (const client of Object.values(db.clients || {})) {
+      if (!client.ownerUsername && !client.createdBy) { client.ownerUsername = primaryAdmin; client.createdBy = primaryAdmin; dbChanges += 1; }
+      if (!client.tenantId) { client.tenantId = DEFAULT_TENANT_ID; dbChanges += 1; }
+    }
+    for (const session of Object.values(db.sessions || {})) {
+      if (!session.ownerUsername && !session.createdBy) { session.ownerUsername = primaryAdmin; session.createdBy = primaryAdmin; dbChanges += 1; }
+      if (!session.tenantId) { session.tenantId = DEFAULT_TENANT_ID; dbChanges += 1; }
+    }
+    if (dbChanges) writeDb(db);
+    let trackerChanges = 0;
+    const tracker = readJsonFile(TRACKER_PATH, null);
+    if (tracker && tracker.tasks) {
+      for (const task of Object.values(tracker.tasks)) {
+        if (!task.createdBy) { task.createdBy = primaryAdmin; trackerChanges += 1; }
+      }
+      if (trackerChanges) writeJsonFile(TRACKER_PATH, tracker);
+    }
+    if (dbChanges || trackerChanges) {
+      console.log(`[migration] assigned ${dbChanges} db + ${trackerChanges} tracker ownerless records to '${primaryAdmin}'.`);
+    }
+  } catch (error) {
+    console.warn("[migration] ownerless-record migration failed:", error?.message || error);
+  }
 }
 
 function ensurePrivateDirectory(dirPath) {
@@ -8463,21 +8538,30 @@ function checkDeadlineNotifications() {
 }
 
 function handleDeadlinesApi(req, res, requestUrl) {
+  // Firm scoping: deadline items carry client names, so each item is only returned when
+  // the requester's firm can access that client (lookup by clientId against the db).
+  const filterDeadlineItems = (items) => {
+    const db = readDb();
+    return (Array.isArray(items) ? items : []).filter((item) => canAccessOwner(req, clientOwner(db.clients?.[item.clientId])));
+  };
   if (req.method === "GET" && requestUrl.pathname === "/api/deadlines") {
-    sendJson(res, 200, readJsonFile(DEADLINES_PATH, { lastRebuilt: "", upcoming: [] }));
+    const index = readJsonFile(DEADLINES_PATH, { lastRebuilt: "", upcoming: [] });
+    sendJson(res, 200, { ...index, upcoming: filterDeadlineItems(index.upcoming) });
     return;
   }
   if (req.method === "GET" && requestUrl.pathname === "/api/deadlines/urgent") {
     const index = readJsonFile(DEADLINES_PATH, { upcoming: [] });
-    sendJson(res, 200, { upcoming: (index.upcoming || []).filter((item) => item.daysUntil <= 90) });
+    sendJson(res, 200, { upcoming: filterDeadlineItems(index.upcoming).filter((item) => item.daysUntil <= 90) });
     return;
   }
   if (req.method === "GET" && requestUrl.pathname === "/api/deadlines/check") {
-    sendJson(res, 200, checkDeadlineNotifications());
+    const result = checkDeadlineNotifications();
+    sendJson(res, 200, { ...result, notifications: filterDeadlineItems(result?.notifications) });
     return;
   }
   if (req.method === "POST" && requestUrl.pathname === "/api/deadlines/rebuild") {
-    sendJson(res, 200, rebuildDeadlinesIndex());
+    const index = rebuildDeadlinesIndex();
+    sendJson(res, 200, { ...index, upcoming: filterDeadlineItems(index.upcoming) });
     return;
   }
   sendJson(res, 404, { error: "Deadline route not found." });

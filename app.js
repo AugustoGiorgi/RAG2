@@ -4083,6 +4083,7 @@ function renderAdminUsers(users) {
         <div class="admin-user-identity">
           <strong>${escapeHtml(username)}</strong>
           <span>${escapeHtml(user.displayName || "")}</span>
+          <span class="admin-user-spend">Firm: ${escapeHtml(user.tenantId || "")}</span>
           <span class="admin-user-spend">${escapeHtml(budgetText)}</span>
         </div>
         <label>
@@ -4153,6 +4154,9 @@ async function createAdminUser(event) {
       role: els.adminNewRole.value || "user",
       spendLimitUsd,
       budgetGroupId: els.adminNewBudgetGroup?.value || null,
+      // Empty = default tenant (your firm). A distinct Firm ID isolates an external
+      // client firm: they only see records owned by users of the same firm.
+      tenantId: document.getElementById("adminNewTenantId")?.value.trim().toLowerCase() || undefined,
     }),
   });
   const payload = await response.json().catch(() => ({}));

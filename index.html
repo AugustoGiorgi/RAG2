@@ -115,6 +115,7 @@
               <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
               <label><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
               <label><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="admin">Administrator</option></select></label>
+              <label><span>Firm ID</span><input id="adminNewTenantId" autocomplete="off" placeholder="Empty = your firm" /><small>Users sharing the same Firm ID see each other's clients, sessions, tracker and deadlines. Use a distinct ID (e.g. "smithcpa") for each external client firm.</small></label>
               <button class="primary-button small-button" type="submit">Create User</button>
             </form>
           </section>
