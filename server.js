@@ -12624,7 +12624,7 @@ function normalizeReturnType(returnType) {
 }
 
 function resolveReturnTypeFromPayload(payload = {}) {
-  return String(
+  const explicit = String(
     payload.metadata?.returnType ||
     payload.returnType ||
     payload.context?.returnType ||
@@ -12632,6 +12632,20 @@ function resolveReturnTypeFromPayload(payload = {}) {
     payload.client?.entityType ||
     ""
   ).trim();
+  if (explicit) return explicit;
+  // Selector left blank (happens often) — infer from the user's own instructions.
+  // Priority order matters: "Schedule C included in the 1040, this is NOT an 1120s"
+  // must resolve to 1040, so the filing-return signals (1040 / Sch C/E) are checked
+  // BEFORE entity forms that may appear negated.
+  const instructions = String(payload.metadata?.instructions || payload.instructions || "").toLowerCase();
+  if (!instructions) return "";
+  if (/\b1040\b/.test(instructions) || /\bsch(edule)?\s*[.\-]?\s*[ce]\b/.test(instructions)) return "1040";
+  if (/\b1065\b/.test(instructions) || /\bpartnership\b/.test(instructions)) return "1065";
+  if (/\b1120[\s-]?s\b/.test(instructions) || /\bs[\s-]?corp/.test(instructions)) return "1120-S";
+  if (/\b1120\b/.test(instructions) || /\bc[\s-]?corp/.test(instructions)) return "1120";
+  if (/\b990\b/.test(instructions)) return "990";
+  if (/\b1041\b/.test(instructions)) return "1041";
+  return "";
 }
 
 function resolveClientIdFromPayload(payload = {}) {
