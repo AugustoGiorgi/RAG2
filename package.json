@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js && node --check app.js",
+    "test": "node --test \"test/**/*.test.js\"",
     "generate-password-hash": "node scripts/generate-password-hash.js",
     "db:setup": "node scripts/setup-supabase.js",
     "db:migrate-json": "node scripts/migrate-json-to-supabase.js"

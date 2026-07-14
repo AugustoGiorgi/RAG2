@@ -39,7 +39,9 @@ const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_M
 const REVIEW_RETRY_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MIN_CHARS_PER_FILE || 3000);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 64);
 const MAX_BODY_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
-const DATA_DIR = path.join(ROOT, "data");
+// DATA_DIR is env-overridable so the automated test suite can boot the real server
+// against a throwaway data directory. Production (env unset) behaves exactly as before.
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
 const DB_PATH = path.join(DATA_DIR, "db.json");
 const CLIENTS_PATH = path.join(DATA_DIR, "clients.json");
 const FIRM_LIBRARY_PATH = path.join(DATA_DIR, "firm_library.json");
