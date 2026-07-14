@@ -3989,6 +3989,9 @@ async function loadAuthStatus() {
     document.querySelectorAll(".admin-only").forEach((element) => {
       element.hidden = currentUser.role !== "admin";
     });
+    // A firm administrator works in the app like any user of their firm, but also gets
+    // the Admin button to manage their own firm's users (server enforces the scope).
+    if (currentUser.role === "firm_admin" && els.adminNavButton) els.adminNavButton.hidden = false;
     if (currentUser.role === "admin") {
       els.userStatus.textContent = currentUser.displayName ? `Admin: ${currentUser.displayName}` : "Admin";
       document.body.classList.remove("auth-loading");
@@ -4019,12 +4022,19 @@ function showCostEstimateBanner(estimate, onConfirm, onCancel) {
 }
 
 async function openAdminDashboard() {
-  if (currentUser.role !== "admin") return;
+  const isGlobalAdmin = currentUser.role === "admin";
+  if (!isGlobalAdmin && currentUser.role !== "firm_admin") return;
   els.adminDashboard.hidden = false;
+  // Global-only panels/fields stay hidden for a firm administrator: system health,
+  // budget groups, role selection and Firm ID (their users always join their own firm).
+  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminRoleField", "adminFirmIdField"];
+  globalOnly.forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isGlobalAdmin; });
   await Promise.all([
-    loadBudgetGroups().catch((error) => showAdminGroupMessage(error.message || "Could not load groups.", "error")),
+    ...(isGlobalAdmin ? [
+      loadBudgetGroups().catch((error) => showAdminGroupMessage(error.message || "Could not load groups.", "error")),
+      loadAdminHealth().catch(() => {}),
+    ] : []),
     loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
-    loadAdminHealth().catch(() => {}),
   ]);
 }
 
@@ -4118,13 +4128,15 @@ function renderAdminUsers(users) {
           <span>Display</span>
           <input data-admin-display="${escapeHtml(username)}" value="${escapeHtml(user.displayName || "")}" />
         </label>
+        ${currentUser.role === "admin" ? `
         <label>
           <span>Role</span>
           <select data-admin-role="${escapeHtml(username)}">
             <option value="user"${user.role === "user" ? " selected" : ""}>User</option>
+            <option value="firm_admin"${user.role === "firm_admin" ? " selected" : ""}>Firm admin</option>
             <option value="admin"${user.role === "admin" ? " selected" : ""}>Admin</option>
           </select>
-        </label>
+        </label>` : ""}
         <label>
           <span>Status</span>
           <select data-admin-active="${escapeHtml(username)}">
@@ -4132,10 +4144,11 @@ function renderAdminUsers(users) {
             <option value="false"${user.active === false ? " selected" : ""}>Disabled</option>
           </select>
         </label>
+        ${currentUser.role === "admin" ? `
         <label>
           <span>Budget group</span>
           <select data-admin-group="${escapeHtml(username)}" data-admin-group-current="${escapeHtml(user.budgetGroupId || "")}">${groupSelectOptions}</select>
-        </label>
+        </label>` : ""}
         <label>
           <span>Individual budget USD</span>
           <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" ${user.budgetGroupId ? 'title="Overridden by group budget"' : ""} />
@@ -4201,14 +4214,20 @@ async function createAdminUser(event) {
 async function updateAdminUser(username) {
   if (!username) return;
   const displayName = els.adminUsersList?.querySelector(`[data-admin-display="${cssEscape(username)}"]`)?.value || "";
-  const role = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`)?.value || "user";
+  const roleSelect = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`);
+  const groupSelect = els.adminUsersList?.querySelector(`[data-admin-group="${cssEscape(username)}"]`);
   const active = els.adminUsersList?.querySelector(`[data-admin-active="${cssEscape(username)}"]`)?.value !== "false";
   const spendLimitUsd = els.adminUsersList?.querySelector(`[data-admin-limit="${cssEscape(username)}"]`)?.value ?? "";
-  const budgetGroupId = els.adminUsersList?.querySelector(`[data-admin-group="${cssEscape(username)}"]`)?.value || null;
   const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ displayName, role, active, spendLimitUsd, budgetGroupId }),
+    // role/budgetGroupId only travel when their controls exist (global admin view);
+    // a firm admin's payload omits them and the server ignores them anyway.
+    body: JSON.stringify({
+      displayName, active, spendLimitUsd,
+      ...(roleSelect ? { role: roleSelect.value } : {}),
+      ...(groupSelect ? { budgetGroupId: groupSelect.value || null } : {}),
+    }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {

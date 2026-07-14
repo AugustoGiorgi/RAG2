@@ -105,7 +105,7 @@
           <button id="closeAdminDashboardButton" type="button">Logout</button>
         </div>
         <div class="admin-users-shell">
-          <section class="admin-users-panel">
+          <section class="admin-users-panel" id="adminHealthPanel">
             <h3>System Health</h3>
             <div id="adminHealthBody" class="admin-users-list">Loading health…</div>
           </section>
@@ -118,8 +118,8 @@
               <label><span>Password</span><input id="adminNewPassword" type="text" autocomplete="off" minlength="12" required /></label>
               <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
               <label><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
-              <label><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="admin">Administrator</option></select></label>
-              <label><span>Firm ID</span><input id="adminNewTenantId" autocomplete="off" placeholder="Empty = your firm" /><small>Users sharing the same Firm ID see each other's clients, sessions, tracker and deadlines. Use a distinct ID (e.g. "smithcpa") for each external client firm.</small></label>
+              <label id="adminRoleField"><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="firm_admin">Firm administrator</option><option value="admin">Administrator (global)</option></select></label>
+              <label id="adminFirmIdField"><span>Firm ID</span><input id="adminNewTenantId" autocomplete="off" placeholder="Empty = your firm" /><small>Users sharing the same Firm ID see each other's clients, sessions, tracker and deadlines. Use a distinct ID (e.g. "smithcpa") for each external client firm. A "Firm administrator" can manage the users of their own firm only.</small></label>
               <button class="primary-button small-button" type="submit">Create User</button>
             </form>
           </section>
@@ -131,7 +131,7 @@
             <div id="adminUsersList" class="admin-users-list"></div>
           </section>
         </div>
-        <div class="admin-users-shell">
+        <div class="admin-users-shell" id="adminBudgetShell">
           <section class="admin-users-panel">
             <h3>Create Budget Group</h3>
             <div id="adminGroupMessage" class="admin-user-message" hidden></div>

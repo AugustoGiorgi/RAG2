@@ -797,7 +797,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (requestUrl.pathname.startsWith("/api/admin/users")) {
-      if (!requireAdmin(req, res)) return;
+      if (!requireUserManager(req, res)) return;
       await handleAdminUsersApi(req, res, requestUrl);
       return;
     }
@@ -4271,13 +4271,21 @@ async function handleChangePassword(req, res) {
 
 async function handleAdminUsersApi(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
+  const manager = req.user || getSession(req);
+  const isGlobalAdmin = manager?.role === "admin";
+  const managerTenant = userTenantId(manager?.username);
+  // A firm_admin can only touch non-admin users of their OWN firm.
+  const canManageUser = (user) => isGlobalAdmin
+    || (user && user.role !== "admin" && String(user.tenantId || DEFAULT_TENANT_ID) === managerTenant);
 
   // GET is read-only — no lock needed.
   if (parts.length === 3 && req.method === "GET") {
     const store = readUserStore();
     const costEntries = readCostLog().entries || [];
     const preloaded = { store, costEntries };
-    sendJson(res, 200, { users: store.users.map((u) => publicUser(u, preloaded)) });
+    const visible = isGlobalAdmin ? store.users
+      : store.users.filter((u) => String(u.tenantId || DEFAULT_TENANT_ID) === managerTenant);
+    sendJson(res, 200, { users: visible.map((u) => publicUser(u, preloaded)) });
     return;
   }
 
@@ -4298,11 +4306,13 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const user = {
         username,
         passwordHash: createPasswordHash(password),
-        tenantId: String(payload.tenantId || DEFAULT_TENANT_ID),
-        role: payload.role === "admin" ? "admin" : "user",
+        // firm_admin: new users are forced into the manager's own firm, as plain users,
+        // with no global budget-group assignment. Only the global admin chooses these.
+        tenantId: isGlobalAdmin ? String(payload.tenantId || DEFAULT_TENANT_ID).trim().toLowerCase() || DEFAULT_TENANT_ID : managerTenant,
+        role: isGlobalAdmin ? (payload.role === "admin" ? "admin" : payload.role === "firm_admin" ? "firm_admin" : "user") : "user",
         displayName: String(payload.displayName || username).trim(),
         spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
-        budgetGroupId: groupExists ? bgId : null,
+        budgetGroupId: isGlobalAdmin && groupExists ? bgId : null,
         active: payload.active !== false,
         createdAt: now,
         updatedAt: now,
@@ -4320,11 +4330,13 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const payload = await readJsonBody(req);
       const user = store.users.find((item) => item.username === username);
       if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
-      if (payload.role !== undefined) user.role = payload.role === "admin" ? "admin" : "user";
+      if (!canManageUser(user)) { sendJson(res, 403, { error: "You can only manage users of your own firm." }); return; }
+      // Role changes are a global-admin decision only.
+      if (payload.role !== undefined && isGlobalAdmin) user.role = payload.role === "admin" ? "admin" : payload.role === "firm_admin" ? "firm_admin" : "user";
       if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
       if (payload.active !== undefined) user.active = Boolean(payload.active);
       if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
-      if (payload.budgetGroupId !== undefined) {
+      if (payload.budgetGroupId !== undefined && isGlobalAdmin) {
         const bgId = payload.budgetGroupId || null;
         const groupExists = bgId && (store.budgetGroups || []).some((g) => g.id === bgId);
         user.budgetGroupId = groupExists ? bgId : null;
@@ -4342,6 +4354,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (index < 0) { sendJson(res, 404, { error: "User not found." }); return; }
       const user = store.users[index];
       if (user.username === req.user?.username) { sendJson(res, 400, { error: "You cannot delete your own admin account." }); return; }
+      if (!canManageUser(user)) { sendJson(res, 403, { error: "You can only manage users of your own firm." }); return; }
       store.users.splice(index, 1);
       writeUserStore(store);
       await flushDatabaseSyncQueue();
@@ -4355,6 +4368,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const password = String(payload.password || "");
       const user = store.users.find((item) => item.username === username);
       if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
+      if (!canManageUser(user)) { sendJson(res, 403, { error: "You can only manage users of your own firm." }); return; }
       if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
       user.passwordHash = createPasswordHash(password);
       user.updatedAt = new Date().toISOString();
@@ -4587,10 +4601,16 @@ function getAuthUsers() {
     .map((user) => ({
       ...user,
       tenantId: String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID),
-      role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
+      role: normalizeUserRole(user.role, user.username),
       displayName: String(user.displayName || user.username),
       spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
     }));
+}
+
+function normalizeUserRole(role, username) {
+  if (role === "admin" || (!role && username === "augusto")) return "admin";
+  if (role === "firm_admin") return "firm_admin";
+  return "user";
 }
 
 function readUserStore() {
@@ -4624,7 +4644,7 @@ function parseAuthUsersJson() {
       .map((user) => ({
         ...user,
         tenantId: String(user.tenantId || user.tenant_id || DEFAULT_TENANT_ID),
-        role: user.role === "admin" || (!user.role && user.username === "augusto") ? "admin" : "user",
+        role: normalizeUserRole(user.role, user.username),
         displayName: String(user.displayName || user.username),
         spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
         active: user.active !== false,
@@ -4639,7 +4659,7 @@ function publicUser(user, preloaded = {}) {
   const budget = userSpendBudget(user.username, preloaded);
   return {
     username: user.username,
-    role: user.role === "admin" ? "admin" : "user",
+    role: normalizeUserRole(user.role, user.username),
     displayName: user.displayName || user.username,
     tenantId: String(user.tenantId || DEFAULT_TENANT_ID),
     active: user.active !== false,
@@ -4732,7 +4752,7 @@ function authUserForSession(user) {
   return {
     username: String(user?.username || ""),
     tenantId: String(user?.tenantId || user?.tenant_id || DEFAULT_TENANT_ID),
-    role: user?.role === "admin" ? "admin" : "user",
+    role: normalizeUserRole(user?.role, user?.username),
     displayName: String(user?.displayName || user?.username || ""),
   };
 }
@@ -4776,6 +4796,18 @@ function getSession(req) {
 function requireAdmin(req, res) {
   const session = req.user || getSession(req);
   if (session?.role !== "admin") {
+    sendJson(res, 403, { error: "Admin access required." });
+    return false;
+  }
+  return true;
+}
+
+// Global admin OR firm administrator. A firm_admin manages users ONLY inside their own
+// firm (tenantId) and sees data like any regular member of that firm — every global
+// surface (health, budget groups, audit, usage) stays requireAdmin.
+function requireUserManager(req, res) {
+  const session = req.user || getSession(req);
+  if (session?.role !== "admin" && session?.role !== "firm_admin") {
     sendJson(res, 403, { error: "Admin access required." });
     return false;
   }
@@ -5047,7 +5079,7 @@ async function hydrateUsersFromDatabase() {
       username: row.username,
       passwordHash: row.password_hash,
       tenantId: row.tenant_id || DEFAULT_TENANT_ID,
-      role: row.role === "admin" ? "admin" : "user",
+      role: normalizeUserRole(row.role, row.username),
       displayName: row.display_name || row.username,
       active: row.active !== false,
       spendLimitUsd: row.spend_limit_usd === null ? null : Number(row.spend_limit_usd),
@@ -5156,7 +5188,7 @@ async function syncUsersToDatabase(store) {
         String(user.username),
         String(user.passwordHash),
         tenantId,
-        user.role === "admin" ? "admin" : "user",
+        normalizeUserRole(user.role, user.username),
         String(user.displayName || user.username),
         user.active !== false,
         user.spendLimitUsd === undefined ? null : sqlNumber(user.spendLimitUsd),
