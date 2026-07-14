@@ -50,6 +50,8 @@ const AI_LEARNING_PATH = path.join(DATA_DIR, "ai_learning.json");
 const FEEDBACK_PATH = path.join(DATA_DIR, "feedback.json");
 const COST_LOG_PATH = path.join(DATA_DIR, "cost_log.json");
 const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
+const INCIDENTS_PATH = path.join(DATA_DIR, "incidents.json");
+const ALERT_WEBHOOK_URL = String(process.env.ALERT_WEBHOOK_URL || "").trim();
 const USER_CREDITS_PATH = path.join(DATA_DIR, "user_credits.json");
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
@@ -772,6 +774,23 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { entries: readAuditEntries(limit) });
       return;
     }
+    if (requestUrl.pathname === "/api/admin/health" && req.method === "GET") {
+      if (!requireAdmin(req, res)) return;
+      const incidents = (readJsonFile(INCIDENTS_PATH, { entries: [] }).entries || []).slice(-40).reverse();
+      const weekAgo = Date.now() - 7 * 864e5;
+      sendJson(res, 200, {
+        uptimeSeconds: Math.round((Date.now() - BOOTED_AT) / 1000),
+        bootedAt: new Date(BOOTED_AT).toISOString(),
+        memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+        node: process.version,
+        lastBackup: newestBackupInfo(),
+        alertWebhookConfigured: Boolean(ALERT_WEBHOOK_URL),
+        incidentsLast7d: incidents.filter((e) => e.type !== "boot" && new Date(e.at).getTime() > weekAgo).length,
+        bootsLast7d: incidents.filter((e) => e.type === "boot" && new Date(e.at).getTime() > weekAgo).length,
+        incidents: incidents.slice(0, 12),
+      });
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/admin/budget-groups")) {
       if (!requireAdmin(req, res)) return;
       await handleAdminBudgetGroupsApi(req, res, requestUrl);
@@ -811,6 +830,15 @@ async function startServer() {
   await initializeDatabasePersistence();
   server.listen(PORT, HOST, () => {
     console.log(`AI Tax Agent listening on ${HOST}:${PORT}`);
+    // Boot record + crash-loop detection: >3 boots in 10 minutes means pm2 is restart-looping
+    // a crashing process — that specific pattern fires an alert (webhook if configured).
+    try {
+      const entries = readJsonFile(INCIDENTS_PATH, { entries: [] }).entries || [];
+      const tenMinAgo = Date.now() - 10 * 60000;
+      const recentBoots = entries.filter((e) => e.type === "boot" && new Date(e.at).getTime() > tenMinAgo).length;
+      recordIncident("boot", `listening on ${HOST}:${PORT}`, { alert: recentBoots >= 3 });
+      if (recentBoots >= 3) console.warn(`[Health] ${recentBoots} boots in 10 minutes — possible crash loop.`);
+    } catch (_) {}
     try {
       const index = rebuildDeadlinesIndex();
       console.log(`[Deadlines] Index rebuilt - ${(index.upcoming || []).length} upcoming deadlines`);
@@ -4823,7 +4851,64 @@ function ensureDatabase() {
   if (!fsSync.existsSync(COST_LOG_PATH)) writeJsonFile(COST_LOG_PATH, { entries: [] });
   if (!fsSync.existsSync(AUDIT_LOG_PATH)) writeJsonFile(AUDIT_LOG_PATH, { entries: [] });
   if (!fsSync.existsSync(ACCESS_REQUESTS_PATH)) writeJsonFile(ACCESS_REQUESTS_PATH, { entries: [] });
+  if (!fsSync.existsSync(INCIDENTS_PATH)) writeJsonFile(INCIDENTS_PATH, { entries: [] });
   migrateOwnerlessRecords();
+}
+
+// ---------------------------------------------------------------------------
+// Health & incident tracking (zero-config): every boot and every crash-grade
+// error is recorded to data/incidents.json and surfaced in the Admin panel.
+// If ALERT_WEBHOOK_URL is ever set (Slack/Discord-compatible), alerts also POST
+// there — optional capability, nothing to configure today.
+// ---------------------------------------------------------------------------
+const BOOTED_AT = Date.now();
+function recordIncident(type, message, { alert = false } = {}) {
+  try {
+    const store = readJsonFile(INCIDENTS_PATH, { entries: [] });
+    const entries = Array.isArray(store.entries) ? store.entries : [];
+    entries.push({ id: crypto.randomUUID(), at: new Date().toISOString(), type: String(type), message: String(message || "").slice(0, 600) });
+    writeJsonFile(INCIDENTS_PATH, { entries: entries.slice(-200) });
+    if (alert && ALERT_WEBHOOK_URL) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      fetch(ALERT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: `[RAG Tax AI] ${type}: ${String(message || "").slice(0, 400)}` }),
+        signal: controller.signal,
+      }).catch(() => {}).finally(() => clearTimeout(timer));
+    }
+  } catch (_) { /* incident logging must never take the app down */ }
+}
+
+// Same exit behavior Node has by default (pm2 restarts us), but the crash is RECORDED first.
+process.on("uncaughtException", (error) => {
+  console.error("[FATAL] uncaughtException:", error);
+  recordIncident("uncaughtException", error?.stack || error?.message || String(error), { alert: true });
+  process.exit(1);
+});
+// Unlike Node's default (crash), an unhandled rejection is logged and the server stays up —
+// visible in the Admin health card instead of taking production down.
+process.on("unhandledRejection", (reason) => {
+  console.warn("[WARN] unhandledRejection:", reason);
+  recordIncident("unhandledRejection", reason?.stack || reason?.message || String(reason), { alert: true });
+});
+
+// Newest backup file age (backups live outside the repo; null when none found, e.g. local dev).
+function newestBackupInfo() {
+  try {
+    const dir = String(process.env.RAGTAX_BACKUP_DIR || "/var/backups/ragtax");
+    const files = fsSync.readdirSync(dir).filter((f) => /^ragtax-.*\.tar\.gz$/.test(f));
+    if (!files.length) return null;
+    let newest = null;
+    for (const f of files) {
+      const stat = fsSync.statSync(path.join(dir, f));
+      if (!newest || stat.mtimeMs > newest.mtimeMs) newest = { file: f, mtimeMs: stat.mtimeMs };
+    }
+    return { file: newest.file, ageHours: Math.round((Date.now() - newest.mtimeMs) / 36e5 * 10) / 10 };
+  } catch (_) {
+    return null;
+  }
 }
 
 // One-time, idempotent ownership migration. Under firm-based access an ownerless record

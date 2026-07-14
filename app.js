@@ -4024,7 +4024,35 @@ async function openAdminDashboard() {
   await Promise.all([
     loadBudgetGroups().catch((error) => showAdminGroupMessage(error.message || "Could not load groups.", "error")),
     loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
+    loadAdminHealth().catch(() => {}),
   ]);
+}
+
+async function loadAdminHealth() {
+  const el = document.getElementById("adminHealthBody");
+  if (!el) return;
+  const response = await fetch(`${API_BASE_URL}/api/admin/health`);
+  if (!response.ok) { el.textContent = "Could not load system health."; return; }
+  const h = await response.json();
+  const up = Number(h.uptimeSeconds || 0);
+  const uptime = up >= 86400 ? `${Math.floor(up / 86400)}d ${Math.floor((up % 86400) / 3600)}h` : `${Math.floor(up / 3600)}h ${Math.floor((up % 3600) / 60)}m`;
+  const backupOk = h.lastBackup && h.lastBackup.ageHours <= 26;
+  const backupText = h.lastBackup ? `${h.lastBackup.ageHours}h ago (${h.lastBackup.file})` : "no backup found";
+  const incidentsOk = Number(h.incidentsLast7d || 0) === 0;
+  const chip = (ok, text) => `<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:.8rem;font-weight:600;background:${ok ? "#e7f4ec" : "#fdecea"};color:${ok ? "#1d6f42" : "#b3261e"}">${escapeHtml(text)}</span>`;
+  const incidentRows = (h.incidents || []).filter((e) => e.type !== "boot").slice(0, 5)
+    .map((e) => `<div style="font-size:.8rem;color:#5a6577;padding:2px 0">${escapeHtml(String(e.at).replace("T", " ").slice(0, 16))} — <strong>${escapeHtml(e.type)}</strong>: ${escapeHtml(String(e.message).slice(0, 90))}</div>`)
+    .join("");
+  el.innerHTML = `
+    <div class="admin-user-row" style="display:flex;flex-wrap:wrap;gap:14px;align-items:center">
+      <span>Uptime: <strong>${escapeHtml(uptime)}</strong></span>
+      <span>Memory: <strong>${Number(h.memoryMb || 0)} MB</strong></span>
+      <span>Backup: ${chip(backupOk, backupText)}</span>
+      <span>Incidents (7d): ${chip(incidentsOk, String(h.incidentsLast7d || 0))}</span>
+      <span>Restarts (7d): <strong>${Number(h.bootsLast7d || 0)}</strong></span>
+      <span style="color:#5a6577;font-size:.8rem">${h.alertWebhookConfigured ? "Webhook alerts: on" : "Webhook alerts: not configured (optional)"}</span>
+    </div>
+    ${incidentRows ? `<div class="admin-user-row" style="display:block">${incidentRows}</div>` : ""}`;
 }
 
 function closeAdminDashboard() {

@@ -113,6 +113,16 @@ test("MISMA FIRMA: comparte los datos del equipo", async () => {
   assert.strictEqual((await api("ana_t", "GET", "/api/tracker")).json.tasks.length, 1);
 });
 
+test("salud: /api/admin/health responde a admin y rechaza a usuarios", async () => {
+  const ok = await api("admin_t", "GET", "/api/admin/health");
+  assert.strictEqual(ok.status, 200);
+  assert.ok(ok.json.uptimeSeconds >= 0);
+  assert.ok(Array.isArray(ok.json.incidents));
+  assert.ok(ok.json.incidents.some((e) => e.type === "boot"), "el boot debe quedar registrado");
+  const denied = await api("pilot_t", "GET", "/api/admin/health");
+  assert.strictEqual(denied.status, 403);
+});
+
 test("sin contaminación cruzada al crear en la otra firma", async () => {
   await api("pilot_t", "POST", "/api/clients", { name: "Cliente Del Piloto Inc", returnType: "1040" });
   assert.strictEqual((await api("pilot_t", "GET", "/api/clients")).json.clients.length, 1);
