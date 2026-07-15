@@ -6167,6 +6167,7 @@ async function runPreparerWorkflow() {
       },
       clientId: activePreparationClient()?.id || "",
       taxSoftware: prepState.taxSoftware,
+      useArchivedPriorWorkpaper: document.getElementById("prepUseArchive")?.checked || false,
       files,
     };
     els.prepRunHint.textContent = "Sending preparation package to backend...";

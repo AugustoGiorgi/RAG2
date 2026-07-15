@@ -17,6 +17,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
+const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
 loadEnvFile(path.join(ROOT, ".env"));
@@ -742,6 +743,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/deliverable/create-gmail-draft") { await handleDeliverableCreateGmailDraft(req, res); return; }
     if (req.method === "GET" && req.url === "/api/deliverable/gmail-status") { await handleDeliverableGmailStatus(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/api/tax-software/list") { sendJson(res, 200, publicTaxSoftwareList()); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/preparation/archive") {
+      const clientId = String(requestUrl.searchParams.get("clientId") || "").trim();
+      if (!clientId) { sendJson(res, 400, { error: "clientId is required." }); return; }
+      const client = readDb().clients?.[clientId];
+      if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
+      if (!requireOwnerAccess(req, res, clientOwner(client))) return;
+      sendJson(res, 200, { archive: listArchive(CLIENT_FILES_DIR, clientId) });
+      return;
+    }
     if (req.method === "GET" && requestUrl.pathname === "/api/database/export") {
       if (!requireAdmin(req, res)) return;
       appendAuditLog(req, "database.export", { clients: Object.keys(readDb().clients || {}).length });
@@ -11106,6 +11116,30 @@ async function handlePrepareWorkpaper(req, res) {
   // is the authoritative preparation year when it is newer than the metadata year.
   const taxYear = reconcilePreparationYear(rawTaxYear, payload.files);
   payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
+
+  // Season roll-forward: attach the client's newest ARCHIVED prior-season workpaper as a
+  // regular file, so the existing prior_workpaper pipeline (structure mirroring + amount
+  // stripping) applies to it unchanged. Opt-in via checkbox; silently noted when empty.
+  const prepClientId = String(payload.clientId || payload.metadata?.clientId || "").trim();
+  let archiveNote = "";
+  if (payload.useArchivedPriorWorkpaper && prepClientId) {
+    try {
+      const prior = loadNewestPriorWorkpaper(CLIENT_FILES_DIR, prepClientId, taxYear);
+      if (prior) {
+        const template = await xlsxBufferToTemplate(prior.buffer, prior.file);
+        payload.files = [
+          { name: prior.file, type: "preparationPackage", text: templateToText(template), workbookTemplate: template, workbookTemplates: [template] },
+          ...(payload.files || []),
+        ];
+        archiveNote = `Roll-forward: archived TY${prior.taxYear} workpaper (${prior.file}) attached as the prior workpaper.`;
+      } else {
+        archiveNote = "Roll-forward was requested but no archived prior-season workpaper exists for this client yet.";
+      }
+    } catch (error) {
+      archiveNote = `Roll-forward failed to load the archived workpaper: ${error?.message || error}`;
+    }
+  }
+
   payload.files = annotatePreparationFileRoles(payload.files || [], payload);
   const content = buildPreparerContent(payload);
   const softwareContext = buildSoftwareContext(taxSoftware, returnType, taxYear);
@@ -11215,6 +11249,7 @@ async function handlePrepareWorkpaper(req, res) {
       wasTruncated ? "WARNING: AI response hit the max_tokens limit and was truncated. Re-run; if it persists the workbook is too large." : "AI response completed (not truncated).",
       `File roles: ${roleSummary || "(none)"}`,
       ...(m1Status ? [m1Status] : []),
+      ...(archiveNote ? [archiveNote] : []),
     ];
     if (workbook.usedTemplateFallback) {
       diagnostics.push("ACTION REQUIRED: The AI did not return a usable workbook, so only the empty prior-year structure was provided (all amounts blank). Re-run the preparation to get populated current-year numbers.");
@@ -11280,6 +11315,16 @@ async function handlePrepareWorkpaper(req, res) {
     try {
       const buffer = await buildStyledWorkpaperXlsx(workbook);
       xlsxBase64 = Buffer.from(buffer).toString("base64");
+      // Archive every generated workpaper under the client's folder so next season's
+      // roll-forward has it available. Best-effort: never blocks the response.
+      if (prepClientId) {
+        try {
+          const saved = saveWorkpaperToArchive(CLIENT_FILES_DIR, prepClientId, taxYear, Buffer.from(buffer));
+          if (saved) workbook.aiNotes.push(`Workpaper archived for next-season roll-forward as ${saved.file}.`);
+        } catch (archiveError) {
+          console.warn("[Preparation] archive save failed:", archiveError?.message || archiveError);
+        }
+      }
     } catch (xlsxError) {
       console.warn("[Preparation] styled xlsx generation failed, falling back to client build:", xlsxError?.message || xlsxError);
     }

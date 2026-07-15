@@ -953,6 +953,10 @@
               <textarea id="prepNotes" rows="8" placeholder="Ex. Use the prior-year workpaper as the structure, update every line with current-year financial report values, add formulas where possible, and flag anything missing in AI Notes."></textarea>
               <small>The Excel output will include the requested workpaper tabs plus an AI Notes tab with missing information and anything the AI could not complete.</small>
             </label>
+            <label class="field full" style="display:flex;gap:8px;align-items:flex-start;flex-direction:row">
+              <input type="checkbox" id="prepUseArchive" style="margin-top:4px" />
+              <span style="font-weight:normal"><strong>Season roll-forward:</strong> attach this client's archived workpaper from last season as the prior workpaper (no re-upload needed). Every generated workpaper is archived automatically when a client is selected.</span>
+            </label>
             <input id="prepEntityName" type="hidden" />
             <input id="prepCurrentYear" type="hidden" value="2024" />
             <input id="prepPriorYear" type="hidden" value="2023" />
