@@ -8523,27 +8523,20 @@ function renderReviewResult(payload, metadata) {
     issueResolutionState = payload.issueResponses;
     const memo = toCleanWrittenReview({ structured }, metadata);
     els.results.innerHTML = `
-      <article>
-        <span class="tag ${readinessTagClass(structured.filingReadiness)}">${escapeHtml(structured.filingReadiness || "Complete")}</span>
-        <h3>${escapeHtml(client)} - Tax year ${escapeHtml(taxYear)}</h3>
-        <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}</p>
-        ${structured.overallRiskScore ? `<p><strong>Overall risk score:</strong> ${escapeHtml(structured.overallRiskScore)}</p>` : ""}
-        ${renderCostSummary(payload)}
-      </article>
-      ${renderDocumentsReadSection(structured.documentsRead)}
-      ${renderFeedbackAppliedSection(structured.feedbackApplied)}
-      ${renderResolutionSummary(structured, metadata)}
-      ${renderIssueSummarySection(structured.issues)}
+      ${renderReviewVerdict(structured, payload, client, taxYear)}
       ${renderIssueSection("Issues and response tracking", structured.issues)}
       ${renderCheckboxReviewSection(structured.checkboxReview)}
       ${renderInfoConsistencySection(structured.infoConsistency)}
       ${renderTieOutSection(structured.tieOutResults)}
       ${renderBalanceSheetCheckSection(structured.balanceSheetCheck)}
       ${renderEfileDiagnosticsCta(structured, metadata)}
+      ${renderDocumentsReadSection(structured.documentsRead)}
+      ${renderFeedbackAppliedSection(structured.feedbackApplied)}
       <article>
-        <span class="tag neutral">Memo</span>
-        <h3>Senior Review Memo</h3>
-        <pre class="review-output readable">${escapeHtml(memo)}</pre>
+        <details class="review-memo-details">
+          <summary>Senior Review Memo (written narrative)</summary>
+          <pre class="review-output readable">${escapeHtml(memo)}</pre>
+        </details>
         <details class="technical-response">
           <summary>Show technical JSON</summary>
           <pre class="review-output">${escapeHtml(raw)}</pre>
@@ -9050,6 +9043,18 @@ function renderBalanceSheetCheckSection(check) {
     </article>`;
 }
 
+function reviewTableCell(cell) {
+  const text = safeText(cell).trim();
+  const upper = text.toUpperCase();
+  // Status words become colored chips so pass/fail reads at a glance.
+  if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(upper)) return `<td><span class="cell-chip ok">${escapeHtml(text)}</span></td>`;
+  if (/^(NEEDS[_ ]REVIEW|MISMATCH|OUT[_ ]?OF[_ ]?BALANCE|FAIL|MISSING|ERROR)$/.test(upper)) return `<td><span class="cell-chip bad">${escapeHtml(text)}</span></td>`;
+  if (/^(VERIFY|PENDING|N\/A)$/.test(upper)) return `<td><span class="cell-chip warn">${escapeHtml(text)}</span></td>`;
+  // Money/number cells align right with tabular digits.
+  if (/^\(?-?\$?\s?[\d,]+(\.\d+)?\)?$/.test(text) && !/^\d{4}$/.test(text)) return `<td class="num">${escapeHtml(text)}</td>`;
+  return `<td>${escapeHtml(cell)}</td>`;
+}
+
 function renderReviewTable(title, headers, rows, rowClassFn = null) {
   return `
     <article>
@@ -9058,7 +9063,7 @@ function renderReviewTable(title, headers, rows, rowClassFn = null) {
       <div class="table-scroll">
         <table class="review-detail-table">
           <thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>
-          <tbody>${rows.map((row) => `<tr class="${rowClassFn ? escapeHtml(rowClassFn({ status: row[4], row })) : ""}">${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+          <tbody>${rows.map((row) => `<tr class="${rowClassFn ? escapeHtml(rowClassFn({ status: row[4], row })) : ""}">${row.map((cell) => reviewTableCell(cell)).join("")}</tr>`).join("")}</tbody>
         </table>
       </div>
     </article>`;
@@ -9066,10 +9071,22 @@ function renderReviewTable(title, headers, rows, rowClassFn = null) {
 
 function renderIssueSection(title, issues) {
   if (!issues.length) return "";
+  const counts = issuePriorityCounts(issues);
+  const chip = (value, label, count) => (count || value === "all" || value === "open"
+    ? `<button type="button" class="filter-chip${value === "all" ? " active" : ""}" data-issue-filter="${value}">${escapeHtml(label)}${count ? ` (${count})` : ""}</button>`
+    : "");
   return `
     <article>
       <span class="tag warning">Findings</span>
       <h3>${escapeHtml(title)} (${issues.length})</h3>
+      <div class="review-filter-bar" role="group" aria-label="Filter issues">
+        ${chip("all", "All", issues.length)}
+        ${chip("high", "High", counts.HIGH)}
+        ${chip("medium", "Medium", counts.MEDIUM)}
+        ${chip("low", "Low", counts.LOW)}
+        ${chip("info", "Info", counts.INFO)}
+        ${chip("open", "Open only", 0)}
+      </div>
       <div class="issue-stack">${issues.map((issue, index) => renderIssueCard(issue, index)).join("")}</div>
     </article>`;
 }
@@ -9099,6 +9116,38 @@ function renderIssueSummarySection(issues = []) {
     <article>
       <span class="tag warning">Summary</span>
       <h3>${escapeHtml(issuePriorityCountLabel(issues))}</h3>
+    </article>`;
+}
+
+// Unified verdict dashboard: one glance = readiness, issue counts by priority, audit
+// risk, resolution progress. Replaces the three stacked summary cards.
+function renderReviewVerdict(structured, payload, client, taxYear) {
+  const issues = Array.isArray(structured.issues) ? structured.issues : [];
+  const counts = issuePriorityCounts(issues);
+  const resolved = issues.filter((_, index) => issueResolutionState[index]?.status === "resolved").length;
+  const percent = issues.length ? Math.round((resolved / issues.length) * 100) : 0;
+  const risk = calculateAuditRisk(structured);
+  const riskClass = /high/i.test(risk.label) ? "risk-high" : /med/i.test(risk.label) ? "risk-medium" : "risk-low";
+  const metric = (cls, label, value) => (value ? `<span class="metric-chip ${cls}"><strong>${value}</strong> ${escapeHtml(label)}</span>` : "");
+  return `
+    <article class="resolution-summary">
+      <div class="review-verdict-head">
+        <span class="tag ${readinessTagClass(structured.filingReadiness)}">${escapeHtml(structured.filingReadiness || "Complete")}</span>
+        <h3 style="margin:0">${escapeHtml(client)} — Tax year ${escapeHtml(taxYear)}</h3>
+        <button id="downloadResolutionReport" class="primary-button small-button" type="button" style="margin-left:auto">Resolution Report</button>
+      </div>
+      <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}</p>
+      <div class="review-verdict-metrics">
+        ${metric("high", counts.HIGH === 1 ? "high issue" : "high issues", counts.HIGH)}
+        ${metric("medium", "medium", counts.MEDIUM)}
+        ${metric("low", "low", counts.LOW)}
+        ${metric("", "informational", counts.INFO)}
+        <span class="metric-chip ${riskClass}">Audit risk: ${escapeHtml(risk.label)} (${escapeHtml(String(risk.score))})</span>
+        ${issues.length ? `<span class="metric-chip">${resolved}/${issues.length} resolved</span>` : ""}
+        ${structured.overallRiskScore ? `<span class="metric-chip">Overall: ${escapeHtml(structured.overallRiskScore)}</span>` : ""}
+      </div>
+      ${issues.length ? `<div class="resolution-progress" aria-label="Issue resolution progress"><span style="width: ${percent}%"></span></div>` : ""}
+      ${renderCostSummary(payload)}
     </article>`;
 }
 
@@ -9132,13 +9181,18 @@ function renderIssueCard(issue, index) {
   const isResolved = resolution.status === "resolved";
   const statusLabel = isResolved ? "RESOLVED" : resolution.status === "responded" ? "RESPONDED" : "OPEN";
   const formName = issue.formOrSchedule || issue.form || issue.schedule || "";
+  const briefText = safeText(issue.issueDescription || issue.title || issue.detail || "").slice(0, 160);
   return `
-    <div class="issue-card ${priority} ${isResolved ? "resolved" : ""}" data-issue-card="${index}">
+    <div class="issue-card ${priority} ${isResolved ? "resolved" : ""}" data-issue-card="${index}" data-priority="${priority}" data-resolution="${resolution.status || "open"}">
       <div class="issue-heading">
         <span class="tag ${isResolved ? "success" : priorityClass}">${escapeHtml(isResolved ? "RESOLVED" : issue.priority || issue.severity || "Info")}</span>
         <strong>${escapeHtml(issue.areaReviewed || issue.category || "Review Area")}</strong>
+        ${formName ? `<span class="metric-chip">${escapeHtml(formName)}</span>` : ""}
         <span class="issue-status ${resolution.status || "open"}">${escapeHtml(statusLabel)}</span>
       </div>
+      ${briefText ? `<span class="issue-brief">${escapeHtml(briefText)}${briefText.length >= 160 ? "…" : ""}</span>` : ""}
+      <details class="issue-body"${priority === "high" && !isResolved ? " open" : ""}>
+      <summary>Details, evidence &amp; response</summary>
       <dl>
         ${renderDefinition("Form or schedule", issue.formOrSchedule)}
         ${renderDefinition("Issue", issue.issueDescription || issue.title || issue.detail)}
@@ -9165,6 +9219,7 @@ function renderIssueCard(issue, index) {
           <span class="issue-response-status ${resolution.status || "open"}">${escapeHtml(statusLabel)}</span>
         </div>
         ${resolution.evaluation ? renderIssueEvaluation(resolution.evaluation) : ""}
+      </details>
       </details>
     </div>`;
 }
@@ -9223,6 +9278,19 @@ function bindReviewEnhancementActions() {
   const reportButton = document.getElementById("downloadResolutionReport");
   if (reportButton) reportButton.addEventListener("click", downloadResolutionReport);
   document.getElementById("prefillDiagnosticsFromReview")?.addEventListener("click", prefillDiagnosticsFromReview);
+  // Priority filter chips: show/hide issue cards without re-rendering (state preserved).
+  document.querySelectorAll("[data-issue-filter]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const filter = chip.dataset.issueFilter;
+      document.querySelectorAll("[data-issue-filter]").forEach((c) => c.classList.toggle("active", c === chip));
+      document.querySelectorAll("[data-issue-card]").forEach((card) => {
+        const matches = filter === "all"
+          || (filter === "open" && card.dataset.resolution !== "resolved")
+          || card.dataset.priority === filter;
+        card.classList.toggle("filtered-out", !matches);
+      });
+    });
+  });
 }
 
 async function submitIssueResponse(issueIndex) {
@@ -9399,6 +9467,18 @@ async function downloadReview(type) {
   lastReview.response.structured = normalizeReviewForExport(lastReview.response, metadata);
   const baseName = `${metadata.entityName || metadata.clientName || "tax-review"}-${metadata.taxYear || "year"}`.replace(/[^a-z0-9-]+/gi, "-");
   if (type === "word") {
+    // Styled document straight from the structured review (headings, priority-shaded
+    // issues, real tables). Falls back to the plain-text build if anything goes wrong.
+    const structured = lastReview.response.structured;
+    if (structured && hasSeniorReviewSubstance(structured)) {
+      try {
+        const blob = await createDocxBlob("", buildStructuredReviewDocxXml(structured, metadata));
+        downloadBlob(`${baseName}.docx`, blob, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        return;
+      } catch (error) {
+        console.warn("Styled review docx failed, using plain build:", error);
+      }
+    }
     await downloadWordDocument(`${baseName}.docx`, toCleanWrittenReview(lastReview.response, metadata));
   } else if (type === "text") {
     downloadBlob(`${baseName}.txt`, toCleanWrittenReview(lastReview.response, metadata), "text/plain;charset=utf-8");
@@ -9683,7 +9763,7 @@ function addMarkdownList(lines, title, items) {
   items.forEach((item) => lines.push(`- ${item}`));
 }
 
-async function createDocxBlob(reviewText) {
+async function createDocxBlob(reviewText, prebuiltDocumentXml = null) {
   const JSZip = window.JSZip;
   if (!JSZip) throw new Error("DOCX engine is not loaded.");
   const zip = new JSZip();
@@ -9713,10 +9793,115 @@ async function createDocxBlob(reviewText) {
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>RAG Tax AI</Application>
 </Properties>`);
-  zip.folder("word").file("document.xml", buildDocxDocumentXml(reviewText));
+  zip.folder("word").file("document.xml", prebuiltDocumentXml || buildDocxDocumentXml(reviewText));
   zip.folder("word").folder("_rels").file("document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`);
   return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// ---- Styled review DOCX (built from the structured JSON, not from plain text) ---------
+function dxP(text, o = {}) {
+  const rPr = `<w:rPr>${o.bold ? "<w:b/>" : ""}${o.italic ? "<w:i/>" : ""}<w:sz w:val="${o.size || 22}"/>${o.color ? `<w:color w:val="${o.color}"/>` : ""}</w:rPr>`;
+  const shd = o.shd ? `<w:shd w:val="clear" w:fill="${o.shd}"/>` : "";
+  return `<w:p><w:pPr>${shd}${o.keepNext ? "<w:keepNext/>" : ""}<w:spacing w:before="${o.before || 0}" w:after="${o.after ?? 120}"/></w:pPr><w:r>${rPr}<w:t xml:space="preserve">${escapeXml(String(text ?? ""))}</w:t></w:r></w:p>`;
+}
+function dxH(text) { return dxP(text, { bold: true, size: 26, color: "1F3864", before: 280, after: 120 }); }
+function dxLabel(label, value) {
+  const text = safeText(value);
+  if (!text) return "";
+  return `<w:p><w:pPr><w:spacing w:after="60"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="21"/></w:rPr><w:t xml:space="preserve">${escapeXml(label)}: </w:t></w:r><w:r><w:rPr><w:sz w:val="21"/></w:rPr><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
+}
+function dxTable(headers, rows, statusCol = -1) {
+  const borders = `<w:tblBorders>${["top", "left", "bottom", "right", "insideH", "insideV"].map((side) => `<w:${side} w:val="single" w:sz="4" w:color="D9D9D9"/>`).join("")}</w:tblBorders>`;
+  const cell = (text, opts = {}) => `<w:tc><w:tcPr>${opts.fill ? `<w:shd w:val="clear" w:fill="${opts.fill}"/>` : ""}</w:tcPr><w:p><w:pPr><w:spacing w:after="40"/></w:pPr><w:r><w:rPr>${opts.bold ? "<w:b/>" : ""}<w:sz w:val="19"/>${opts.color ? `<w:color w:val="${opts.color}"/>` : ""}</w:rPr><w:t xml:space="preserve">${escapeXml(safeText(text))}</w:t></w:r></w:p></w:tc>`;
+  const headRow = `<w:tr>${headers.map((h) => cell(h, { bold: true, fill: "1F3864", color: "FFFFFF" })).join("")}</w:tr>`;
+  const bodyRows = rows.map((row) => `<w:tr>${row.map((value, i) => {
+    if (i === statusCol) {
+      const upper = safeText(value).toUpperCase();
+      const bad = /NEEDS|MISMATCH|OUT|FAIL|MISSING|ERROR/.test(upper);
+      const ok = /^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(upper);
+      return cell(value, { fill: bad ? "FDECEA" : ok ? "E7F4EC" : undefined, color: bad ? "B3261E" : ok ? "1D6F42" : undefined, bold: bad || ok });
+    }
+    return cell(value);
+  }).join("")}</w:tr>`).join("");
+  return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr>${headRow}${bodyRows}</w:tbl><w:p/>`;
+}
+
+function buildStructuredReviewDocxXml(structured, metadata = {}) {
+  const parts = [];
+  parts.push(dxP("RAG Tax AI — Senior Tax Return Review", { bold: true, size: 34, color: "1F3864", after: 40 }));
+  parts.push(dxP(`${safeText(metadata.entityName || metadata.clientName) || "Client"}  ·  ${safeText(metadata.returnType) || "Return"}  ·  Tax year ${safeText(metadata.taxYear) || "—"}  ·  ${new Date().toISOString().slice(0, 10)}`, { size: 20, color: "5A6577", after: 220 }));
+  const readiness = safeText(structured.filingReadiness);
+  const readinessBad = /not\s*ready/i.test(readiness);
+  parts.push(dxP(`FILING READINESS: ${readiness || "Review complete"}`, { bold: true, size: 24, color: readinessBad ? "B3261E" : "1D6F42", shd: readinessBad ? "FDECEA" : "E7F4EC", after: 220 }));
+  if (safeText(structured.executiveSummary || structured.summary)) {
+    parts.push(dxH("Executive Summary"));
+    parts.push(dxP(structured.executiveSummary || structured.summary));
+  }
+  const issues = Array.isArray(structured.issues) ? structured.issues : [];
+  if (issues.length) {
+    parts.push(dxH(`Issues — ${issuePriorityCountLabel(issues)}`));
+    const rank = { HIGH: 0, MEDIUM: 1, LOW: 2, INFO: 3 };
+    const sorted = issues.map((issue, i) => ({ issue, i })).sort((a, b) => (rank[safePriority(a.issue.priority || a.issue.severity)] ?? 9) - (rank[safePriority(b.issue.priority || b.issue.severity)] ?? 9));
+    sorted.forEach(({ issue }, n) => {
+      const priority = safePriority(issue.priority || issue.severity);
+      const fill = priority === "HIGH" ? "B3261E" : priority === "MEDIUM" ? "BF8712" : "1F3864";
+      const form = safeText(issue.formOrSchedule || issue.form || issue.schedule);
+      parts.push(dxP(`${n + 1}.  [${priority}] ${safeText(issue.areaReviewed || issue.category) || "Issue"}${form ? ` — ${form}` : ""}`, { bold: true, size: 22, color: "FFFFFF", shd: fill, before: 200, after: 90, keepNext: true }));
+      parts.push(dxLabel("Issue", issue.issueDescription || issue.title || issue.detail));
+      parts.push(dxLabel("Evidence", issue.evidence));
+      parts.push(dxLabel("Risk", issue.riskAnalysis || issue.whyItMatters));
+      parts.push(dxLabel("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation));
+      parts.push(dxLabel("Authority", issue.authority));
+      parts.push(dxLabel("Source", issue.source));
+    });
+  }
+  if (Array.isArray(structured.tieOutResults) && structured.tieOutResults.length) {
+    parts.push(dxH("Numeric Tie-Out"));
+    parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status"],
+      structured.tieOutResults.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status]), 4));
+  }
+  if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
+    parts.push(dxH("Informational Data Consistency"));
+    parts.push(dxTable(["Item", "Return Value", "Source Value", "Status"],
+      structured.infoConsistency.map((r) => [r.item, r.returnValue, r.sourceValue, r.status]), 3));
+  }
+  if (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) {
+    parts.push(dxH("Checkbox Review"));
+    parts.push(dxTable(["Box", "Current State", "Should Be", "Explanation"],
+      structured.checkboxReview.map((r) => [r.box, r.currentState, r.shouldBe, r.explanation])));
+  }
+  if (structured.balanceSheetCheck) {
+    const check = structured.balanceSheetCheck;
+    parts.push(dxH("Balance Sheet Check (Schedule L)"));
+    parts.push(dxLabel("Total Assets", check.totalAssets));
+    parts.push(dxLabel("Total Liabilities & Equity", check.totalLiabEquity));
+    parts.push(dxLabel("Status", check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${safeText(check.difference)}` : ""}`));
+    parts.push(dxLabel("Note", check.note));
+  }
+  if (Array.isArray(structured.openQuestions) && structured.openQuestions.length) {
+    parts.push(dxH("Open Questions"));
+    structured.openQuestions.forEach((q) => parts.push(dxP(`•  ${safeText(q)}`, { size: 21, after: 60 })));
+  }
+  if (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) {
+    parts.push(dxH("Missing Documents"));
+    structured.missingDocuments.forEach((d) => parts.push(dxP(`•  ${safeText(d)}`, { size: 21, after: 60 })));
+  }
+  if (safeText(structured.finalConclusion)) {
+    parts.push(dxH("Conclusion"));
+    parts.push(dxP(structured.finalConclusion));
+  }
+  parts.push(dxP("Generated by RAG Tax AI. The reviewing professional remains responsible for all filed returns.", { italic: true, size: 17, color: "8A93A3", before: 260 }));
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${parts.filter(Boolean).join("\n")}
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
 }
 
 function buildDocxDocumentXml(reviewText) {
