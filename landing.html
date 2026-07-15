@@ -106,12 +106,12 @@
   .sub{color:var(--slate);max-width:44em;margin-bottom:46px}
 
   /* workflow rail */
-  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:0;position:relative;counter-reset:step}
-  .flow::before{content:"";position:absolute;top:26px;left:8%;right:8%;height:1px;background:var(--rule)}
+  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:0;position:relative}
+  .flow::before{content:"";position:absolute;top:36px;left:8%;right:8%;height:1px;background:var(--rule)}
   .step{padding:0 26px;position:relative}
   .step + .step{border-left:1px dashed var(--rule)}
-  .step .n{counter-increment:step;width:52px;height:52px;border-radius:50%;background:var(--paper);border:1.5px solid var(--navy);color:var(--navy);font-family:var(--serif);font-size:1.35rem;font-weight:600;display:flex;align-items:center;justify-content:center;margin-bottom:20px;position:relative;z-index:1}
-  .step .n::before{content:counter(step)}
+  .step .art{height:72px;display:flex;align-items:center;margin-bottom:16px;position:relative;z-index:1}
+  .step .art svg{background:var(--paper);padding-right:14px}
   .step h3{font-family:var(--serif);font-size:1.28rem;font-weight:600;color:var(--navy);margin-bottom:4px}
   .step .tag{font-family:var(--mono);font-size:.74rem;color:var(--slate);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px}
   .step p{color:var(--slate);font-size:.95rem;margin-bottom:10px}
@@ -127,6 +127,11 @@
   .tool b{display:block;font-family:var(--serif);font-weight:600;color:var(--navy);font-size:1.02rem;margin-bottom:3px}
   .tool span{font-size:.87rem;color:var(--slate)}
   .tool .m{font-family:var(--mono);font-size:.68rem;color:var(--slate);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px}
+  .tools-rest{list-style:none;margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:8px 34px}
+  .tools-rest li{font-size:.9rem;color:var(--slate);padding:7px 0;border-bottom:1px solid var(--rule)}
+  .tools-rest b{color:var(--navy);font-weight:600}
+  .origin-note{text-align:center;font-family:var(--serif);font-style:italic;font-size:1.08rem;color:var(--slate);max-width:44em;margin:0 auto 46px;padding:0 24px}
+  @media (max-width:560px){ .tools-rest{grid-template-columns:1fr} }
 
   /* trust */
   .trust-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:30px}
@@ -226,9 +231,20 @@
     <p class="sub">The core of RAG Tax AI mirrors how a real engagement moves through your firm — and the AI does the heavy lifting at each station.</p>
     <div class="flow">
       <div class="step">
-        <div class="n"></div>
+        <div class="art" aria-hidden="true">
+          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
+            <rect x="8" y="6" width="56" height="52" rx="4" stroke="#1f3864" stroke-width="2"/>
+            <rect x="8" y="6" width="56" height="12" rx="4" fill="#1f3864"/>
+            <text x="14" y="15.5" font-family="monospace" font-size="8" fill="#c3d4f2">fx</text>
+            <line x1="8" y1="31" x2="64" y2="31" stroke="#e3e7ee" stroke-width="1.5"/>
+            <line x1="8" y1="44" x2="64" y2="44" stroke="#e3e7ee" stroke-width="1.5"/>
+            <line x1="30" y1="18" x2="30" y2="58" stroke="#e3e7ee" stroke-width="1.5"/>
+            <rect x="32" y="46" width="30" height="10" fill="#e7f4ec"/>
+            <text x="36" y="54" font-family="monospace" font-size="7" fill="#2e6e4e">=SUM()</text>
+          </svg>
+        </div>
+        <div class="tag">01 · financials → workpaper</div>
         <h3>Preparation</h3>
-        <div class="tag">financials → workpaper</div>
         <p>Upload the P&amp;L, balance sheet, prior workpapers, W-2s, 1099s — even phone-scanned PDFs, which the AI reads visually.</p>
         <ul>
           <li>Book-to-tax reconciliation (Schedule M-1) with fixed, deterministic treatment rules</li>
@@ -237,9 +253,19 @@
         </ul>
       </div>
       <div class="step">
-        <div class="n"></div>
+        <div class="art" aria-hidden="true">
+          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
+            <rect x="10" y="6" width="40" height="52" rx="3" stroke="#1f3864" stroke-width="2"/>
+            <line x1="16" y1="16" x2="44" y2="16" stroke="#8fa3c8" stroke-width="2"/>
+            <line x1="16" y1="24" x2="44" y2="24" stroke="#e3e7ee" stroke-width="2"/>
+            <line x1="16" y1="32" x2="36" y2="32" stroke="#e3e7ee" stroke-width="2"/>
+            <circle cx="46" cy="40" r="13" stroke="#1f3864" stroke-width="2.5" fill="#fbfaf7"/>
+            <line x1="55" y1="49" x2="64" y2="58" stroke="#1f3864" stroke-width="3" stroke-linecap="round"/>
+            <path d="M40 40 l4 4 l8 -8" stroke="#2e6e4e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="tag">02 · return → second opinion</div>
         <h3>Review</h3>
-        <div class="tag">return → second opinion</div>
         <p>Upload the completed return with its support and get the read a senior reviewer would give it.</p>
         <ul>
           <li>Tie-outs of return lines against source financials</li>
@@ -248,9 +274,19 @@
         </ul>
       </div>
       <div class="step">
-        <div class="n"></div>
+        <div class="art" aria-hidden="true">
+          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
+            <rect x="12" y="6" width="40" height="52" rx="3" stroke="#1f3864" stroke-width="2"/>
+            <line x1="18" y1="16" x2="46" y2="16" stroke="#8fa3c8" stroke-width="2"/>
+            <line x1="18" y1="24" x2="46" y2="24" stroke="#e3e7ee" stroke-width="2"/>
+            <line x1="18" y1="32" x2="40" y2="32" stroke="#e3e7ee" stroke-width="2"/>
+            <circle cx="46" cy="44" r="10" fill="#1f3864"/>
+            <path d="M41 44 l3.5 3.5 l7 -7" stroke="#fbfaf7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M56 20 l10 6 l-10 6 z" fill="#2e6e4e"/>
+          </svg>
+        </div>
+        <div class="tag">03 · work → client-ready</div>
         <h3>Deliverable</h3>
-        <div class="tag">work → client-ready</div>
         <p>Turn the reviewed engagement into something a client can actually read.</p>
         <ul>
           <li>Clean summaries of what was filed and why</li>
@@ -268,16 +304,18 @@
     <h2>A full toolbox for the rest of the practice.</h2>
     <p class="sub">The Return Workflow is the spine. Around it, RAG Tax AI ships the tools a firm reaches for every week.</p>
     <div class="tools-grid">
-      <div class="tool"><span class="m">Planning</span><b>Estimated Taxes</b><span>Quarterly safe-harbor estimates computed from current-year books and prior returns.</span></div>
+      <div class="tool"><span class="m">Planning</span><b>Estimated Taxes</b><span>Quarterly safe-harbor estimates computed from current-year books and prior returns — with the payment schedule ready to send.</span></div>
       <div class="tool"><span class="m">Planning</span><b>Tax Planning</b><span>Scenario projections on a deterministic tax engine — the math is code, not guesswork.</span></div>
-      <div class="tool"><span class="m">Practice</span><b>Tax Tracker</b><span>Every engagement on one board: status, assignee, time, and filing deadlines by entity type.</span></div>
-      <div class="tool"><span class="m">Knowledge</span><b>Tax Research</b><span>Questions answered against current federal and state guidance, with sources.</span></div>
-      <div class="tool"><span class="m">Compliance</span><b>Notices</b><span>Upload an IRS or state notice; get the analysis and a ready-to-edit response letter.</span></div>
-      <div class="tool"><span class="m">Quality</span><b>Diagnostics</b><span>Cross-checks on returns and workpapers that catch the misses before a reviewer does.</span></div>
-      <div class="tool"><span class="m">Practice</span><b>Client Database</b><span>Clients, entities, years and documents organized — isolated per firm.</span></div>
-      <div class="tool"><span class="m">Client-facing</span><b>Client Presentations</b><span>Turn an engagement into a clean deck for the client meeting.</span></div>
-      <div class="tool"><span class="m">Utilities</span><b>Misc Calculations</b><span>The one-off computations of tax life, done and documented in Excel.</span></div>
+      <div class="tool"><span class="m">Compliance</span><b>Notices</b><span>Upload an IRS or state notice; get the analysis and a ready-to-edit response letter on firm letterhead.</span></div>
     </div>
+    <ul class="tools-rest">
+      <li><b>Tax Tracker</b> — every engagement on one board with deadlines by entity type</li>
+      <li><b>Tax Research</b> — answers grounded in current federal and state guidance</li>
+      <li><b>Diagnostics</b> — e-file error analysis with a fix guide</li>
+      <li><b>Client Database</b> — clients, years and documents, isolated per firm</li>
+      <li><b>Client Presentations</b> — turn an engagement into a clean client deck</li>
+      <li><b>Misc Calculations</b> — one-off computations, documented in Excel</li>
+    </ul>
   </div>
 </section>
 
@@ -294,6 +332,8 @@
     </div>
   </div>
 </section>
+
+<p class="origin-note">RAG Tax AI was built inside a working U.S. tax practice — every feature exists because a preparer needed it during a real season.</p>
 
 <div class="wrap">
   <div class="cta">
