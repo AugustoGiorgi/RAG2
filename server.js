@@ -9582,7 +9582,9 @@ async function handleReview(req, res) {
     // marked cache_control:ephemeral since it is identical across reviews of the same
     // return type until an admin changes the uploads.
     const firmContext = await buildReviewFirmContextBlock(payload);
-    const systemBlocks = [{ type: "text", text: reviewRequest.systemPrompt }];
+    // Both system blocks are static across runs — each carries a cache breakpoint so the
+    // master prompt is cached even when the firm context is empty.
+    const systemBlocks = [{ type: "text", text: reviewRequest.systemPrompt, cache_control: { type: "ephemeral" } }];
     if (firmContext) systemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
@@ -9600,6 +9602,7 @@ async function handleReview(req, res) {
       const retrySystemBlocks = [{
         type: "text",
         text: `${reviewRequest.systemPrompt}\n\nThe first review attempt timed out. This retry uses a tighter document extract. Prioritize high-risk findings, tie-outs, missing support, elections, inconsistencies, and items that block filing. If detail is unavailable because a file was compacted, explicitly flag the document and area for manual follow-up.`,
+        cache_control: { type: "ephemeral" },
       }];
       if (firmContext) retrySystemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
       result = await callAnthropicDirectWithFallbacks(apiKey, {
@@ -9844,7 +9847,13 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) 
       body,
     ].join("\n");
   }).join("\n\n");
-  return [
+  // Two blocks, ON PURPOSE: the heavy, stable part (client meta + firm feedback + the
+  // full document package — routinely ~100k tokens) goes FIRST and carries the prompt-
+  // cache breakpoint; the volatile part (this run's instructions/facts + schema) goes
+  // after it. Re-running the same package with tweaked instructions — the most common
+  // real workflow — then re-reads the documents from cache at ~10% of the input price
+  // instead of paying full price every run.
+  const stablePrefix = [
     "REVIEW REQUEST",
     `Client: ${meta.clientName}`,
     `Return Type: ${meta.returnType}`,
@@ -9852,17 +9861,22 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) 
     `Review Stage: ${meta.reviewStage}`,
     `State: ${meta.state || "Not specified"}`,
     "",
-    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
-    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
     "FIRM REVIEW FEEDBACK TO APPLY:",
     feedbackBlock,
     "",
     "DOCUMENTS:",
     docsBlock,
-    "",
+  ].join("\n");
+  const volatileSuffix = [
+    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
+    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
     "Return the complete senior review as JSON in exactly this schema:",
     reviewJsonSchemaText(),
   ].filter(Boolean).join("\n");
+  return [
+    { type: "text", text: stablePrefix, cache_control: { type: "ephemeral" } },
+    { type: "text", text: volatileSuffix },
+  ];
 }
 
 async function callAnthropicDirect(apiKey, requestBody) {
