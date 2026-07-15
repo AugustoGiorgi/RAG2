@@ -60,13 +60,12 @@
   .hero::after{content:"";position:absolute;top:0;bottom:0;left:8.5%;width:1px;background:rgba(143,163,200,.3);pointer-events:none}
   .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:88px;padding-bottom:92px;position:relative}
   .eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);margin-bottom:18px}
-  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(2.1rem,4.6vw,3.4rem);line-height:1.12;text-wrap:balance;margin-bottom:20px}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,3.8vw,3.4rem);line-height:1.12;text-wrap:balance;margin-bottom:20px}
   .hero h1 em{font-style:italic;color:#c3d4f2}
   .hero p.lede{font-size:1.12rem;color:#b9c2d4;max-width:33em;margin-bottom:34px}
   .hero .cta-row{display:flex;gap:14px;flex-wrap:wrap}
   .hero .btn-gold{background:var(--gold);color:var(--ink)}
   .hero .btn-line{color:#e9edf5;border:1px solid rgba(233,237,245,.35);background:transparent}
-  .hero .foot{margin-top:26px;font-family:var(--mono);font-size:.78rem;color:#7f8ba3}
 
   /* mock workpaper */
   .wp{background:#fff;color:var(--ink);border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;font-family:var(--mono);font-size:.8rem;transform:rotate(.4deg);transition:transform .25s ease,box-shadow .25s ease}
@@ -85,6 +84,9 @@
   .wp .link{color:var(--green)}
   .wp .stamp{position:absolute;right:26px;bottom:22px;font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;color:var(--green);border:2px solid var(--green);border-radius:4px;padding:5px 12px;transform:rotate(-6deg);background:rgba(255,255,255,.9)}
   .wp-holder{position:relative}
+  /* Second sheet peeking behind the mock — suggests the multi-tab workbook (K-1, P&L…) */
+  .wp-holder::before{content:"Schedule K-1 Allocation.xlsx";position:absolute;top:-14px;right:18px;background:#e9edf3;color:#5a6577;font-family:var(--mono);font-size:.68rem;padding:6px 14px 18px;border-radius:8px 8px 0 0;transform:rotate(-1.6deg);box-shadow:0 -2px 18px rgba(0,0,0,.25)}
+  a:focus-visible,button:focus-visible,.btn:focus-visible,.filter-chip:focus-visible{outline:2px solid #8fa3c8;outline-offset:2px;border-radius:6px}
   @media (prefers-reduced-motion:no-preference){
     .wp tr{opacity:0;animation:rise .5s ease forwards}
     .wp tr:nth-child(1){animation-delay:.1s}.wp tr:nth-child(2){animation-delay:.18s}.wp tr:nth-child(3){animation-delay:.26s}.wp tr:nth-child(4){animation-delay:.34s}.wp tr:nth-child(5){animation-delay:.42s}.wp tr:nth-child(6){animation-delay:.5s}.wp tr:nth-child(7){animation-delay:.58s}.wp tr:nth-child(8){animation-delay:.66s}
