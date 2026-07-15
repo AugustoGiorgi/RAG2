@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>RAG Tax AI — The AI workpaper platform for tax firms</title>
 <meta name="description" content="RAG Tax AI runs your return workflow — Preparation, Review, Deliverable — on AI that drafts and flags, while your professionals keep control of every number." />
+<link rel="icon" type="image/png" href="/assets/rag-r-logo.png" />
+<!-- Social sharing card (WhatsApp / LinkedIn / iMessage previews) -->
+<meta property="og:title" content="RAG Tax AI — AI workpapers. Human-controlled results." />
+<meta property="og:description" content="Excel workpapers with live formulas, senior-level return review, and client deliverables — built inside a tax firm, for tax firms." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://ragtax-ia.com/" />
+<meta property="og:image" content="https://ragtax-ia.com/assets/rag-r-logo.png" />
+<meta name="twitter:card" content="summary" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -24,6 +32,7 @@
   }
   *{margin:0;padding:0;box-sizing:border-box}
   html{scroll-behavior:smooth}
+  section[id]{scroll-margin-top:76px} /* anchors land below the sticky header */
   body{font-family:var(--sans);color:var(--ink);background:var(--paper);line-height:1.65;font-size:16.5px}
   .wrap{max-width:1120px;margin:0 auto;padding:0 28px}
   a{color:var(--navy)}
@@ -60,7 +69,8 @@
   .hero .foot{margin-top:26px;font-family:var(--mono);font-size:.78rem;color:#7f8ba3}
 
   /* mock workpaper */
-  .wp{background:#fff;color:var(--ink);border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;font-family:var(--mono);font-size:.8rem;transform:rotate(.4deg)}
+  .wp{background:#fff;color:var(--ink);border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;font-family:var(--mono);font-size:.8rem;transform:rotate(.4deg);transition:transform .25s ease,box-shadow .25s ease}
+  .wp:hover{transform:rotate(0deg) translateY(-4px);box-shadow:0 30px 70px rgba(0,0,0,.5)}
   .wp-bar{background:var(--navy);color:#fff;padding:9px 14px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center}
   .wp-bar .dots{letter-spacing:3px;color:#8fa3c8}
   .wp-formula{display:flex;gap:10px;align-items:center;border-bottom:1px solid #e8e6df;padding:8px 14px;background:#faf9f5;color:var(--slate)}
