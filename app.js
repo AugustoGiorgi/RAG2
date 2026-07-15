@@ -9467,6 +9467,13 @@ async function downloadReview(type) {
   lastReview.response.structured = normalizeReviewForExport(lastReview.response, metadata);
   const baseName = `${metadata.entityName || metadata.clientName || "tax-review"}-${metadata.taxYear || "year"}`.replace(/[^a-z0-9-]+/gi, "-");
   if (type === "word") {
+    // Never export an empty skeleton: if the review has no substance (e.g. the run was
+    // interrupted or errored), say so instead of producing a useless document.
+    const check = lastReview.response.structured;
+    if (!check || !hasSeniorReviewSubstance(check)) {
+      alert("The review did not complete successfully, so there is nothing to export yet. Re-run the review and download again once it finishes.");
+      return;
+    }
     // Styled document straight from the structured review (headings, priority-shaded
     // issues, real tables). Falls back to the plain-text build if anything goes wrong.
     const structured = lastReview.response.structured;
