@@ -93,6 +93,12 @@
     @keyframes stamp{from{opacity:0;transform:rotate(-6deg) scale(1.4)}to{opacity:1;transform:rotate(-6deg) scale(1)}}
   }
 
+  /* ---------- proof strip ---------- */
+  .proof{background:#fff;border-bottom:1px solid var(--rule)}
+  .proof .wrap{display:flex;flex-wrap:wrap;justify-content:center;gap:10px 26px;padding-top:16px;padding-bottom:16px}
+  .proof span{font-family:var(--mono);font-size:.74rem;letter-spacing:.05em;color:var(--slate);white-space:nowrap}
+  .proof span::before{content:"✓ ";color:var(--green);font-weight:700}
+
   /* ---------- sections ---------- */
   section{padding:78px 0}
   .kicker{font-family:var(--mono);font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);margin-bottom:10px}
@@ -176,13 +182,12 @@
   <div class="wrap hero-grid">
     <div>
       <div class="eyebrow">AI workpaper platform · built inside a tax firm</div>
-      <h1>The return gets done.<br/>Your firm stays <em>in control</em>.</h1>
-      <p class="lede">RAG Tax AI drafts the workpaper, second-reviews the return, and assembles the client deliverable — with every number traceable, every total a live formula, and every judgment call flagged for a professional.</p>
+      <h1>AI does the workpaper.<br/><em>You sign the return.</em></h1>
+      <p class="lede">Excel workpapers with live formulas, senior-level return review, and client-ready deliverables — with every judgment call flagged for your professionals.</p>
       <div class="cta-row">
         <a class="btn btn-gold" href="/request-access">Request access</a>
         <a class="btn btn-line" href="#workflow">See the workflow</a>
       </div>
-      <div class="foot">1040 · 1065 · 1120-S · 1120 &nbsp;—&nbsp; QuickBooks Online · Xero · ProConnect · Drake · CCH</div>
     </div>
     <div class="wp-holder">
       <div class="wp" aria-hidden="true">
@@ -200,6 +205,17 @@
         <div class="stamp">TIES ✓ M-1</div>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="proof" aria-label="Product facts">
+  <div class="wrap">
+    <span>Live formulas in every total</span>
+    <span>Reads scanned PDFs</span>
+    <span>1040 · 1065 · 1120-S · 1120</span>
+    <span>Per-partner K-1 allocation</span>
+    <span>QuickBooks Online · Xero</span>
+    <span>ProConnect · Drake · CCH guides</span>
   </div>
 </div>
 
