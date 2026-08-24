@@ -8337,3 +8337,72 @@ details.issue-body[open] > summary::before { content: "▾ "; }
 .cell-chip.bad { background: #fdecea; color: #b3261e; }
 .cell-chip.warn { background: #fff6e6; color: #8a5a00; }
 .review-memo-details > summary { cursor: pointer; font-weight: 700; color: var(--navy, #1f3864); padding: 4px 0; }
+
+/* ============================================================================
+   NAVY / WHITE TREATMENT — matches the public site (ragtax-ia.com).
+   APPENDED ON PURPOSE: this block only overrides colours (background, color,
+   border-color). It changes no layout, no sizing, no display, and no
+   behaviour — deleting this block restores the previous look exactly.
+   ========================================================================= */
+
+/* Canvas takes a blue tint so the white panels read as cards instead of
+   blending into an all-white page. */
+body {
+  background: #eef2f8;
+}
+
+/* Top bar becomes the navy band. */
+.topbar {
+  background: #0d1a2f;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.topbar h1 {
+  color: #ffffff;
+}
+.topbar .brand-slogan {
+  color: #a7b6cd;
+}
+
+/* Controls inside the navy band read as part of it rather than as white
+   stickers, while keeping every state distinguishable. */
+.topbar .topbar-button {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #eaf0f9;
+}
+.topbar .topbar-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.44);
+}
+.topbar .drive-header-status {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #eaf0f9;
+}
+/* Connected/hover state stays visually distinct (light chip on the navy). */
+.topbar .drive-header-status:hover,
+.topbar .drive-header-status.success {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+/* Sidebar: navy section labels and a solid navy active state. */
+.workspace-nav-card > strong {
+  color: #1f3864;
+}
+.mode-button.active {
+  background: #1f3864;
+  border-color: #1f3864;
+  color: #ffffff;
+}
+.mode-button:hover:not(.active) {
+  border-color: #b9cbf1;
+  color: #1f3864;
+}
+
+/* Panel titles pick up the brand navy. */
+.panel-heading h2,
+.run-panel h2 {
+  color: #1f3864;
+}
