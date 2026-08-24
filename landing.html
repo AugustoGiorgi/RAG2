@@ -3,10 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RAG Tax AI — The AI workpaper platform for tax firms</title>
-<meta name="description" content="RAG Tax AI runs your return workflow — Preparation, Review, Deliverable — on AI that drafts and flags, while your professionals keep control of every number." />
+<title>RAG Tax AI — AI workpapers. Human-controlled results.</title>
+<meta name="description" content="Excel workpapers with live formulas, senior-level return review, and client-ready deliverables — built inside a working tax practice, for tax firms." />
 <link rel="icon" type="image/png" href="/assets/rag-r-logo.png" />
-<!-- Social sharing card (WhatsApp / LinkedIn / iMessage previews) -->
 <meta property="og:title" content="RAG Tax AI — AI workpapers. Human-controlled results." />
 <meta property="og:description" content="Excel workpapers with live formulas, senior-level return review, and client deliverables — built inside a tax firm, for tax firms." />
 <meta property="og:type" content="website" />
@@ -15,338 +14,409 @@
 <meta name="twitter:card" content="summary" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --ink:#131f38;        /* deep ink navy — hero ground */
-    --paper:#fbfaf7;      /* warm paper — page ground */
-    --navy:#1f3864;       /* brand navy — headings, primary elements */
-    --green:#2e6e4e;      /* ledger green — ticks, live cells (semantic only) */
-    --gold:#e8c56a;       /* action gold — CTA buttons ONLY */
-    --slate:#5a6577;      /* muted text */
-    --steel:#8fa3c8;      /* soft steel blue — annotations on dark */
-    --rule:#e3e7ee;       /* cool grey rule lines */
-    --serif:"Fraunces",Georgia,serif;
-    --sans:"IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
-    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+    --ink:#0f1b30;          /* deep navy — display type */
+    --navy:#1f3864;         /* brand navy */
+    --blue:#2f62d4;         /* interactive / formula blue */
+    --blue-soft:#eaf0fc;
+    --paper:#fcfcfd;        /* page ground */
+    --paper-2:#f3f5f9;      /* alternating band */
+    --grey:#5d6a80;         /* body text */
+    --grey-2:#8e99ab;       /* captions */
+    --rule:#e2e6ee;
+    --rule-faint:rgba(31,56,100,.055);
+    --gold:#eec25a;         /* ACTION BUTTONS ONLY */
+    --green:#2e6e4e;        /* semantic: ties / checks only */
+    --red:#b3261e;          /* semantic: negatives only */
+    --sans:"Archivo",-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+    --ease:cubic-bezier(.22,.61,.36,1);
   }
   *{margin:0;padding:0;box-sizing:border-box}
-  html{scroll-behavior:smooth}
-  section[id]{scroll-margin-top:76px} /* anchors land below the sticky header */
-  body{font-family:var(--sans);color:var(--ink);background:var(--paper);line-height:1.65;font-size:16.5px}
-  .wrap{max-width:1120px;margin:0 auto;padding:0 28px}
-  a{color:var(--navy)}
-  ::selection{background:#dbe4f5}
+  html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+  body{font-family:var(--sans);background:var(--paper);color:var(--ink);line-height:1.62;font-size:16px;overflow-x:hidden}
+  ::selection{background:#d8e2f8}
+  a{color:inherit}
+  :focus-visible{outline:2px solid var(--blue);outline-offset:3px;border-radius:3px}
 
-  /* ---------- header ---------- */
-  header{position:sticky;top:0;z-index:20;background:rgba(251,250,247,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--rule)}
-  .nav{display:flex;align-items:center;justify-content:space-between;padding-top:14px;padding-bottom:14px}
-  .brand{display:flex;align-items:center;gap:11px;text-decoration:none}
-  .brand img{height:34px;width:34px;border-radius:7px}
-  .brand b{font-family:var(--serif);font-size:1.22rem;font-weight:600;color:var(--navy);letter-spacing:.01em}
-  .navlinks{display:flex;gap:26px;align-items:center}
-  .navlinks a.plain{color:var(--slate);text-decoration:none;font-size:.92rem}
-  .navlinks a.plain:hover{color:var(--navy)}
-  .btn{display:inline-block;padding:11px 24px;border-radius:6px;font-weight:600;text-decoration:none;font-size:.95rem;transition:transform .12s ease,box-shadow .12s ease}
-  .btn:hover{transform:translateY(-1px)}
-  .btn-navy{background:var(--navy);color:#fff;box-shadow:0 1px 0 rgba(19,31,56,.25)}
-  .btn-paper{background:#fff;color:var(--navy);border:1px solid var(--rule)}
+  /* --- spreadsheet column rules running the full page --- */
+  .rules{position:fixed;inset:0;z-index:0;pointer-events:none;display:flex;justify-content:center}
+  .rules div{width:min(1180px,calc(100% - 44px));display:grid;grid-template-columns:repeat(6,1fr)}
+  .rules span{border-left:1px solid var(--rule-faint)}
+  .rules span:first-child{border-left:0}
 
-  /* ---------- hero ---------- */
-  .hero{background:var(--ink);color:#f4f2ec;position:relative;overflow:hidden}
-  .hero::before{content:"";position:absolute;inset:0;background:
-    repeating-linear-gradient(to bottom,transparent 0 27px,rgba(255,255,255,.045) 27px 28px);
-    pointer-events:none}
-  .hero::after{content:"";position:absolute;top:0;bottom:0;left:8.5%;width:1px;background:rgba(143,163,200,.3);pointer-events:none}
-  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding-top:88px;padding-bottom:92px;position:relative}
-  .eyebrow{font-family:var(--mono);font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--steel);margin-bottom:18px}
-  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(2rem,3.4vw,2.95rem);line-height:1.14;text-wrap:balance;margin-bottom:20px}
-  .hero h1 em{font-style:italic;color:#c3d4f2}
-  .hero p.lede{font-size:1.12rem;color:#b9c2d4;max-width:33em;margin-bottom:34px}
-  .hero .cta-row{display:flex;gap:14px;flex-wrap:wrap}
-  .hero .btn-gold{background:var(--gold);color:var(--ink)}
-  .hero .btn-line{color:#e9edf5;border:1px solid rgba(233,237,245,.35);background:transparent}
+  .shell{position:relative;z-index:1}
+  .wrap{width:min(1180px,calc(100% - 44px));margin-inline:auto}
 
-  /* mock workpaper */
-  .wp{background:#fff;color:var(--ink);border-radius:10px;box-shadow:0 24px 60px rgba(0,0,0,.45);overflow:hidden;font-family:var(--mono);font-size:.8rem;transform:rotate(.4deg);transition:transform .25s ease,box-shadow .25s ease}
-  .wp:hover{transform:rotate(0deg) translateY(-4px);box-shadow:0 30px 70px rgba(0,0,0,.5)}
-  .wp-bar{background:var(--navy);color:#fff;padding:9px 14px;font-size:.75rem;display:flex;justify-content:space-between;align-items:center}
-  .wp-bar .dots{letter-spacing:3px;color:#8fa3c8}
-  .wp-formula{display:flex;gap:10px;align-items:center;border-bottom:1px solid #e8e6df;padding:8px 14px;background:#faf9f5;color:var(--slate)}
-  .wp-formula .fx{font-style:italic;color:var(--green);font-weight:500}
-  .wp-formula code{color:var(--ink)}
-  .wp table{width:100%;border-collapse:collapse}
-  .wp td{padding:7.5px 14px;border-bottom:1px solid #f0eee7;font-variant-numeric:tabular-nums}
-  .wp td:last-child{text-align:right}
-  .wp tr.sec td{color:var(--slate);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;padding-top:12px}
-  .wp tr.tot td{border-top:1.5px solid var(--ink);border-bottom:3px double var(--ink);font-weight:500;background:#f6f9f6}
-  .wp .neg{color:#9c3a2e}
-  .wp .link{color:var(--green)}
-  .wp .stamp{position:absolute;right:26px;bottom:22px;font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;color:var(--green);border:2px solid var(--green);border-radius:4px;padding:5px 12px;transform:rotate(-6deg);background:rgba(255,255,255,.9)}
-  .wp-holder{position:relative}
-  /* Excel-style sheet tabs peeking under the card — where real workbook tabs live. */
-  .wp-holder::after{content:"Book to Tax (M-1)   ·   Schedule K-1 Allocation   ·   Profit and Loss";position:absolute;bottom:-21px;left:34px;background:#e9edf3;color:#5a6577;font-family:var(--mono);font-size:.66rem;letter-spacing:.02em;padding:16px 18px 6px;border-radius:0 0 8px 8px;transform:rotate(.4deg);box-shadow:0 10px 24px rgba(0,0,0,.3);z-index:-1}
-  .wp-holder{z-index:0}
-  a:focus-visible,button:focus-visible,.btn:focus-visible,.filter-chip:focus-visible{outline:2px solid #8fa3c8;outline-offset:2px;border-radius:6px}
-  @media (prefers-reduced-motion:no-preference){
-    .wp tr{opacity:0;animation:rise .5s ease forwards}
-    .wp tr:nth-child(1){animation-delay:.1s}.wp tr:nth-child(2){animation-delay:.18s}.wp tr:nth-child(3){animation-delay:.26s}.wp tr:nth-child(4){animation-delay:.34s}.wp tr:nth-child(5){animation-delay:.42s}.wp tr:nth-child(6){animation-delay:.5s}.wp tr:nth-child(7){animation-delay:.58s}.wp tr:nth-child(8){animation-delay:.66s}
-    .wp .stamp{opacity:0;animation:stamp .35s ease .95s forwards}
-    @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-    @keyframes stamp{from{opacity:0;transform:rotate(-6deg) scale(1.4)}to{opacity:1;transform:rotate(-6deg) scale(1)}}
+  /* --- header --- */
+  .top{position:sticky;top:0;z-index:30;background:rgba(252,252,253,.86);backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid var(--rule)}
+  .top .wrap{display:flex;align-items:center;gap:22px;height:66px}
+  .mark{display:flex;align-items:center;gap:10px;text-decoration:none;margin-right:auto}
+  .mark img{width:30px;height:30px;border-radius:6px}
+  .mark b{font-weight:700;letter-spacing:-.02em;font-size:1.05rem}
+  .navlink{font-family:var(--mono);font-size:.74rem;letter-spacing:.02em;color:var(--grey);text-decoration:none;padding:6px 2px;position:relative}
+  .navlink::after{content:"";position:absolute;left:0;right:100%;bottom:2px;height:1px;background:var(--ink);transition:right .28s var(--ease)}
+  .navlink:hover::after{right:0}
+  .btn{display:inline-flex;align-items:center;justify-content:center;font-family:var(--sans);font-weight:600;font-size:.86rem;text-decoration:none;border-radius:5px;padding:9px 18px;border:1px solid transparent;white-space:nowrap;transition:transform .16s var(--ease),box-shadow .16s var(--ease),background .16s}
+  .btn-gold{background:var(--gold);color:#241d05;box-shadow:0 1px 0 rgba(94,72,8,.28)}
+  .btn-gold:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(190,150,40,.34)}
+  .btn-line{border-color:var(--rule);background:#fff;color:var(--ink)}
+  .btn-line:hover{border-color:var(--ink);transform:translateY(-1px)}
+  .btn-lg{padding:13px 26px;font-size:.95rem}
+
+  /* --- hero --- */
+  .hero{padding:76px 0 60px}
+  .hero .wrap{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:56px;align-items:center}
+  .eyebrow{font-family:var(--mono);font-size:.71rem;letter-spacing:.13em;text-transform:uppercase;color:var(--grey-2);display:flex;align-items:center;gap:10px;margin-bottom:22px}
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--blue);flex:none}
+  h1{font-size:clamp(1.95rem,3.5vw,2.95rem);line-height:1.06;letter-spacing:-.035em;font-weight:800;text-wrap:balance}
+  h1 .line{display:block;overflow:hidden}
+  h1 .line > span{display:block}
+  h1 .dim{color:var(--navy);opacity:.44}
+  .lede{margin:22px 0 30px;font-size:1.08rem;color:var(--grey);max-width:31em}
+  .actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  .hint{font-family:var(--mono);font-size:.71rem;color:var(--grey-2);margin-top:26px;display:flex;align-items:center;gap:8px}
+  .hint em{font-style:normal;color:var(--blue);border-bottom:1px dashed var(--blue)}
+
+  /* --- interactive workbook --- */
+  .book{border:1px solid #dfe4ee;border-radius:9px;background:#fff;box-shadow:0 1px 2px rgba(15,27,48,.05),0 18px 44px -22px rgba(15,27,48,.4);font-family:var(--mono);font-size:.79rem;overflow:hidden}
+  .book-bar{display:flex;align-items:center;gap:8px;background:var(--navy);color:#fff;padding:9px 13px;font-size:.72rem}
+  .book-bar .dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.32);flex:none}
+  .book-bar .name{margin-left:6px;opacity:.95;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fxbar{display:flex;align-items:center;gap:10px;padding:8px 13px;border-bottom:1px solid var(--rule);background:#f8fafc;color:var(--grey);font-size:.72rem}
+  .fxbar .fx{font-style:italic;color:var(--blue);font-weight:500;flex:none}
+  .fxbar code{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rowline{display:flex;align-items:center;gap:12px;padding:8.5px 13px;border-bottom:1px solid #f1f3f7}
+  .rowline .lbl{flex:1;color:#33415c}
+  .rowline .val{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .rowline.section{background:#fbfcfe;color:var(--grey-2);font-size:.68rem;letter-spacing:.08em;text-transform:uppercase}
+  .rowline.total{background:#f4f8f5;border-top:1.5px solid var(--ink);border-bottom:2.5px double var(--ink);font-weight:700}
+  .neg{color:var(--red)}
+  .tick{color:var(--green);font-weight:700}
+  .cellin{font-family:var(--mono);font-size:.79rem;font-weight:500;color:var(--blue);background:var(--blue-soft);border:1px solid #b9cbf1;border-radius:3px;padding:3px 7px;width:106px;text-align:right;font-variant-numeric:tabular-nums;transition:border-color .16s,box-shadow .16s}
+  .cellin.pct{width:56px}
+  .cellin:hover{border-color:var(--blue)}
+  .cellin:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(47,98,212,.16)}
+  .k1head{display:flex;gap:12px;padding:8.5px 13px;border-bottom:1px solid #f1f3f7;background:#fbfcfe;color:var(--grey-2);font-size:.68rem;letter-spacing:.06em;text-transform:uppercase}
+  .k1head .lbl{flex:1}
+  .k1head .col{width:106px;text-align:right}
+  .k1row{display:flex;gap:12px;padding:8.5px 13px;border-bottom:1px solid #f1f3f7}
+  .k1row .lbl{flex:1;color:#33415c}
+  .k1row .col{width:106px;text-align:right;font-variant-numeric:tabular-nums}
+  .tabs{display:flex;gap:2px;padding:7px 10px 8px;background:#eef1f6;border-top:1px solid var(--rule)}
+  .tabs span{font-size:.68rem;color:var(--grey);padding:4px 10px;border-radius:3px 3px 0 0}
+  .tabs span.on{background:#fff;color:var(--ink);font-weight:500;box-shadow:0 -1px 0 var(--rule) inset}
+  @keyframes flash{0%{background:#fff8e0}100%{background:transparent}}
+  .flash{animation:flash .75s var(--ease)}
+  .rowline.total.flash{animation:flashT .75s var(--ease)}
+  @keyframes flashT{0%{background:#fdf4d8}100%{background:#f4f8f5}}
+
+  /* --- ticker of product facts --- */
+  .facts{border-block:1px solid var(--rule);background:#fff}
+  .facts .wrap{display:flex;flex-wrap:wrap;gap:0 0;padding:0}
+  .facts b{font-family:var(--mono);font-weight:400;font-size:.715rem;letter-spacing:.02em;color:var(--grey);padding:15px 22px;border-left:1px solid var(--rule);flex:1 1 auto;text-align:center;white-space:nowrap}
+  .facts b:first-child{border-left:0}
+
+  /* --- generic section --- */
+  .sec{padding:86px 0}
+  .sec.alt{background:var(--paper-2);border-block:1px solid var(--rule)}
+  .kicker{font-family:var(--mono);font-size:.71rem;letter-spacing:.13em;text-transform:uppercase;color:var(--blue);margin-bottom:14px}
+  h2{font-size:clamp(1.7rem,2.9vw,2.35rem);line-height:1.14;letter-spacing:-.028em;font-weight:700;text-wrap:balance;max-width:17em}
+  .sub{margin-top:14px;color:var(--grey);max-width:40em;font-size:1.02rem}
+  .sec-head{margin-bottom:52px}
+
+  /* --- workflow --- */
+  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:34px}
+  .stn{position:relative;padding-top:26px;border-top:2px solid var(--ink)}
+  .stn .idx{font-family:var(--mono);font-size:.72rem;color:var(--grey-2);letter-spacing:.1em;position:absolute;top:-2px;left:0;transform:translateY(-140%)}
+  .stn .art{margin-bottom:18px}
+  .stn h3{font-size:1.3rem;letter-spacing:-.02em;font-weight:700;margin-bottom:5px}
+  .stn .role{font-family:var(--mono);font-size:.71rem;color:var(--blue);letter-spacing:.03em;margin-bottom:14px}
+  .stn p{color:var(--grey);font-size:.95rem;margin-bottom:14px}
+  .stn ul{list-style:none;display:grid;gap:9px}
+  .stn li{font-size:.9rem;padding-left:20px;position:relative;color:#33415c}
+  .stn li::before{content:"";position:absolute;left:0;top:.62em;width:9px;height:1px;background:var(--blue)}
+
+  /* --- tools --- */
+  .tool-lead{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:26px}
+  .tool{background:#fff;border:1px solid var(--rule);border-radius:7px;padding:24px;transition:transform .2s var(--ease),box-shadow .2s var(--ease),border-color .2s}
+  .tool:hover{transform:translateY(-3px);box-shadow:0 14px 30px -18px rgba(15,27,48,.5);border-color:#cfd7e6}
+  .tool .cat{font-family:var(--mono);font-size:.67rem;letter-spacing:.1em;text-transform:uppercase;color:var(--grey-2);display:block;margin-bottom:9px}
+  .tool h4{font-size:1.06rem;font-weight:700;letter-spacing:-.015em;margin-bottom:7px}
+  .tool p{font-size:.9rem;color:var(--grey)}
+  .tool-rest{display:grid;grid-template-columns:1fr 1fr;gap:0 40px;list-style:none}
+  .tool-rest li{display:flex;gap:14px;padding:13px 0;border-top:1px solid var(--rule);font-size:.92rem;color:var(--grey)}
+  .tool-rest strong{font-weight:600;color:var(--ink);flex:none;min-width:11.5em}
+
+  /* --- trust, as a reconciliation table --- */
+  .tt{width:100%;border-collapse:collapse}
+  .tt th{text-align:left;font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--grey-2);font-weight:400;padding:0 0 12px;border-bottom:1px solid var(--rule)}
+  .tt td{padding:20px 24px 20px 0;border-bottom:1px solid var(--rule);vertical-align:top;font-size:.95rem;color:var(--grey)}
+  .tt td:first-child{font-weight:700;color:var(--ink);width:min(30%,260px);font-size:1rem;letter-spacing:-.01em}
+  .tt td:last-child{padding-right:0;width:56px;text-align:right}
+  .tt tr:hover td{background:rgba(47,98,212,.028)}
+
+  /* --- closing --- */
+  .close{background:var(--ink);color:#eef1f7;position:relative;overflow:hidden}
+  .close::before{content:"";position:absolute;inset:0;background-image:linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);background-size:calc(100% / 6) 100%;pointer-events:none}
+  .close .wrap{position:relative;padding:78px 0}
+  .origin{font-size:1.16rem;line-height:1.62;max-width:30em;color:#c3cddd;margin-bottom:40px}
+  .origin b{color:#fff;font-weight:600}
+  .close h2{color:#fff;max-width:14em}
+  .close .sub{color:#a9b6ca}
+  .close-cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px}
+  .close .btn-line{background:transparent;border-color:rgba(255,255,255,.3);color:#fff}
+  .close .btn-line:hover{border-color:#fff;background:rgba(255,255,255,.06)}
+
+  footer{background:var(--ink);border-top:1px solid rgba(255,255,255,.1);color:#8695ad;font-size:.82rem}
+  footer .wrap{display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:26px 0}
+  footer .fine{font-family:var(--mono);font-size:.7rem}
+
+  /* --- reveal animation ---
+     Content is VISIBLE by default. Only once the reveal script is confirmed running does
+     it get hidden (html.js-reveal), so a script failure can never leave a blank page. */
+  .rv{opacity:1;transform:none}
+  .js-reveal .rv{opacity:0;transform:translateY(14px)}
+  .js-reveal .rv.in{opacity:1;transform:none;transition:opacity .62s var(--ease),transform .62s var(--ease)}
+  @keyframes heroLine{from{transform:translateY(105%)}to{transform:translateY(0)}}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+  .anim h1 .line > span{animation:heroLine .78s var(--ease) both}
+  .anim h1 .line:nth-child(2) > span{animation-delay:.09s}
+  .anim .lede{animation:fadeUp .7s var(--ease) .26s both}
+  .anim .actions{animation:fadeUp .7s var(--ease) .36s both}
+  .anim .hint{animation:fadeUp .7s var(--ease) .46s both}
+  .anim .eyebrow{animation:fadeUp .6s var(--ease) both}
+  .anim .book{animation:fadeUp .8s var(--ease) .2s both}
+
+  @media (max-width:940px){
+    .hero .wrap{grid-template-columns:1fr;gap:44px;padding-top:6px}
+    .flow,.tool-lead{grid-template-columns:1fr;gap:30px}
+    .tool-rest{grid-template-columns:1fr}
+    .navlink{display:none}
+    .facts b{flex:1 1 44%;border-left:0;border-top:1px solid var(--rule);text-align:left}
+    .sec{padding:62px 0}
+    .rules{display:none}
   }
-
-  /* ---------- proof strip ---------- */
-  .proof{background:#fff;border-bottom:1px solid var(--rule)}
-  .proof .wrap{display:flex;flex-wrap:wrap;justify-content:center;gap:10px 26px;padding-top:16px;padding-bottom:16px}
-  .proof span{font-family:var(--mono);font-size:.74rem;letter-spacing:.05em;color:var(--slate);white-space:nowrap}
-  .proof span::before{content:"✓ ";color:var(--green);font-weight:700}
-
-  /* ---------- sections ---------- */
-  section{padding:78px 0}
-  .kicker{font-family:var(--mono);font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);margin-bottom:10px}
-  h2{font-family:var(--serif);font-weight:600;font-size:clamp(1.6rem,3vw,2.2rem);color:var(--navy);text-wrap:balance;margin-bottom:12px}
-  .sub{color:var(--slate);max-width:44em;margin-bottom:46px}
-
-  /* workflow rail */
-  .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:0;position:relative}
-  .flow::before{content:"";position:absolute;top:36px;left:8%;right:8%;height:1px;background:var(--rule)}
-  .step{padding:0 26px;position:relative}
-  .step + .step{border-left:1px dashed var(--rule)}
-  .step .art{height:72px;display:flex;align-items:center;margin-bottom:16px;position:relative;z-index:1}
-  .step .art svg{background:var(--paper);padding-right:14px}
-  .step h3{font-family:var(--serif);font-size:1.28rem;font-weight:600;color:var(--navy);margin-bottom:4px}
-  .step .tag{font-family:var(--mono);font-size:.74rem;color:var(--slate);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px}
-  .step p{color:var(--slate);font-size:.95rem;margin-bottom:10px}
-  .step ul{list-style:none;margin-top:6px}
-  .step li{font-size:.9rem;padding:5px 0 5px 22px;position:relative;color:var(--ink)}
-  .step li::before{content:"✓";position:absolute;left:0;color:var(--green);font-weight:600}
-
-  /* tools */
-  .tools{background:#fff;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
-  .tools-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-  .tool{border:1px solid var(--rule);border-radius:8px;padding:18px 20px;background:var(--paper);transition:transform .14s ease,box-shadow .14s ease}
-  .tool:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(19,31,56,.08)}
-  .tool b{display:block;font-family:var(--serif);font-weight:600;color:var(--navy);font-size:1.02rem;margin-bottom:3px}
-  .tool span{font-size:.87rem;color:var(--slate)}
-  .tool .m{font-family:var(--mono);font-size:.68rem;color:var(--slate);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px}
-  .tools-rest{list-style:none;margin-top:22px;display:grid;grid-template-columns:1fr 1fr;gap:8px 34px}
-  .tools-rest li{font-size:.9rem;color:var(--slate);padding:7px 0;border-bottom:1px solid var(--rule)}
-  .tools-rest b{color:var(--navy);font-weight:600}
-  .origin-note{text-align:center;font-family:var(--serif);font-style:italic;font-size:1.08rem;color:var(--slate);max-width:44em;margin:0 auto 46px;padding:0 24px}
-  @media (max-width:560px){ .tools-rest{grid-template-columns:1fr} }
-
-  /* trust */
-  .trust-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:30px}
-  .trust-item{border-top:2px solid var(--navy);padding-top:16px}
-  .trust-item b{display:block;font-family:var(--serif);font-weight:600;color:var(--navy);margin-bottom:6px;font-size:1.02rem}
-  .trust-item p{font-size:.88rem;color:var(--slate)}
-
-  /* cta */
-  .cta{background:var(--ink);color:#f4f2ec;border-radius:14px;padding:58px 46px;display:flex;align-items:center;justify-content:space-between;gap:36px;margin-bottom:78px;position:relative;overflow:hidden}
-  .cta::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(to bottom,transparent 0 27px,rgba(255,255,255,.045) 27px 28px)}
-  .cta h2{color:#fff;margin-bottom:8px}
-  .cta p{color:#b9c2d4;max-width:34em}
-  .cta .btn-gold{background:var(--gold);color:var(--ink);white-space:nowrap;position:relative}
-
-  footer{border-top:1px solid var(--rule);padding:30px 0;background:#fff}
-  footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;color:var(--slate);font-size:.84rem}
-  footer .fine{font-family:var(--mono);font-size:.72rem}
-
-  @media (max-width:880px){
-    .hero-grid{grid-template-columns:1fr;padding-top:56px;padding-bottom:60px}
-    .flow{grid-template-columns:1fr;gap:34px}
-    .flow::before{display:none}
-    .step + .step{border-left:none;border-top:1px dashed var(--rule);padding-top:30px}
-    .tools-grid{grid-template-columns:1fr 1fr}
-    .trust-grid{grid-template-columns:1fr 1fr}
-    .cta{flex-direction:column;text-align:center}
+  @media (max-width:520px){
+    .top .wrap{gap:10px}
+    .btn{padding:8px 13px;font-size:.8rem}
+    .tt td:first-child{width:auto}
+    .tt td{display:block;border-bottom:0;padding:4px 0}
+    .tt tr{display:block;border-bottom:1px solid var(--rule);padding:16px 0}
+    .tt thead{display:none}
+    .tool-rest strong{min-width:0}
+    .tool-rest li{flex-direction:column;gap:2px}
   }
-  @media (max-width:560px){
-    .tools-grid,.trust-grid{grid-template-columns:1fr}
-    .navlinks a.plain{display:none}
-    .brand b{white-space:nowrap;font-size:1.05rem}
-    .navlinks{gap:8px}
-    .btn{padding:9px 14px;font-size:.86rem;white-space:nowrap}
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.001ms !important;animation-delay:0 !important;transition-duration:.001ms !important}
+    .rv{opacity:1;transform:none}
+    html{scroll-behavior:auto}
   }
 </style>
 </head>
 <body>
 
-<header>
-  <div class="wrap nav">
-    <a class="brand" href="/"><img src="/assets/rag-r-logo.png" alt="RAG Tax AI" /><b>RAG Tax AI</b></a>
-    <nav class="navlinks">
-      <a class="plain" href="#workflow">Return Workflow</a>
-      <a class="plain" href="#tools">Tax Tools</a>
-      <a class="plain" href="#trust">Why trust it</a>
-      <a class="btn btn-paper" href="/login">Sign in</a>
-      <a class="btn btn-navy" href="/request-access">Request access</a>
-    </nav>
+<div class="rules" aria-hidden="true"><div><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+
+<div class="shell">
+<header class="top">
+  <div class="wrap">
+    <a class="mark" href="/"><img src="/assets/rag-r-logo.png" alt="" /><b>RAG&nbsp;Tax&nbsp;AI</b></a>
+    <a class="navlink" href="#workflow">Return workflow</a>
+    <a class="navlink" href="#tools">Tax tools</a>
+    <a class="navlink" href="#trust">Why trust it</a>
+    <a class="btn btn-line" href="/login">Sign in</a>
+    <a class="btn btn-gold" href="/request-access">Request access</a>
   </div>
 </header>
 
-<div class="hero">
-  <div class="wrap hero-grid">
+<main>
+<section class="hero anim">
+  <div class="wrap">
     <div>
       <div class="eyebrow">AI workpaper platform · built inside a tax firm</div>
-      <h1>AI does the workpaper.<br/><em>You sign the return.</em></h1>
-      <p class="lede">Excel workpapers with live formulas, senior-level return review, and client-ready deliverables — with every judgment call flagged for your professionals.</p>
-      <div class="cta-row">
-        <a class="btn btn-gold" href="/request-access">Request access</a>
-        <a class="btn btn-line" href="#workflow">See the workflow</a>
+      <h1>
+        <span class="line"><span>AI does the workpaper.</span></span>
+        <span class="line"><span class="dim">You sign the return.</span></span>
+      </h1>
+      <p class="lede">Excel workpapers with live formulas, senior-level return review, and client-ready deliverables — every judgment call flagged for your professionals.</p>
+      <div class="actions">
+        <a class="btn btn-gold btn-lg" href="/request-access">Request access</a>
+        <a class="btn btn-line btn-lg" href="#workflow">See the workflow</a>
       </div>
+      <p class="hint">Try it → change a <em>blue cell</em>; the totals and the K-1 split recalculate.</p>
     </div>
-    <div class="wp-holder">
-      <div class="wp" aria-hidden="true">
-        <div class="wp-bar"><span>Oakline Supply LLC — Book to Tax (M-1).xlsx</span><span class="dots">● ● ●</span></div>
-        <div class="wp-formula"><span class="fx">fx</span><code>=IFERROR('Profit and Loss'!B84, 187450.20)</code></div>
-        <table>
-          <tr><td>Net income (loss) per books</td><td class="link">187,450.20</td></tr>
-          <tr class="sec"><td colspan="2">Schedule M-1 adjustments</td></tr>
-          <tr><td>Meals — 50% nondeductible</td><td>2,315.40</td></tr>
-          <tr><td>Credit card rewards (nontaxable)</td><td class="neg">(12,840.75)</td></tr>
-          <tr><td>Asset sale → Form 4797</td><td class="neg">(54,300.00)</td></tr>
-          <tr><td>Owner health premiums → W-2</td><td>⚑ flagged</td></tr>
-          <tr class="tot"><td>Ordinary business income (tax)</td><td>122,624.85</td></tr>
-        </table>
-        <div class="stamp">TIES ✓ M-1</div>
-      </div>
-    </div>
-  </div>
-</div>
 
-<div class="proof" aria-label="Product facts">
-  <div class="wrap">
-    <span>Live formulas in every total</span>
-    <span>Reads scanned PDFs</span>
-    <span>1040 · 1065 · 1120-S · 1120</span>
-    <span>Per-partner K-1 allocation</span>
-    <span>QuickBooks Online · Xero</span>
-    <span>ProConnect · Drake · CCH guides</span>
-  </div>
-</div>
+    <div class="book" id="book">
+      <div class="book-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">Oakline Supply LLC — Book to Tax (M-1).xlsx</span></div>
+      <div class="fxbar"><span class="fx">fx</span><code id="fx">=B6+SUM(B8:B10)</code></div>
 
-<section id="workflow">
-  <div class="wrap">
-    <div class="kicker">The Return Workflow</div>
-    <h2>Three stations. One return, start to finish.</h2>
-    <p class="sub">The core of RAG Tax AI mirrors how a real engagement moves through your firm — and the AI does the heavy lifting at each station.</p>
-    <div class="flow">
-      <div class="step">
-        <div class="art" aria-hidden="true">
-          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
-            <rect x="8" y="6" width="56" height="52" rx="4" stroke="#1f3864" stroke-width="2"/>
-            <rect x="8" y="6" width="56" height="12" rx="4" fill="#1f3864"/>
-            <text x="14" y="15.5" font-family="monospace" font-size="8" fill="#c3d4f2">fx</text>
-            <line x1="8" y1="31" x2="64" y2="31" stroke="#e3e7ee" stroke-width="1.5"/>
-            <line x1="8" y1="44" x2="64" y2="44" stroke="#e3e7ee" stroke-width="1.5"/>
-            <line x1="30" y1="18" x2="30" y2="58" stroke="#e3e7ee" stroke-width="1.5"/>
-            <rect x="32" y="46" width="30" height="10" fill="#e7f4ec"/>
-            <text x="36" y="54" font-family="monospace" font-size="7" fill="#2e6e4e">=SUM()</text>
-          </svg>
-        </div>
-        <div class="tag">01 · financials → workpaper</div>
-        <h3>Preparation</h3>
-        <p>Upload the P&amp;L, balance sheet, prior workpapers, W-2s, 1099s — even phone-scanned PDFs, which the AI reads visually.</p>
-        <ul>
-          <li>Book-to-tax reconciliation (Schedule M-1) with fixed, deterministic treatment rules</li>
-          <li>Every total a live Excel formula; edit one number and every tab recomputes</li>
-          <li>Data-entry guide for your tax software, field by field, with live tie-out checks</li>
-        </ul>
+      <div class="rowline">
+        <span class="lbl">Net income (loss) per books</span>
+        <label class="sr" for="ni" hidden>Net income per books</label>
+        <input class="cellin" id="ni" type="text" inputmode="decimal" value="187,450.20" aria-label="Net income per books, editable" />
       </div>
-      <div class="step">
-        <div class="art" aria-hidden="true">
-          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
-            <rect x="10" y="6" width="40" height="52" rx="3" stroke="#1f3864" stroke-width="2"/>
-            <line x1="16" y1="16" x2="44" y2="16" stroke="#8fa3c8" stroke-width="2"/>
-            <line x1="16" y1="24" x2="44" y2="24" stroke="#e3e7ee" stroke-width="2"/>
-            <line x1="16" y1="32" x2="36" y2="32" stroke="#e3e7ee" stroke-width="2"/>
-            <circle cx="46" cy="40" r="13" stroke="#1f3864" stroke-width="2.5" fill="#fbfaf7"/>
-            <line x1="55" y1="49" x2="64" y2="58" stroke="#1f3864" stroke-width="3" stroke-linecap="round"/>
-            <path d="M40 40 l4 4 l8 -8" stroke="#2e6e4e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <div class="tag">02 · return → second opinion</div>
-        <h3>Review</h3>
-        <p>Upload the completed return with its support and get the read a senior reviewer would give it.</p>
-        <ul>
-          <li>Tie-outs of return lines against source financials</li>
-          <li>Issues ranked by risk, with the authority behind each one</li>
-          <li>A clear filing-readiness verdict and open-question list</li>
-        </ul>
+      <div class="rowline section"><span class="lbl">Schedule M-1 adjustments</span></div>
+      <div class="rowline"><span class="lbl">Meals — 50% nondeductible</span><span class="val">2,315.40</span></div>
+      <div class="rowline"><span class="lbl">Credit card rewards (nontaxable)</span><span class="val neg">(12,840.75)</span></div>
+      <div class="rowline"><span class="lbl">Asset sale → Form 4797</span><span class="val neg">(54,300.00)</span></div>
+      <div class="rowline total" id="ordRow"><span class="lbl">Ordinary business income (tax)</span><span class="val" id="ord">122,624.85</span></div>
+
+      <div class="k1head"><span class="lbl">Schedule K-1 allocation</span><span class="col">Partner A</span><span class="col">Partner B</span></div>
+      <div class="k1row">
+        <span class="lbl">Ownership %</span>
+        <span class="col"><input class="cellin pct" id="pct" type="text" inputmode="decimal" value="60" aria-label="Partner A ownership percent, editable" /></span>
+        <span class="col" id="pctB">40</span>
       </div>
-      <div class="step">
-        <div class="art" aria-hidden="true">
-          <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" fill="none">
-            <rect x="12" y="6" width="40" height="52" rx="3" stroke="#1f3864" stroke-width="2"/>
-            <line x1="18" y1="16" x2="46" y2="16" stroke="#8fa3c8" stroke-width="2"/>
-            <line x1="18" y1="24" x2="46" y2="24" stroke="#e3e7ee" stroke-width="2"/>
-            <line x1="18" y1="32" x2="40" y2="32" stroke="#e3e7ee" stroke-width="2"/>
-            <circle cx="46" cy="44" r="10" fill="#1f3864"/>
-            <path d="M41 44 l3.5 3.5 l7 -7" stroke="#fbfaf7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M56 20 l10 6 l-10 6 z" fill="#2e6e4e"/>
-          </svg>
-        </div>
-        <div class="tag">03 · work → client-ready</div>
-        <h3>Deliverable</h3>
-        <p>Turn the reviewed engagement into something a client can actually read.</p>
-        <ul>
-          <li>Clean summaries of what was filed and why</li>
-          <li>Consistent, firm-branded document output</li>
-          <li>Ready to send — after your professional signs off</li>
-        </ul>
-      </div>
+      <div class="k1row"><span class="lbl">Ordinary income (K-1 line 1)</span><span class="col" id="a">73,574.91</span><span class="col" id="b">49,049.94</span></div>
+      <div class="k1row"><span class="lbl">Allocation check</span><span class="col tick" id="chk" style="flex:1;text-align:right">ties ✓</span></div>
+
+      <div class="tabs"><span class="on">Book to Tax (M-1)</span><span>Schedule K-1</span><span>Profit and Loss</span><span>AJE Worksheet</span></div>
     </div>
   </div>
 </section>
 
-<section class="tools" id="tools">
+<div class="facts">
   <div class="wrap">
-    <div class="kicker">Beyond the return</div>
-    <h2>A full toolbox for the rest of the practice.</h2>
-    <p class="sub">The Return Workflow is the spine. Around it, RAG Tax AI ships the tools a firm reaches for every week.</p>
-    <div class="tools-grid">
-      <div class="tool"><span class="m">Planning</span><b>Estimated Taxes</b><span>Quarterly safe-harbor estimates computed from current-year books and prior returns — with the payment schedule ready to send.</span></div>
-      <div class="tool"><span class="m">Planning</span><b>Tax Planning</b><span>Scenario projections on a deterministic tax engine — the math is code, not guesswork.</span></div>
-      <div class="tool"><span class="m">Compliance</span><b>Notices</b><span>Upload an IRS or state notice; get the analysis and a ready-to-edit response letter on firm letterhead.</span></div>
+    <b>Live formulas in every total</b>
+    <b>Reads scanned PDFs</b>
+    <b>1040 · 1065 · 1120-S · 1120</b>
+    <b>Per-partner K-1</b>
+    <b>QuickBooks · Xero</b>
+    <b>ProConnect · Drake · CCH</b>
+  </div>
+</div>
+
+<section class="sec" id="workflow">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker">The return workflow</div>
+      <h2>Three stations. One return, start to finish.</h2>
+      <p class="sub">The core of RAG Tax AI mirrors how an engagement already moves through your firm — and the AI carries the load at each station.</p>
     </div>
-    <ul class="tools-rest">
-      <li><b>Tax Tracker</b> — every engagement on one board with deadlines by entity type</li>
-      <li><b>Tax Research</b> — answers grounded in current federal and state guidance</li>
-      <li><b>Diagnostics</b> — e-file error analysis with a fix guide</li>
-      <li><b>Client Database</b> — clients, years and documents, isolated per firm</li>
-      <li><b>Client Presentations</b> — turn an engagement into a clean client deck</li>
-      <li><b>Misc Calculations</b> — one-off computations, documented in Excel</li>
+    <div class="flow">
+      <article class="stn rv">
+        <span class="idx">01</span>
+        <div class="art" aria-hidden="true">
+          <svg width="62" height="54" viewBox="0 0 62 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1" y="1" width="52" height="46" rx="3" stroke="#1f3864" stroke-width="1.6"/>
+            <rect x="1" y="1" width="52" height="10" rx="3" fill="#1f3864"/>
+            <path d="M1 22h52M1 33h52M22 11v36" stroke="#dbe1ec" stroke-width="1.4"/>
+            <rect x="23" y="34" width="30" height="12" fill="#eaf5ee"/>
+            <path d="M27 40.5l3 3 6-6" stroke="#2e6e4e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <h3>Preparation</h3>
+        <div class="role">financials → workpaper</div>
+        <p>Drop in the P&amp;L, balance sheet, prior workpapers, W-2s and 1099s — phone-scanned PDFs included; the AI reads them visually.</p>
+        <ul>
+          <li>Book-to-tax reconciliation built on fixed, deterministic treatment rules</li>
+          <li>Every total a live formula — edit one number, the whole workbook reflows</li>
+          <li>Data-entry guide for your tax software, field by field, with live tie-outs</li>
+        </ul>
+      </article>
+      <article class="stn rv">
+        <span class="idx">02</span>
+        <div class="art" aria-hidden="true">
+          <svg width="62" height="54" viewBox="0 0 62 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="1" width="36" height="46" rx="3" stroke="#1f3864" stroke-width="1.6"/>
+            <path d="M10 11h22M10 19h22M10 27h15" stroke="#dbe1ec" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="40" cy="34" r="12" fill="#fcfcfd" stroke="#1f3864" stroke-width="1.8"/>
+            <path d="M48.5 42.5L57 51" stroke="#1f3864" stroke-width="2.6" stroke-linecap="round"/>
+            <path d="M35 34l3.5 3.5 7-7" stroke="#2f62d4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <h3>Review</h3>
+        <div class="role">return → second opinion</div>
+        <p>Upload the finished return with its support and get the read a senior reviewer would give it before signature.</p>
+        <ul>
+          <li>Return lines tied out against the source financials</li>
+          <li>Findings ranked by risk, each with the authority behind it</li>
+          <li>A filing-readiness verdict and the open-question list</li>
+        </ul>
+      </article>
+      <article class="stn rv">
+        <span class="idx">03</span>
+        <div class="art" aria-hidden="true">
+          <svg width="62" height="54" viewBox="0 0 62 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="3" y="1" width="36" height="46" rx="3" stroke="#1f3864" stroke-width="1.6"/>
+            <path d="M10 11h22M10 19h22M10 27h15" stroke="#dbe1ec" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="39" cy="38" r="9.5" fill="#1f3864"/>
+            <path d="M34.6 38l3 3 6-6.4" stroke="#fcfcfd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M47 12l11 6-11 6z" fill="#2f62d4"/>
+          </svg>
+        </div>
+        <h3>Deliverable</h3>
+        <div class="role">work → client-ready</div>
+        <p>Turn the reviewed engagement into something a client can actually read and act on.</p>
+        <ul>
+          <li>Plain-language summaries of what was filed and why</li>
+          <li>Consistent, firm-branded document output</li>
+          <li>Ready to send — once your professional signs off</li>
+        </ul>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="sec alt" id="tools">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker">Beyond the return</div>
+      <h2>A full toolbox for the rest of the practice.</h2>
+      <p class="sub">The return workflow is the spine. Around it sit the tools a firm reaches for every week.</p>
+    </div>
+    <div class="tool-lead">
+      <div class="tool rv"><span class="cat">Planning</span><h4>Estimated Taxes</h4><p>Quarterly safe-harbor estimates computed from current-year books and prior returns, with the payment schedule ready to send.</p></div>
+      <div class="tool rv"><span class="cat">Planning</span><h4>Tax Planning</h4><p>Scenario projections on a deterministic tax engine — the math is code, not guesswork.</p></div>
+      <div class="tool rv"><span class="cat">Compliance</span><h4>Notices</h4><p>Upload an IRS or state notice; get the analysis plus a response letter drafted on firm letterhead.</p></div>
+    </div>
+    <ul class="tool-rest rv">
+      <li><strong>Tax Tracker</strong> every engagement on one board, with deadlines by entity type</li>
+      <li><strong>Tax Research</strong> answers grounded in current federal and state guidance</li>
+      <li><strong>Diagnostics</strong> e-file error analysis with a step-by-step fix guide</li>
+      <li><strong>Client Database</strong> clients, years and documents, isolated per firm</li>
+      <li><strong>Presentations</strong> turn an engagement into a clean client-meeting deck</li>
+      <li><strong>Misc Calculations</strong> the one-off computations, documented in Excel</li>
     </ul>
   </div>
 </section>
 
-<section id="trust">
+<section class="sec" id="trust">
   <div class="wrap">
-    <div class="kicker">Professional responsibility</div>
-    <h2>Designed around one line: your firm signs the return.</h2>
-    <p class="sub">AI drafts. Professionals decide. The software enforces that boundary instead of blurring it.</p>
-    <div class="trust-grid">
-      <div class="trust-item"><b>Flags, not guesses</b><p>Anything uncertain is marked NEEDS REVIEW or left blank with an explanation — never silently invented.</p></div>
-      <div class="trust-item"><b>Traceable numbers</b><p>Each amount links to its source line; tie-outs recompute live when your preparer edits the workpaper.</p></div>
-      <div class="trust-item"><b>Firm-level isolation</b><p>Your data is visible only to your firm's users. Hashed credentials, encrypted integration tokens, daily backups.</p></div>
-      <div class="trust-item"><b>Originals untouched</b><p>Client reports are carried into the workbook verbatim on their own tabs — the source is always beside the work.</p></div>
+    <div class="sec-head rv">
+      <div class="kicker">Professional responsibility</div>
+      <h2>Designed around one line: your firm signs the return.</h2>
+      <p class="sub">AI drafts. Professionals decide. The software enforces that boundary instead of blurring it.</p>
     </div>
+    <table class="tt rv">
+      <thead><tr><th>Control</th><th>How it works</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Flags, not guesses</td><td>Anything uncertain is marked for review or left blank with an explanation — never silently invented.</td><td class="tick">✓</td></tr>
+        <tr><td>Traceable numbers</td><td>Each amount links back to its source line, and tie-outs recompute the moment a preparer edits the workpaper.</td><td class="tick">✓</td></tr>
+        <tr><td>Firm-level isolation</td><td>Your data is visible only to your firm's users. Hashed credentials, encrypted integration tokens, daily backups.</td><td class="tick">✓</td></tr>
+        <tr><td>Originals untouched</td><td>Client reports are carried into the workbook verbatim on their own tabs — the source always sits beside the work.</td><td class="tick">✓</td></tr>
+      </tbody>
+    </table>
   </div>
 </section>
 
-<p class="origin-note">RAG Tax AI was built inside a working U.S. tax practice — every feature exists because a preparer needed it during a real season.</p>
-
-<div class="wrap">
-  <div class="cta">
-    <div>
+<section class="close">
+  <div class="wrap">
+    <p class="origin rv">RAG Tax AI was built inside a <b>working U.S. tax practice</b>. Every feature exists because a preparer needed it during a real season — not because it demoed well.</p>
+    <div class="rv">
       <h2>See it on your own returns.</h2>
-      <p>We onboard a small number of firms at a time so every pilot gets direct support. Bring one real engagement — we'll walk it through the workflow with you.</p>
+      <p class="sub">We onboard a small number of firms at a time so every pilot gets direct support. Bring one real engagement and we'll walk it through the workflow with you.</p>
+      <div class="close-cta">
+        <a class="btn btn-gold btn-lg" href="/request-access">Request access</a>
+        <a class="btn btn-line btn-lg" href="/login">Sign in</a>
+      </div>
     </div>
-    <a class="btn btn-gold" href="/request-access">Request access</a>
   </div>
-</div>
+</section>
+</main>
 
 <footer>
   <div class="wrap">
@@ -354,6 +424,122 @@
     <span class="fine">AI-assisted tax software — the reviewing professional remains responsible for all filed returns.</span>
   </div>
 </footer>
+</div>
 
+<script>
+(function () {
+  "use strict";
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---- scroll reveals ---- */
+  var items = Array.prototype.slice.call(document.querySelectorAll(".rv"));
+  function revealAll(dropHiding) {
+    items.forEach(function (el) { el.classList.add("in"); });
+    // Drop the hiding rule outright so visibility never depends on a transition running.
+    if (dropHiding) document.documentElement.classList.remove("js-reveal");
+  }
+
+  if (!("IntersectionObserver" in window) || reduce) {
+    revealAll();
+  } else {
+    // Hiding is applied only now, so any failure above leaves the page fully readable.
+    document.documentElement.classList.add("js-reveal");
+    var ioFired = false;
+    var io = new IntersectionObserver(function (entries) {
+      ioFired = true;
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        var siblings = Array.prototype.slice.call(entry.target.parentNode.querySelectorAll(".rv"));
+        var i = Math.max(0, siblings.indexOf(entry.target));
+        entry.target.style.transitionDelay = Math.min(i * 70, 280) + "ms";
+        entry.target.classList.add("in");
+        io.unobserve(entry.target);
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.12 });
+    items.forEach(function (el) { io.observe(el); });
+    // Safety net: if the observer never fires at all (blocked/occluded rendering), show
+    // everything rather than risk invisible content.
+    setTimeout(function () { if (!ioFired) revealAll(true); }, 2500);
+  }
+
+  /* ---- live workbook: the same behaviour the real workbook has ---- */
+  var MEALS = 2315.40, REWARDS = -12840.75, ASSET = -54300.00;
+  var ni = document.getElementById("ni");
+  var pct = document.getElementById("pct");
+  var ordCell = document.getElementById("ord");
+  var ordRow = document.getElementById("ordRow");
+  var aCell = document.getElementById("a");
+  var bCell = document.getElementById("b");
+  var pctB = document.getElementById("pctB");
+  var chk = document.getElementById("chk");
+  var fx = document.getElementById("fx");
+  if (!ni || !ordCell) return;
+
+  function money(n) {
+    return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function parseNum(v) {
+    var n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    return isFinite(n) ? n : 0;
+  }
+  function flash(el) {
+    if (reduce || !el) return;
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+  }
+
+  function recompute(withFlash) {
+    var base = parseNum(ni.value);
+    var ordinary = Math.round((base + MEALS + REWARDS + ASSET) * 100) / 100;
+    var p = Math.max(0, Math.min(100, parseNum(pct.value)));
+    var shareA = Math.round(ordinary * p) / 100;
+    var shareB = Math.round((ordinary * 100 - shareA * 100)) / 100;
+
+    ordCell.textContent = money(ordinary);
+    aCell.textContent = money(shareA);
+    bCell.textContent = money(shareB);
+    pctB.textContent = money(100 - p).replace(/\.00$/, "");
+    chk.textContent = Math.abs(shareA + shareB - ordinary) < 0.005 ? "ties ✓" : "check";
+    if (withFlash) { flash(ordRow); flash(aCell); flash(bCell); }
+  }
+
+  ni.addEventListener("input", function () { recompute(true); });
+  pct.addEventListener("input", function () { recompute(true); });
+  ni.addEventListener("blur", function () {
+    ni.value = money(parseNum(ni.value));
+    recompute(false);
+  });
+  pct.addEventListener("blur", function () {
+    pct.value = String(Math.max(0, Math.min(100, parseNum(pct.value))));
+    recompute(false);
+  });
+  ni.addEventListener("focus", function () { fx.textContent = "='Profit and Loss'!B84"; ni.select(); });
+  pct.addEventListener("focus", function () { fx.textContent = "='Schedule K-1'!D4"; pct.select(); });
+  ni.addEventListener("blur", function () { fx.textContent = "=B6+SUM(B8:B10)"; });
+  pct.addEventListener("blur", function () { fx.textContent = "=B6+SUM(B8:B10)"; });
+
+  /* ---- one-time recalculation on first view ---- */
+  if (!reduce) {
+    var target = 122624.85, started = false;
+    function runCount() {
+      if (started) return;
+      started = true;
+      var t0 = null, dur = 850;
+      function step(ts) {
+        if (t0 === null) t0 = ts;
+        var p = Math.min(1, (ts - t0) / dur);
+        var eased = 1 - Math.pow(1 - p, 3);
+        ordCell.textContent = money(target * eased);
+        aCell.textContent = money(target * 0.6 * eased);
+        bCell.textContent = money(target * 0.4 * eased);
+        if (p < 1) requestAnimationFrame(step); else recompute(false);
+      }
+      requestAnimationFrame(step);
+    }
+    setTimeout(runCount, 620);
+  }
+})();
+</script>
 </body>
 </html>
