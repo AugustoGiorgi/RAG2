@@ -82,3 +82,42 @@ test("enforceNumericVerdicts no muta el objeto original", () => {
   assert.strictEqual(result.review.tieOutResults[0].status, "OUT_OF_BALANCE");
   assert.strictEqual(result.corrections, 1);
 });
+
+test("checklist obligatoria: 1040 y entidades, y las lineas que faltan se agregan como no verificadas", () => {
+  const { requiredTieOutsFor, ensureRequiredTieOutRows, tieOutChecklistPromptLines } = require("../lib/tie-out");
+  assert.ok(requiredTieOutsFor("1040").length >= 12);
+  assert.ok(requiredTieOutsFor("1120-S").length >= 8);
+  assert.strictEqual(requiredTieOutsFor("990").length, 0); // sin checklist definida
+
+  // La corrida solo devolvio 2 lineas: el resto debe aparecer marcado como no verificado.
+  const partial = [
+    { lineItem: "Form 1040 Line 1a (W-2 Wages)", returnAmount: 81825, workpaperAmount: 81824.69, status: "TIE" },
+    { lineItem: "Form 1040 Line 2b (Interest)", returnAmount: 1738, workpaperAmount: 1733.04, status: "TIE" },
+  ];
+  const { rows, added } = ensureRequiredTieOutRows(partial, "1040");
+  assert.strictEqual(rows.length, requiredTieOutsFor("1040").length);
+  assert.strictEqual(added, requiredTieOutsFor("1040").length - 2);
+  const schD = rows.find((r) => /Schedule D Line 7/i.test(r.lineItem));
+  assert.strictEqual(schD.status, "OUT_OF_BALANCE");
+  assert.match(schD.note, /not performed/i);
+});
+
+test("checklist: etiquetas con distinto wording NO se duplican", () => {
+  const { ensureRequiredTieOutRows } = require("../lib/tie-out");
+  // etiquetas reales de las dos corridas, escritas distinto
+  const runA = ensureRequiredTieOutRows([{ lineItem: "Schedule D Line 7 — Net Short-Term Capital Gain (Loss)", returnAmount: 1, workpaperAmount: 1 }], "1040").rows;
+  const runB = ensureRequiredTieOutRows([{ lineItem: "Schedule D Line 7 Short-Term Gain/Loss", returnAmount: 1, workpaperAmount: 1 }], "1040").rows;
+  const countD7 = (rows) => rows.filter((r) => /schedule d line 7/i.test(r.lineItem)).length;
+  assert.strictEqual(countD7(runA), 1);
+  assert.strictEqual(countD7(runB), 1);
+  assert.strictEqual(runA.length, runB.length); // misma cantidad de filas -> corridas comparables
+});
+
+test("prompt de checklist se genera para 1040 y queda vacio donde no aplica", () => {
+  const { tieOutChecklistPromptLines } = require("../lib/tie-out");
+  const lines = tieOutChecklistPromptLines("1040").join("\n");
+  assert.match(lines, /MANDATORY TIE-OUT CHECKLIST/);
+  assert.match(lines, /Schedule D Line 15/);
+  assert.match(lines, /never copy the return figure/i);
+  assert.strictEqual(tieOutChecklistPromptLines("990").length, 0);
+});

@@ -17,7 +17,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines } = require("./lib/tie-out");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -9785,6 +9785,10 @@ function reviewDocumentWeight(role) {
 }
 
 function buildDirectReviewSystemPrompt(returnType, state) {
+  // The checklist is fixed in code (lib/tie-out.js) so two reviews of the same package
+  // always compare the same lines instead of each run picking its own set.
+  const checklist = tieOutChecklistPromptLines(returnType);
+  const checklistBlock = checklist.length ? `\n\n${checklist.join("\n")}` : "";
   return `You are a senior tax return reviewer at a CPA firm with 20+ years of experience reviewing ${returnType || "US tax"} returns. You review with meticulous attention to detail - you catch errors a partner would catch and the ones they would miss.
 
 WRITE LIKE A BUSY PARTNER, NOT A TREATISE. Every finding must be scannable in seconds. issueDescription is ONE short sentence naming what disagrees and the two amounts. Example of the ONLY acceptable style: "W-2 Box 1 shows $81,824.69 but return Line 1a shows $91,825; verify the entry." Do NOT write background, do NOT restate the same numbers in multiple fields, do NOT speculate about what an error "might indicate," do NOT chain hypotheticals. A finding longer than two sentences is wrong. Half-page findings are a failure.
@@ -9805,7 +9809,7 @@ FIRM CONTEXT PRIORITY: a second system block may follow with firm-specific conte
 REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 1. Cross-document consistency: entity name, EIN/SSN, addresses, ownership percentages, tax year dates.
 2. Every checkbox and election.
-3. Numeric tie-out from the return to the current_workpaper.
+3. Numeric tie-out from the return to the current_workpaper — the mandatory checklist below is not optional.
 4. Balance Sheet / Schedule L: assets must equal liabilities plus equity and beginning balances must tie to prior year.
 5. M-1, M-2, and M-3 footings and requirements.
 6. Supporting documents: decide whether each belongs on the return and whether it is reflected correctly.
@@ -9832,7 +9836,7 @@ CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what d
 
 CHECKBOX CHECKLIST (REQUIRED): Enumerate EVERY checkbox and election visible on the current-year return in checkboxReview — including ones that are correct — each compared against the prior-year return state. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
 
-INFORMATIONAL DATA CHECK (REQUIRED): In infoConsistency, verify every informational item across ALL documents: taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info if present. One row per item with status MATCH or MISMATCH and the exact values compared.
+INFORMATIONAL DATA CHECK (REQUIRED): In infoConsistency, verify every informational item across ALL documents: taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info if present. One row per item with status MATCH or MISMATCH and the exact values compared.${checklistBlock}
 
 For each error, provide risk analysis and a specific proposed solution within the length limits above.
 
@@ -10094,6 +10098,11 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (!Array.isArray(normalized.checkboxReview)) normalized.checkboxReview = [];
   if (!Array.isArray(normalized.infoConsistency)) normalized.infoConsistency = [];
   if (!Array.isArray(normalized.tieOutResults)) normalized.tieOutResults = [];
+  // Every required tie-out line must appear, even when the review skipped it: a silently
+  // missing check used to read as "nothing wrong there".
+  const requiredRows = ensureRequiredTieOutRows(normalized.tieOutResults, payload?.metadata?.returnType || payload?.returnType);
+  normalized.tieOutResults = requiredRows.rows;
+  if (requiredRows.added) console.log(`[Review] ${requiredRows.added} required tie-out line(s) were missing and added as unverified.`);
   // Arithmetic verdicts (TIE / OUT_OF_BALANCE, Schedule L balanced) are decided by code,
   // not by the model — two runs of the same package used to disagree on the same numbers.
   const verdicts = enforceNumericVerdicts(normalized);
