@@ -10165,9 +10165,17 @@ function enforceInfoConsistencyStatus(review) {
 //   - Nothing outstanding -> READY.
 function enforceFilingReadinessConsistency(review) {
   const hasHighIssue = Array.isArray(review.issues) && review.issues.some((issue) => String(issue.priority || issue.severity || "").toUpperCase() === "HIGH");
+  // A return whose numbers do not reconcile is not ready to file, regardless of how the
+  // model graded its own issue list: one run reported six unreconciled tie-out lines and
+  // still called the return READY. The Schedule L imbalance counts the same way.
+  const hasUnreconciledTieOut = Array.isArray(review.tieOutResults)
+    && review.tieOutResults.some((row) => String(row?.status || "").toUpperCase() === "OUT_OF_BALANCE");
+  const balanceSheetOff = review.balanceSheetCheck
+    && review.balanceSheetCheck.balanced === false
+    && Number(String(review.balanceSheetCheck.totalAssets || "").replace(/[^0-9.-]/g, "")) !== 0;
   const hasOpenItems = (Array.isArray(review.openQuestions) && review.openQuestions.length > 0)
     || (Array.isArray(review.missingDocuments) && review.missingDocuments.length > 0);
-  if (hasHighIssue) {
+  if (hasHighIssue || hasUnreconciledTieOut || balanceSheetOff) {
     review.filingReadiness = "NOT READY";
   } else if (hasOpenItems) {
     review.filingReadiness = "READY - OPEN QUESTIONS REMAINING";

@@ -194,3 +194,24 @@ test("tie sin respaldo: se anota, pero NO se cambia el veredicto", () => {
   assert.ok(!/Support not evidenced/.test(rows[2].note));
   assert.strictEqual(flagged, 1);
 });
+
+test("nota del motor viaja al Word (regresion: la tabla exportaba sin columna Note)", () => {
+  const app = require("fs").readFileSync(require("path").join(__dirname, "..", "app.js"), "utf8");
+  const block = app.match(/parts\.push\(dxTable\(\["Line Item"[\s\S]{0,320}/);
+  assert.ok(block, "no se encontro la tabla de tie-out del docx");
+  assert.match(block[0], /"Note"/);
+  assert.match(block[0], /r\.note/);
+});
+
+test("filing readiness: descuadres numericos impiden READY", () => {
+  const src = require("fs").readFileSync(require("path").join(__dirname, "..", "server.js"), "utf8");
+  const fn = src.match(/function enforceFilingReadinessConsistency[\s\S]*?\n}/)[0];
+  // eslint-disable-next-line no-eval
+  const enforce = eval(`(${fn})`);
+  const withOut = { issues: [{ priority: "MEDIUM" }], tieOutResults: [{ status: "OUT_OF_BALANCE" }], openQuestions: [] };
+  enforce(withOut);
+  assert.strictEqual(withOut.filingReadiness, "NOT READY");
+  const clean = { issues: [], tieOutResults: [{ status: "TIE" }], openQuestions: [] };
+  enforce(clean);
+  assert.strictEqual(clean.filingReadiness, "READY");
+});

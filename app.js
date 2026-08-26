@@ -9865,8 +9865,10 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
   }
   if (Array.isArray(structured.tieOutResults) && structured.tieOutResults.length) {
     parts.push(dxH("Numeric Tie-Out"));
-    parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status"],
-      structured.tieOutResults.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status]), 4));
+    // The note carries the app's own determinations ("Cannot tie…", "Support not
+    // evidenced…", "Not verified…"), so it has to travel into the deliverable.
+    parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"],
+      structured.tieOutResults.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status, r.note]), 4));
   }
   if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
     parts.push(dxH("Informational Data Consistency"));
