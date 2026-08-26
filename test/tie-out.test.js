@@ -152,3 +152,45 @@ test("deteccion del tipo de return desde el documento (selector vacio)", () => {
     { name: "cur.pdf", reviewRole: "current_return", extractedText: cover },
   ]), "1040");
 });
+
+test("coherencia de totales: un total no puede cuadrar si sus componentes no cuadran", () => {
+  const { enforceRollupCoherence } = require("../lib/tie-out");
+  // caso real de la corrida #18: estimados mal por 37.000 pero total de pagos 'TIE'
+  const { rows, flagged } = enforceRollupCoherence([
+    { lineItem: "Form 1040 Line 25d — Total withholding", difference: 0, status: "TIE" },
+    { lineItem: "Form 1040 Line 26 — Estimated tax payments", difference: 37000, status: "OUT_OF_BALANCE" },
+    { lineItem: "Form 1040 Line 33 — Total payments", difference: 0, status: "TIE" },
+  ], "1040");
+  const total = rows.find((r) => /Line 33/.test(r.lineItem));
+  assert.strictEqual(total.status, "OUT_OF_BALANCE");
+  assert.match(total.note, /Cannot tie/);
+  assert.strictEqual(flagged, 1);
+});
+
+test("coherencia: si los componentes cuadran, el total no se toca", () => {
+  const { enforceRollupCoherence } = require("../lib/tie-out");
+  const { rows, flagged } = enforceRollupCoherence([
+    { lineItem: "Form 1040 Line 25d — Total withholding", difference: 0.45, status: "TIE" },
+    { lineItem: "Form 1040 Line 26 — Estimated tax payments", difference: 0, status: "TIE" },
+    { lineItem: "Form 1040 Line 33 — Total payments", difference: 0, status: "TIE" },
+  ], "1040");
+  assert.strictEqual(rows.find((r) => /Line 33/.test(r.lineItem)).status, "TIE");
+  assert.strictEqual(flagged, 0);
+});
+
+test("tie sin respaldo: se anota, pero NO se cambia el veredicto", () => {
+  const { flagUnsupportedTies } = require("../lib/tie-out");
+  const { rows, flagged } = flagUnsupportedTies([
+    // linea externa, importe identico al return y sin documento citado -> sospechosa
+    { lineItem: "Form 1040 Line 2b — Taxable interest", difference: 0, status: "TIE", note: "" },
+    // misma situacion pero citando el documento -> legitima
+    { lineItem: "Form 1040 Line 1a — Wages", difference: 0, status: "TIE", note: "Sum of both W-2 Box 1 amounts." },
+    // linea interna (calculo del propio return): un 0 es normal
+    { lineItem: "Form 1040 Line 15 — Taxable income", difference: 0, status: "TIE", note: "" },
+  ], "1040");
+  assert.match(rows[0].note, /Support not evidenced/);
+  assert.strictEqual(rows[0].status, "TIE"); // el veredicto no se altera
+  assert.ok(!/Support not evidenced/.test(rows[1].note));
+  assert.ok(!/Support not evidenced/.test(rows[2].note));
+  assert.strictEqual(flagged, 1);
+});

@@ -10104,12 +10104,13 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (!Array.isArray(normalized.tieOutResults)) normalized.tieOutResults = [];
   // Every required tie-out line must appear, even when the review skipped it: a silently
   // missing check used to read as "nothing wrong there".
-  const requiredRows = ensureRequiredTieOutRows(normalized.tieOutResults, payload?.metadata?.returnType || payload?.returnType);
+  const reviewReturnType = payload?.metadata?.returnType || payload?.returnType || detectReturnTypeFromFiles(payload?.files);
+  const requiredRows = ensureRequiredTieOutRows(normalized.tieOutResults, reviewReturnType);
   normalized.tieOutResults = requiredRows.rows;
   if (requiredRows.added) console.log(`[Review] ${requiredRows.added} required tie-out line(s) were missing and added as unverified.`);
-  // Arithmetic verdicts (TIE / OUT_OF_BALANCE, Schedule L balanced) are decided by code,
-  // not by the model — two runs of the same package used to disagree on the same numbers.
-  const verdicts = enforceNumericVerdicts(normalized);
+  // Arithmetic verdicts, roll-up coherence (a total cannot tie while its components do
+  // not) and unsupported-tie annotation are decided by code, not by the model.
+  const verdicts = enforceNumericVerdicts(normalized, reviewReturnType);
   normalized.tieOutResults = verdicts.review.tieOutResults;
   if (verdicts.review.balanceSheetCheck) normalized.balanceSheetCheck = verdicts.review.balanceSheetCheck;
   if (verdicts.corrections) console.log(`[Review] recomputed ${verdicts.corrections} numeric verdict(s) that disagreed with the arithmetic.`);
