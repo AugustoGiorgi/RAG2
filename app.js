@@ -9463,7 +9463,17 @@ function renderMessage(type, title, message) {
 
 async function downloadReview(type) {
   if (!lastReview) return;
-  const metadata = lastReview.payload.metadata;
+  // The server resolves the client name and return type (detecting the type from the
+  // documents when the selector is blank), so prefer its values — otherwise the document
+  // header reads "Client · Return" even though the review knows it is a 1040.
+  const serverMeta = lastReview.response?.meta || {};
+  const structuredMeta = lastReview.response?.structured || {};
+  const metadata = {
+    ...lastReview.payload.metadata,
+    clientName: lastReview.payload.metadata?.clientName || serverMeta.clientName || structuredMeta.clientName || "",
+    returnType: lastReview.payload.metadata?.returnType || serverMeta.returnType || structuredMeta.returnType || "",
+    taxYear: lastReview.payload.metadata?.taxYear || serverMeta.taxYear || structuredMeta.taxYear || "",
+  };
   lastReview.response.structured = normalizeReviewForExport(lastReview.response, metadata);
   const baseName = `${metadata.entityName || metadata.clientName || "tax-review"}-${metadata.taxYear || "year"}`.replace(/[^a-z0-9-]+/gi, "-");
   if (type === "word") {
