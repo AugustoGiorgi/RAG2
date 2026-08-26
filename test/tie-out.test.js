@@ -47,7 +47,7 @@ test("un lado faltante nunca se reporta como verificado", () => {
   const { rows, changed } = enforceTieOutVerdicts([
     { lineItem: "Schedule E line 30", returnAmount: 193201, workpaperAmount: "", status: "TIE" },
   ]);
-  assert.strictEqual(rows[0].status, "OUT_OF_BALANCE");
+  assert.strictEqual(rows[0].status, "NOT VERIFIED");
   assert.match(rows[0].note, /Not verified/);
   assert.strictEqual(changed, 1);
 });
@@ -98,7 +98,7 @@ test("checklist obligatoria: 1040 y entidades, y las lineas que faltan se agrega
   assert.strictEqual(rows.length, requiredTieOutsFor("1040").length);
   assert.strictEqual(added, requiredTieOutsFor("1040").length - 2);
   const schD = rows.find((r) => /Schedule D Line 7/i.test(r.lineItem));
-  assert.strictEqual(schD.status, "OUT_OF_BALANCE");
+  assert.strictEqual(schD.status, "NOT VERIFIED");
   assert.match(schD.note, /not performed/i);
 });
 
@@ -188,10 +188,10 @@ test("tie sin respaldo: se anota, pero NO se cambia el veredicto", () => {
     // linea interna (calculo del propio return): un 0 es normal
     { lineItem: "Form 1040 Line 15 — Taxable income", difference: 0, status: "TIE", note: "" },
   ], "1040");
-  assert.match(rows[0].note, /Support not evidenced/);
-  assert.strictEqual(rows[0].status, "TIE"); // el veredicto no se altera
-  assert.ok(!/Support not evidenced/.test(rows[1].note));
-  assert.ok(!/Support not evidenced/.test(rows[2].note));
+  assert.match(rows[0].note, /Not verified/);
+  assert.strictEqual(rows[0].status, "NOT VERIFIED"); // se degrada: un cuadre sin evidencia no es un chequeo hecho
+  assert.strictEqual(rows[1].status, "TIE");
+  assert.strictEqual(rows[2].status, "TIE");
   assert.strictEqual(flagged, 1);
 });
 
@@ -214,4 +214,37 @@ test("filing readiness: descuadres numericos impiden READY", () => {
   const clean = { issues: [], tieOutResults: [{ status: "TIE" }], openQuestions: [] };
   enforce(clean);
   assert.strictEqual(clean.filingReadiness, "READY");
+});
+
+test("caso real #22: 11 lineas copiadas del return ya no pueden reportarse como verificadas", () => {
+  const { enforceNumericVerdicts } = require("../lib/tie-out");
+  // filas exactas de la corrida #22 (el modelo copio el importe del return)
+  const rows = [
+    { lineItem: "Form 1040 Line 1a — Wages", returnAmount: 81825, workpaperAmount: 81824.69, status: "TIE" },
+    { lineItem: "Form 1040 Line 2b — Taxable interest", returnAmount: 1738, workpaperAmount: 1738, status: "TIE" },
+    { lineItem: "Schedule D Line 7 — Net short-term capital gain (loss)", returnAmount: -51, workpaperAmount: -51, status: "TIE" },
+    { lineItem: "Schedule D Line 15 — Net long-term capital gain (loss)", returnAmount: 269, workpaperAmount: 269, status: "TIE" },
+    { lineItem: "Form 1040 Line 26 — Estimated tax payments", returnAmount: 54300, workpaperAmount: 54300, status: "TIE" },
+    { lineItem: "Form 1040 Line 15 — Taxable income", returnAmount: 256147, workpaperAmount: 256147, status: "TIE" },
+  ];
+  const out = enforceNumericVerdicts({ tieOutResults: rows }, "1040");
+  const byName = (re) => out.review.tieOutResults.find((r) => re.test(r.lineItem));
+  // wages: diferencia real de 0.31 -> se leyo la fuente -> sigue siendo TIE
+  assert.strictEqual(byName(/Line 1a/).status, "TIE");
+  // lineas externas copiadas -> degradadas
+  ["Line 2b", "Schedule D Line 7", "Schedule D Line 15", "Line 26"].forEach((n) => {
+    assert.strictEqual(byName(new RegExp(n)).status, "NOT VERIFIED", n + " deberia quedar NOT VERIFIED");
+  });
+  // linea interna (calculo del propio return): un 0 es legitimo
+  assert.strictEqual(byName(/Line 15 — Taxable/).status, "TIE");
+  assert.strictEqual(out.unsupported, 4);
+});
+
+test("NOT VERIFIED bloquea la conclusion READY", () => {
+  const src = require("fs").readFileSync(require("path").join(__dirname, "..", "server.js"), "utf8");
+  // eslint-disable-next-line no-eval
+  const enforce = eval(`(${src.match(/function enforceFilingReadinessConsistency[\s\S]*?\n}/)[0]})`);
+  const r = { issues: [], tieOutResults: [{ status: "TIE" }, { status: "NOT VERIFIED" }], openQuestions: [] };
+  enforce(r);
+  assert.strictEqual(r.filingReadiness, "NOT READY");
 });

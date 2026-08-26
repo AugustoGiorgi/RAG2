@@ -9049,7 +9049,7 @@ function reviewTableCell(cell) {
   // Status words become colored chips so pass/fail reads at a glance.
   if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(upper)) return `<td><span class="cell-chip ok">${escapeHtml(text)}</span></td>`;
   if (/^(NEEDS[_ ]REVIEW|MISMATCH|OUT[_ ]?OF[_ ]?BALANCE|FAIL|MISSING|ERROR)$/.test(upper)) return `<td><span class="cell-chip bad">${escapeHtml(text)}</span></td>`;
-  if (/^(VERIFY|PENDING|N\/A)$/.test(upper)) return `<td><span class="cell-chip warn">${escapeHtml(text)}</span></td>`;
+  if (/^(VERIFY|PENDING|N\/A|NOT[_ ]VERIFIED)$/.test(upper)) return `<td><span class="cell-chip warn">${escapeHtml(text)}</span></td>`;
   // Money/number cells align right with tabular digits.
   if (/^\(?-?\$?\s?[\d,]+(\.\d+)?\)?$/.test(text) && !/^\d{4}$/.test(text)) return `<td class="num">${escapeHtml(text)}</td>`;
   return `<td>${escapeHtml(cell)}</td>`;
@@ -9825,8 +9825,10 @@ function dxTable(headers, rows, statusCol = -1) {
   const bodyRows = rows.map((row) => `<w:tr>${row.map((value, i) => {
     if (i === statusCol) {
       const upper = safeText(value).toUpperCase();
-      const bad = /NEEDS|MISMATCH|OUT|FAIL|MISSING|ERROR/.test(upper);
+      const unverified = /NOT\s*VERIFIED/.test(upper);
+      const bad = !unverified && /NEEDS|MISMATCH|OUT|FAIL|MISSING|ERROR/.test(upper);
       const ok = /^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(upper);
+      if (unverified) return cell(value, { fill: "FFF4CE", color: "8A6D00", bold: true });
       return cell(value, { fill: bad ? "FDECEA" : ok ? "E7F4EC" : undefined, color: bad ? "B3261E" : ok ? "1D6F42" : undefined, bold: bad || ok });
     }
     return cell(value);

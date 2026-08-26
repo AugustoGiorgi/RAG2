@@ -10168,8 +10168,9 @@ function enforceFilingReadinessConsistency(review) {
   // A return whose numbers do not reconcile is not ready to file, regardless of how the
   // model graded its own issue list: one run reported six unreconciled tie-out lines and
   // still called the return READY. The Schedule L imbalance counts the same way.
+  // An unreconciled line blocks filing — and so does a line nobody actually verified.
   const hasUnreconciledTieOut = Array.isArray(review.tieOutResults)
-    && review.tieOutResults.some((row) => String(row?.status || "").toUpperCase() === "OUT_OF_BALANCE");
+    && review.tieOutResults.some((row) => ["OUT_OF_BALANCE", "NOT VERIFIED"].includes(String(row?.status || "").toUpperCase()));
   const balanceSheetOff = review.balanceSheetCheck
     && review.balanceSheetCheck.balanced === false
     && Number(String(review.balanceSheetCheck.totalAssets || "").replace(/[^0-9.-]/g, "")) !== 0;
