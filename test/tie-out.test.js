@@ -121,3 +121,34 @@ test("prompt de checklist se genera para 1040 y queda vacio donde no aplica", ()
   assert.match(lines, /never copy the return figure/i);
   assert.strictEqual(tieOutChecklistPromptLines("990").length, 0);
 });
+
+test("deteccion del tipo de return desde el documento (selector vacio)", () => {
+  const { detectReturnTypeFromText, detectReturnTypeFromFiles } = require("../lib/tie-out");
+  // texto como el que imprime el software: carta de la firma primero, sin "U.S."
+  const cover = "Dear Joseph, Your 2025 Federal Individual Income Tax return will be electronically filed";
+  assert.strictEqual(detectReturnTypeFromText(cover), "1040");
+  assert.strictEqual(detectReturnTypeFromText("U.S. Income Tax Return for an S Corporation"), "1120-S");
+  assert.strictEqual(detectReturnTypeFromText("U.S. Return of Partnership Income"), "1065");
+  assert.strictEqual(detectReturnTypeFromText("U.S. Corporation Income Tax Return"), "1120");
+  assert.strictEqual(detectReturnTypeFromText("solo un W-2 sin identidad de return"), "");
+
+  // el K-1 adjunto (que menciona 1065) no puede ganarle al return bajo revision
+  const k1 = "Schedule K-1 (Form 1065) U.S. Return of Partnership Income";
+  const ret = cover + " ".repeat(50000) + " Form 1040";
+  assert.strictEqual(detectReturnTypeFromFiles([
+    { name: "k1.pdf", reviewRole: "supporting_document", extractedText: k1 },
+    { name: "1040.pdf", reviewRole: "current_return", extractedText: ret },
+  ]), "1040");
+
+  // sin roles marcados, gana el documento mas grande (la declaracion, no el K-1)
+  assert.strictEqual(detectReturnTypeFromFiles([
+    { name: "k1.pdf", reviewRole: "supporting_document", extractedText: k1 },
+    { name: "1040.pdf", reviewRole: "supporting_document", extractedText: ret },
+  ]), "1040");
+
+  // el return del anio anterior nunca decide
+  assert.strictEqual(detectReturnTypeFromFiles([
+    { name: "2024.pdf", reviewRole: "prior_return", extractedText: "U.S. Corporation Income Tax Return" },
+    { name: "cur.pdf", reviewRole: "current_return", extractedText: cover },
+  ]), "1040");
+});

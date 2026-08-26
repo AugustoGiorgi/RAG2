@@ -17,7 +17,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles } = require("./lib/tie-out");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -9677,7 +9677,11 @@ async function handleReview(req, res) {
 function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
   const metadata = payload.metadata || {};
   const clientName = metadata.entityName || metadata.clientName || payload.clientName || "Unnamed client";
-  const returnType = metadata.returnType || payload.returnType || "Not specified";
+  // The Return type selector is often left blank; without a type there is no mandatory
+  // tie-out checklist and no missing-line detection, so fall back to reading the identity
+  // out of the return itself.
+  const detectedReturnType = detectReturnTypeFromFiles(payload.files);
+  const returnType = metadata.returnType || payload.returnType || detectedReturnType || "Not specified";
   const taxYear = metadata.taxYear || payload.taxYear || "Not specified";
   const reviewStage = metadata.reviewStage || payload.reviewStage || "Initial review";
   const state = metadata.state || metadata.statesIncluded || payload.state || "";
