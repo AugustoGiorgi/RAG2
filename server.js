@@ -17,6 +17,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
+const { enforceNumericVerdicts } = require("./lib/tie-out");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -9588,6 +9589,10 @@ async function handleReview(req, res) {
     if (firmContext) systemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
+      // Determinism: the review runs without extended thinking, so temperature 0 is
+      // allowed and makes the same package produce the same findings run to run. The API
+      // default of 1.0 was why two identical runs returned entirely different issues.
+      temperature: 0,
       system: systemBlocks,
       messages: [{ role: "user", content: reviewRequest.userContent }],
     }, reviewModelCandidates());
@@ -9607,6 +9612,7 @@ async function handleReview(req, res) {
       if (firmContext) retrySystemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
       result = await callAnthropicDirectWithFallbacks(apiKey, {
         max_tokens: REVIEW_MAX_TOKENS,
+        temperature: 0,
         system: retrySystemBlocks,
         messages: [{ role: "user", content: reviewRequest.userContent }],
       }, reviewModelCandidates());
@@ -9932,6 +9938,8 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
   for (const model of candidates) {
     const body = { ...requestBody, model };
     if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
+    // The API rejects an explicit temperature together with extended thinking.
+    if (body.thinking) delete body.temperature;
 
     let triedNextModel = false;
     for (let attempt = 1; attempt <= MAX_429_RETRIES + 1; attempt++) {
@@ -10009,6 +10017,7 @@ async function structureDirectReviewJson(apiKey, textBlocks, reviewRequest) {
   // fallback so reliability is unchanged if Haiku ever fails to produce valid JSON.
   return callAnthropicDirectWithFallbacks(apiKey, {
     max_tokens: 16000,
+    temperature: 0, // mechanical reformat — no reason for sampling variance
     system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences.",
     messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "").slice(0, 50000)}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
   }, structureModelCandidates());
@@ -10085,6 +10094,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (!Array.isArray(normalized.checkboxReview)) normalized.checkboxReview = [];
   if (!Array.isArray(normalized.infoConsistency)) normalized.infoConsistency = [];
   if (!Array.isArray(normalized.tieOutResults)) normalized.tieOutResults = [];
+  // Arithmetic verdicts (TIE / OUT_OF_BALANCE, Schedule L balanced) are decided by code,
+  // not by the model — two runs of the same package used to disagree on the same numbers.
+  const verdicts = enforceNumericVerdicts(normalized);
+  normalized.tieOutResults = verdicts.review.tieOutResults;
+  if (verdicts.review.balanceSheetCheck) normalized.balanceSheetCheck = verdicts.review.balanceSheetCheck;
+  if (verdicts.corrections) console.log(`[Review] recomputed ${verdicts.corrections} numeric verdict(s) that disagreed with the arithmetic.`);
   if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {
     normalized.balanceSheetCheck = {
       totalAssets: null,
