@@ -9951,6 +9951,13 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
         triedNextModel = true;
         break;
       }
+      // Same treatment for a network stumble: retry the same model before giving up.
+      if (isTransientNetworkError(lastStatus, result.error) && attempt <= MAX_429_RETRIES) {
+        const waitMs = (BACKOFF_MS[attempt - 1] || 4000) + Math.floor(Math.random() * 400);
+        console.log(`[RETRY-NET] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} userId=${userId} feature=${feature}`);
+        await sleep(waitMs);
+        continue;
+      }
       if (!shouldTryNextModel(lastStatus, result.error)) {
         attempts.push(lastError);
         return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
@@ -12805,6 +12812,15 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
           console.log(`[ABORTED] model=${model} userId=${userId} feature=${feature} reason=fetch_aborted`);
           return { ok: false, status: 499, error: "Request cancelled: client disconnected." };
         }
+        // Transient network failure (DNS blip, connection reset, TLS hiccup). These used to
+        // kill the whole run on the first stumble; retry with the same backoff the
+        // rate-limit path already uses before giving up.
+        if (attempt <= MAX_429_RETRIES) {
+          const waitMs = (BACKOFF_MS[attempt - 1] || 4000) + Math.floor(Math.random() * 400);
+          console.log(`[RETRY-NET] model=${model} attempt=${attempt}/${MAX_429_RETRIES} waitMs=${waitMs} err=${fetchErr.message} userId=${userId} feature=${feature}`);
+          await sleep(waitMs);
+          continue;
+        }
         return { ok: false, status: 502, error: `Network error calling Claude: ${fetchErr.message}` };
       }
       if (res.ok) return {
@@ -12879,6 +12895,13 @@ function buildWebSearchTool() {
 
 function shouldTryNextModel(status, message) {
   return status === 400 || status === 404 || String(message).toLowerCase().includes("model");
+}
+
+// A failure that happened before any HTTP response existed (DNS, socket reset, TLS): worth
+// retrying the same model rather than failing the run or switching models.
+function isTransientNetworkError(status, message) {
+  return Number(status) === 502
+    && /fetch failed|network|socket|econn|eai_again|etimedout|enotfound|tls|before a response was received/i.test(String(message || ""));
 }
 
 function selectMasterPromptForReturn(payload = {}) {
