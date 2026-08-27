@@ -17,7 +17,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10118,10 +10118,25 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (requiredRows.added) console.log(`[Review] ${requiredRows.added} required tie-out line(s) were missing and added as unverified.`);
   // Arithmetic verdicts, roll-up coherence (a total cannot tie while its components do
   // not) and unsupported-tie annotation are decided by code, not by the model.
-  const verdicts = enforceNumericVerdicts(normalized, reviewReturnType);
+  const verdicts = enforceNumericVerdicts(normalized, reviewReturnType, payload?.files);
   normalized.tieOutResults = verdicts.review.tieOutResults;
   if (verdicts.review.balanceSheetCheck) normalized.balanceSheetCheck = verdicts.review.balanceSheetCheck;
   if (verdicts.corrections) console.log(`[Review] recomputed ${verdicts.corrections} numeric verdict(s) that disagreed with the arithmetic.`);
+  if (verdicts.unevidenced) console.log(`[Review] ${verdicts.unevidenced} tie-out row(s) cited evidence that does not hold up against the uploaded files.`);
+
+  // Coverage: a file nobody opened cannot have been reviewed, and the review's own prose
+  // will never say so. Counted here and surfaced as open questions so it reaches the
+  // reviewer even where the UI has no dedicated section for it.
+  const coverage = auditDocumentCoverage(normalized, payload?.files);
+  if (coverage.coverage.length) {
+    normalized.documentCoverage = coverage.coverage;
+    if (coverage.unreviewed.length) {
+      const notRead = coverage.unreviewed.map((c) => c.name);
+      normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
+      normalized.openQuestions.unshift(`${notRead.length} uploaded document(s) are not listed as read by this review: ${notRead.join("; ")}. A tie-out cannot be complete if the supporting document was never opened — confirm whether these affect the return.`);
+      console.log(`[Review] document coverage: ${coverage.unreviewed.length} of ${coverage.coverage.length} file(s) unreferenced.`);
+    }
+  }
   if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {
     normalized.balanceSheetCheck = {
       totalAssets: null,
