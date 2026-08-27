@@ -10123,6 +10123,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (verdicts.review.balanceSheetCheck) normalized.balanceSheetCheck = verdicts.review.balanceSheetCheck;
   if (verdicts.corrections) console.log(`[Review] recomputed ${verdicts.corrections} numeric verdict(s) that disagreed with the arithmetic.`);
   if (verdicts.unevidenced) console.log(`[Review] ${verdicts.unevidenced} tie-out row(s) cited evidence that does not hold up against the uploaded files.`);
+  if (verdicts.badArithmetic) console.log(`[Review] ${verdicts.badArithmetic} tie-out row(s) showed a derivation that does not add up.`);
 
   // Coverage: a file nobody opened cannot have been reviewed, and the review's own prose
   // will never say so. Counted here and surfaced as open questions so it reaches the

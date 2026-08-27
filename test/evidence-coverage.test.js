@@ -8,7 +8,8 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
-  verifyTieOutEvidence, auditDocumentCoverage, amountAppearsInText, parseDerivation, enforceNumericVerdicts,
+  verifyTieOutEvidence, auditDocumentCoverage, auditDerivations, amountAppearsInText, parseDerivation,
+  enforceNumericVerdicts, canonicalLineKey, ensureRequiredTieOutRows,
 } = require("../lib/tie-out");
 
 const support = (name, text) => ({ name, reviewRole: "supporting_document", text });
@@ -61,18 +62,66 @@ test("NO degrada cuando la cifra si esta en el respaldo, aunque el documento est
   assert.strictEqual(out.rows[0].status, "TIE");
 });
 
-test("re-suma la cadena aritmetica y degrada si no cierra", () => {
+test("auditDerivations: re-suma la cadena y degrada si no cierra", () => {
   // Suma mal por $1: el modelo escribio un total que sus propios sumandos no dan.
   const bad = [row("Form 1040 Line 1a — Wages", "107211.75",
     "W-2 Box 1: 88,400.00 + 15,600.00 + 3,210.75 = 107,211.75")];
-  const out = verifyTieOutEvidence(bad, "1040", PACKAGE);
+  const out = auditDerivations(bad);
   assert.strictEqual(out.flagged, 1);
   assert.match(out.rows[0].note, /add to 107210\.75, not 107211\.75/);
 
-  // La misma linea con la suma correcta pasa, aunque el total no figure en ningun documento.
+  // La misma linea con la suma correcta pasa.
   const good = [row("Form 1040 Line 1a — Wages", "107210.75",
     "W-2 Box 1: 88,400.00 + 15,600.00 + 3,210.75 = 107,210.75")];
+  assert.strictEqual(auditDerivations(good).flagged, 0);
+  // Y en la cadena completa tampoco se exige encontrar el total en un documento.
   assert.strictEqual(verifyTieOutEvidence(good, "1040", PACKAGE).flagged, 0);
+});
+
+test("auditDerivations: tambien audita filas OUT_OF_BALANCE", () => {
+  // La falla real: un total que cuenta un W-2 dos veces sin listarlo. La fila no es TIE,
+  // asi que la verificacion de evidencia no la mira — y la instruccion que produce es
+  // "corregi la linea", sobre una linea que estaba bien.
+  const rows = [{
+    lineItem: "Form 1040 Line 1z — Wages", returnAmount: "107210", workpaperAmount: "119259",
+    difference: "-12049", status: "OUT_OF_BALANCE",
+    note: "Return shows $107,210 but sum of W-2 Box 1 is $119,258.83 (88,400.00 + 15,600.00 + 3,210.75).",
+  }];
+  const out = auditDerivations(rows);
+  assert.strictEqual(out.flagged, 1);
+  assert.strictEqual(out.rows[0].status, "NOT VERIFIED");
+  assert.match(out.rows[0].note, /derives 107210\.75 but the support column shows 119259/);
+});
+
+test("auditDerivations: el redondeo a dolar entero no dispara falsos positivos", () => {
+  // La nota trae centavos y la columna va redondeada. Es lo normal, no un hallazgo.
+  const rows = [{
+    lineItem: "Form 1040 Line 25d — Total withholding", returnAmount: "64852", workpaperAmount: "64826",
+    difference: "26", status: "OUT_OF_BALANCE",
+    note: "Sum of W-2 Box 2: 62,782.08 + 0 + 2,044.29 = 64,826.37.",
+  }];
+  assert.strictEqual(auditDerivations(rows).flagged, 0);
+});
+
+test("auditDerivations: no vuelve a tocar lo que ya esta NOT VERIFIED", () => {
+  const rows = [{
+    lineItem: "Form 1040 Line 1a — Wages", returnAmount: "107210", workpaperAmount: "119259",
+    difference: "", status: "NOT VERIFIED", note: "88,400.00 + 15,600.00 + 3,210.75 = 999,999.00",
+  }];
+  assert.strictEqual(auditDerivations(rows).flagged, 0);
+});
+
+test("canonicalLineKey: 1z y 1a son el mismo control de salarios", () => {
+  // Una corrida reporto los salarios como "Line 1z"; la checklist no lo reconocio y agrego
+  // su propia fila "Line 1a" como no realizada. La tabla salio con dos renglones de
+  // salarios que se contradecian.
+  assert.strictEqual(canonicalLineKey("Form 1040 Line 1z — Wages"), canonicalLineKey("Form 1040 Line 1a — Wages"));
+  assert.strictEqual(canonicalLineKey("Form 1040 Line 1 — Wages"), canonicalLineKey("Form 1040 Line 1a — Wages"));
+  assert.notStrictEqual(canonicalLineKey("Form 1040 Line 2b — Interest"), canonicalLineKey("Form 1040 Line 1a — Wages"));
+
+  const rows = [{ lineItem: "Form 1040 Line 1z — Wages", returnAmount: "1", workpaperAmount: "1", difference: "0", status: "TIE", note: "n/a" }];
+  const added = ensureRequiredTieOutRows(rows, "1040").rows.filter((r) => /Wages/.test(r.lineItem));
+  assert.strictEqual(added.length, 1, "no debe agregarse una segunda fila de salarios");
 });
 
 test("un documento escaneado sin texto no se hace pasar por verificado", () => {
