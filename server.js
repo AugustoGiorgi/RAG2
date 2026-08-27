@@ -9996,12 +9996,18 @@ function isReviewTimeoutError(result) {
 }
 
 function reviewModelCandidates() {
+  // Si el modelo primario falla, la review NO devuelve error: cae al siguiente de la
+  // lista y entrega igual. Por eso el ORDEN es una decision de calidad, no de plumbing:
+  // un Haiku en segunda posicion seria una degradacion silenciosa. Haiku va ultimo,
+  // como red de seguridad para no perder la corrida, nunca como plan B.
+  const isHaiku = (model) => /^claude-haiku/i.test(String(model || ""));
   const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) =>
-    !/^claude-opus/i.test(model) && !/^claude-sonnet-4-6$/i.test(model)
+    !/^claude-opus/i.test(model) && !/^claude-sonnet-4-6$/i.test(model) && !isHaiku(model)
   );
   return Array.from(new Set([
     "claude-sonnet-4-5-20250929",
     ...reviewSafeFallbacks,
+    "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ].filter(Boolean)));
 }
