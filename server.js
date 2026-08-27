@@ -128,6 +128,10 @@ const MODEL_COSTS = {
   "claude-sonnet-4-5-20250929": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-4-5-20251001": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.2 },
+  "claude-sonnet-4-5": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
+  "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
+  "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
   "claude-3-5-sonnet-20241022": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-3-5-sonnet-latest": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-opus-4-20250514": { inputPerMTok: 15, outputPerMTok: 75, cacheWritePerMTok: 18.75, cacheReadPerMTok: 1.5 },
@@ -1506,7 +1510,7 @@ async function handleExtensionCalculate(req, res) {
 // model's own arithmetic is never trusted for liability numbers.
 // ===========================================================================
 
-const PLANNING_MODELS = ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS];
+const PLANNING_MODELS = [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"];
 // Profile fields a scenario adjustment is allowed to touch (mirrors applyAdjustments).
 const PLANNING_FIELDS = [
   "wages", "netSEIncome", "otherIncome", "longTermGains", "shortTermGains",
@@ -2468,7 +2472,7 @@ async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 16000,
     webSearch: false,
-    models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     thinking: { type: "enabled", budget_tokens: 10000 },
     system: [{
       type: "text",
@@ -2863,7 +2867,7 @@ async function buildEstimatedTaxWorkbookWithClaude(req, payload, deterministicRe
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 16000,
     webSearch: false,
-    models: ["claude-sonnet-4-5-20251001", "claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     thinking: { type: "enabled", budget_tokens: 10000 },
     system: [{
       type: "text",
@@ -4704,7 +4708,7 @@ function normalizedCostEntry(entry = {}) {
   };
   const hasTokenUsage = Object.values(usage).some((value) => Number(value || 0) > 0);
   if (!hasTokenUsage) return { ...entry, totalCost: roundMoney(Number(entry.totalCost || 0)) };
-  const cost = calculateCost(usage, entry.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514");
+  const cost = calculateCost(usage, entry.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-6");
   const storedTotal = roundMoney(Number(entry.totalCost || 0));
   // Prefer the totalCost stored at billing time — it reflects the rates in effect when the
   // call was made. Only fall back to the recalculated value for legacy entries that have
@@ -7459,7 +7463,7 @@ async function handleCostApi(req, res, requestUrl) {
       returnType: requestUrl.searchParams.get("returnType") || "",
       hasWorkpaper: requestUrl.searchParams.get("hasWorkpaper") === "true",
       hasImage: requestUrl.searchParams.get("hasImage") === "true",
-      model: requestUrl.searchParams.get("model") || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514",
+      model: requestUrl.searchParams.get("model") || MODEL_FALLBACKS[0] || "claude-sonnet-4-6",
     }));
     return;
   }
@@ -7526,7 +7530,7 @@ function estimateCost({ action, hasWorkpaper, hasImage, model }) {
 }
 
 function costRatesForModel(model) {
-  return MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-20250514"];
+  return MODEL_COSTS[model] || MODEL_COSTS["claude-sonnet-4-6"];
 }
 
 function calculateCost(usage, model) {
@@ -7553,7 +7557,7 @@ function calculateCost(usage, model) {
 function logClaudeCost(req, result, action, tab, payload = {}, startedAt = Date.now()) {
   const usage = result?.data?.usage;
   if (!usage) return;
-  const model = result.data.model || result.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514";
+  const model = result.data.model || result.model || MODEL_FALLBACKS[0] || "claude-sonnet-4-6";
   const now = new Date();
   const cost = calculateCost(usage, model);
   const entry = {
@@ -9996,9 +10000,7 @@ function reviewModelCandidates() {
     !/^claude-opus/i.test(model) && !/^claude-sonnet-4-6$/i.test(model)
   );
   return Array.from(new Set([
-    "claude-sonnet-4-20250514",
     "claude-sonnet-4-5-20250929",
-    "claude-3-5-sonnet-20241022",
     ...reviewSafeFallbacks,
     "claude-haiku-4-5-20251001",
   ].filter(Boolean)));
@@ -10464,7 +10466,7 @@ async function handlePresentationsGenerate(req, res) {
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 8000,
     webSearch: false,
-    models: ["claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     system: [{ type: "text", text: buildPresentationSystemPrompt(payload, context.text) }],
   });
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
@@ -11217,7 +11219,7 @@ async function handlePrepareWorkpaper(req, res) {
   // Give the response far more room and a smaller thinking budget.
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 48000,
-    models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     thinking: { type: "enabled", budget_tokens: 6000 },
     webSearch: false,
     system: [{
@@ -12059,7 +12061,7 @@ async function handleDiagnostics(req, res) {
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 6000,
     webSearch: true,
-    models: ["claude-sonnet-4-20250514", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     system: [{ type: "text", text: withDatabaseContext(buildDiagnosticsSystemPrompt(), payload, "diagnostics") }],
   });
   if (!result.ok) { sendJson(res, result.status, { error: result.error }); return; }
@@ -12392,7 +12394,7 @@ function normalizeResearchHistory(messages) {
 }
 
 async function callResearchClaude({ question, history, context, useThinking, webSearch }) {
-  const model = "claude-sonnet-4-5-20251001";
+  const model = "claude-sonnet-4-6";
   // cache_control on the system block tells Anthropic to cache the static instructions.
   // User context travels in buildResearchQuestion (already there), so the system prompt
   // is fully static and cache hits on every question in the same session.
@@ -12423,7 +12425,7 @@ async function callResearchClaude({ question, history, context, useThinking, web
   if (first.ok) return { ok: true, data: first.data, model };
   const errorText = String(first.error || "").toLowerCase();
   const fallbackBody = {
-    model: MODEL_FALLBACKS[0] || "claude-sonnet-4-20250514",
+    model: MODEL_FALLBACKS[0] || "claude-sonnet-4-6",
     max_tokens: 8000,
     system,
     messages,
@@ -12631,7 +12633,7 @@ async function requestReconciliationFallback(apiKey, workbook, entityType, optio
     }];
     const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
       maxTokens: 3500,
-      models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+      models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
       webSearch: false,
       feature: "preparation_recon_fallback",
       userId: options.userId,
@@ -12757,7 +12759,7 @@ async function callClaudeWithFallbacks(apiKey, payload) {
   const content = buildClaudeContent(payload, context);
   return callClaudeContentWithFallbacks(apiKey, content, context, {
     maxTokens: 16000,
-    models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     thinking: { type: "enabled", budget_tokens: 12000 },
     webSearch: false,
   });
@@ -12794,7 +12796,7 @@ async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
   }];
   return callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
     maxTokens: 12000,
-    models: ["claude-sonnet-4-5-20251001", ...MODEL_FALLBACKS],
+    models: [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"],
     webSearch: false,
     system: [
       "You are a JSON repair and tax-review structuring assistant.",
