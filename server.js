@@ -45,17 +45,18 @@ function withReviewCache(block) {
 
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
-// Back to 5 minutes: the value the last review that actually worked ran under.
+// 10 minutes. A review generates ~14k tokens, which takes 4-5 minutes; against a 5-minute
+// cap the call was aborted a breath from finishing and the entire request ran a second time
+// with a tighter extract. That second run is what made a review take 15 minutes.
 //
-// Raising this to 10 minutes did cut a review from ~15 minutes to ~6, and the arithmetic
-// behind it still looks right - a 4-5 minute generation was being aborted against a 5-minute
-// cap and re-run from scratch. But the three reviews that followed stopped reading the
-// scanned PDF attachments, which the two before them had read, and no amount of reasoning
-// from the output alone settled why. Two changes were made to shorten the run; both are now
-// undone. Correctness first, and speed again only with the server log in hand: the
-// "[Review] package:" line says whether the attachments are leaving the browser, and that
-// single fact decides which of the two remaining explanations is right.
-const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
+// This was reverted once, on the theory that it had caused three reviews to stop reading the
+// scanned attachments. The theory was wrong. A timeout cannot change a prompt; it changes
+// only WHICH of two prompts gets answered - and the runs in question answered the same one.
+// The good review cited Form 8582 line 6, which sits at 86% of a document the compacted
+// retry truncates away, so it can only have come from the full first attempt. Identical
+// request, different behaviour: the model does not always open the attached images. That is
+// addressed where the attachments are announced, not here.
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 600000);
 // Silence between chunks, not total duration. A streaming generation that is still producing
 // tokens is not stuck no matter how long it runs; two minutes of nothing is.
 const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS || 120000);
@@ -9937,17 +9938,29 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
     "DOCUMENTS:",
     docsBlock,
   ].join("\n");
-  const volatileSuffix = [
-    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
-    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
-    "Return the complete senior review as JSON in exactly this schema:",
-    reviewJsonSchemaText(),
-  ].filter(Boolean).join("\n");
   // Image-only PDFs go in as native documents so the model can actually read them.
   // The browser already ships their bytes (prepareFileForReview -> scannedPdfBase64) and
   // the Preparation tab already attached them; Review was the one tab that did not, which
   // is why scanned uploads kept coming back reported as "not provided".
   const { scannedDocs, skippedScans } = collectScannedPdfDocuments(scanSource);
+  // Named once more in the LAST block the model reads before the schema.
+  //
+  // The attachments sit behind ~90k tokens of document text, and whether the model opens
+  // them varies run to run on a byte-identical request: two reviews of this package quoted
+  // every scanned page, the next three reported those same documents as "not provided". The
+  // request did not change between them — a timeout did, which decides only which prompt
+  // gets answered, and both of those runs answered the same one. Recency is the cheap lever
+  // against a long prompt: the last instruction is the one that survives it.
+  const scanReminder = scannedDocs.length
+    ? `BEFORE YOU CONCLUDE: ${scannedDocs.length} scanned PDF(s) are attached to this message (${scannedDocs.map((d) => d.name).join("; ")}). They are images, so nothing printed inside them appears in the document text above. Open every page of each one and use what you find. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.\n`
+    : "";
+  const volatileSuffix = [
+    scanReminder,
+    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
+    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
+    "Return the complete senior review as JSON in exactly this schema:",
+    reviewJsonSchemaText(),
+  ].filter(Boolean).join("\n");
   // Logged every run. Two consecutive reviews of the same package disagreed on whether the
   // scanned documents had been read, and the output alone could not tell "the model ignored
   // the attachments" from "the attachments never left the browser".
