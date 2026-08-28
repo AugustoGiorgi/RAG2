@@ -10131,11 +10131,21 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   const coverage = auditDocumentCoverage(normalized, payload?.files);
   if (coverage.coverage.length) {
     normalized.documentCoverage = coverage.coverage;
+    normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
     if (coverage.unreviewed.length) {
       const notRead = coverage.unreviewed.map((c) => c.name);
       normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
       normalized.openQuestions.unshift(`${notRead.length} uploaded document(s) are not listed as read by this review: ${notRead.join("; ")}. A tie-out cannot be complete if the supporting document was never opened — confirm whether these affect the return.`);
       console.log(`[Review] document coverage: ${coverage.unreviewed.length} of ${coverage.coverage.length} file(s) unreferenced.`);
+    }
+    // Separate, and the one signal the model cannot talk its way past: these files carry no
+    // extractable text, so the review never saw their contents whatever it claims. In a real
+    // package this is where the Form 1098, a 1099-INT and a fourth W-2 were hiding, and the
+    // review reported all three as "not provided".
+    if (coverage.unreadable.length) {
+      const names = coverage.unreadable.map((c) => c.name);
+      normalized.openQuestions.unshift(`${names.length} uploaded document(s) are scanned images with no extractable text and were NOT read by this review: ${names.join("; ")}. Any conclusion that a document is "missing" may simply mean it is inside one of these files — open them by hand before requesting anything from the client.`);
+      console.log(`[Review] ${names.length} uploaded file(s) had no extractable text.`);
     }
   }
   if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {

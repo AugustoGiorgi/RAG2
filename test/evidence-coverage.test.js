@@ -20,7 +20,7 @@ const PACKAGE = [
   support("CD W2 Second Employer 2025.pdf", "a Employee's social security number 444-55-6666\n1 Wages, tips, other compensation\n3210.75\n2 Federal income tax withheld\n0.00"),
   { name: "Scanned Entity Docs 2025.pdf", reviewRole: "supporting_document", text: "" },
   { name: "Client 1040 2025.pdf", reviewRole: "current_return", text: "Taxable interest 2b 4,908. Ordinary dividends 3b 612." },
-  { name: "Client 1040 2024.pdf", reviewRole: "prior_return", text: "prior year return text" },
+  { name: "Client 1040 2024.pdf", reviewRole: "prior_return", text: "2024 Form 1040. Taxable interest 2b 3,100. Ordinary dividends 3b 500. Total income 9 812,400." },
 ];
 
 const row = (lineItem, workpaperAmount, note) => ({
@@ -193,4 +193,34 @@ test("enforceNumericVerdicts encadena la verificacion de evidencia", () => {
   // Sin archivos el comportamiento previo queda intacto.
   const legacy = enforceNumericVerdicts({ tieOutResults: [row("Form 1040 Line 2b — Taxable interest", "4908", "El 1099 del broker muestra $4,908.")] }, "1040");
   assert.strictEqual(legacy.review.tieOutResults[0].status, "TIE");
+});
+
+test("cobertura: los archivos sin texto extraible se reportan aparte", () => {
+  // Senal determinista: no depende de lo que el modelo diga haber leido. En el paquete
+  // real, un PDF escaneado contenia el Form 1098, un 1099-INT y un cuarto W-2, y la
+  // review reporto los tres como "no provistos".
+  const { coverage, unreadable } = auditDocumentCoverage({ documentsRead: [] }, PACKAGE);
+  assert.deepStrictEqual(unreadable.map((c) => c.name), ["Scanned Entity Docs 2025.pdf"]);
+  assert.strictEqual(coverage.find((c) => c.name === "AB W2 2025.pdf").readable, true);
+  // Un escaneo que el modelo IGUAL declara haber leido sigue apareciendo como ilegible.
+  const claimed = auditDocumentCoverage({ documentsRead: [{ filename: "Scanned Entity Docs 2025.pdf" }] }, PACKAGE);
+  assert.strictEqual(claimed.unreadable.length, 1, "documentsRead no puede tapar la falta de texto");
+  assert.strictEqual(claimed.coverage.find((c) => c.name === "Scanned Entity Docs 2025.pdf").read, true);
+});
+
+test("canonicalLineKey: colapsa sub-lineas solo cuando el padre esta en la checklist", () => {
+  // La corrida escribio "Line 7a" y "Line 11a" donde la checklist pide 7 y 11, y la tabla
+  // volvio con la fila del modelo MAS una fila "no realizada" para el mismo control.
+  assert.strictEqual(canonicalLineKey("Form 1040 Line 7a — Capital gain"), canonicalLineKey("Form 1040 Line 7 — Capital gain (loss)"));
+  assert.strictEqual(canonicalLineKey("Form 1040 Line 11a — Adjusted gross income"), canonicalLineKey("Form 1040 Line 11 — Adjusted gross income"));
+  // 3a y 3b son controles distintos y ambos estan en la checklist: no deben colapsar.
+  assert.notStrictEqual(canonicalLineKey("Form 1040 Line 3a — Qualified dividends"), canonicalLineKey("Form 1040 Line 3b — Ordinary dividends"));
+
+  const rows = [
+    { lineItem: "Form 1040 Line 7a — Capital gain (loss)", status: "TIE" },
+    { lineItem: "Form 1040 Line 11a — Adjusted gross income", status: "TIE" },
+  ];
+  const after = ensureRequiredTieOutRows(rows, "1040").rows;
+  assert.strictEqual(after.filter((r) => /^Form 1040 Line 7[a-z]? /.test(r.lineItem)).length, 1);
+  assert.strictEqual(after.filter((r) => /^Form 1040 Line 11[a-z]? /.test(r.lineItem)).length, 1);
 });
