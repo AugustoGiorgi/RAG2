@@ -9688,24 +9688,11 @@ async function handleReview(req, res) {
     const textBlocks = extractTextBlocksOnly(result.data);
     const truncated = result.data.stop_reason === "max_tokens";
     let review = normalizeDirectReview(parseClaudeJson(textBlocks), reviewRequest);
-    // Written into the review itself, not only the server log. Four consecutive runs failed
-    // to read the scanned attachments and the exported document gave no way to tell whether
-    // they had been sent at all — while the one person who can reproduce it cannot reach the
-    // VPS log. A diagnostic nobody can read is not a diagnostic.
-    if (review) {
-      const composition = collectScannedPdfDocuments(payload);
-      const usage = result?.data?.usage || {};
-      review.openQuestions = Array.isArray(review.openQuestions) ? review.openQuestions : [];
-      review.openQuestions.push(
-        `DIAGNOSTIC (temporary) — package as sent to the model: ${(payload.files || []).length} file(s) uploaded; `
-        + `${composition.scannedDocs.length} scanned PDF(s) attached for visual reading`
-        + `${composition.scannedDocs.length ? ` (${composition.scannedDocs.map((d) => d.name).join("; ")})` : ""}`
-        + `${composition.skippedScans.length ? `; ${composition.skippedScans.length} skipped for size (${composition.skippedScans.join("; ")})` : ""}`
-        + `${(payload.metadata?.scanDropped || []).length ? `; ${payload.metadata.scanDropped.length} DROPPED IN BROWSER (${payload.metadata.scanDropped.join("; ")})` : ""}`
-        + `. Model: ${result.model || "unknown"}; stop_reason: ${result.data?.stop_reason || "unknown"}; `
-        + `output tokens: ${usage.output_tokens || 0}; cache read: ${usage.cache_read_input_tokens || 0}.`
-      );
-    }
+    // The package composition still goes to the server log every run; it no longer goes
+    // into the client's document. It was put there because the one person who could
+    // reproduce the problem had no access to the log, and it did its job: it showed the
+    // attachments were being sent and the generation was not being truncated, which
+    // ended six runs of guessing. A deliverable is not the place for it.
     let rawFallback = null;
     let finalResult = result;
 
@@ -9978,7 +9965,9 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // against a long prompt: the last instruction is the one that survives it.
   const scanReminder = scannedDocs.length
     ? `BEFORE YOU CONCLUDE: ${scannedDocs.length} scanned PDF(s) are attached to this message (${scannedDocs.map((d) => d.name).join("; ")}). They are images, so nothing printed inside them appears in the document text above. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.
-REQUIRED, and do this before writing any issue: for EACH attached PDF, add ONE line to verifiedItems, prefixed "SCANNED:", naming the file and then every form on every page of it with its key figures — e.g. "SCANNED: taxes.pdf — p1 1099-INT Capital One $1,699.30; p2 1098 First National $35,048.14 (610 Piedmont); p3 1098 CMG $37,513.99 (26350 Cat Tail Dr); p4 Fort Bend 2025 tax bill $23,055.92; p5 Galveston 2025 tax bill $9,445.41". One scanned file routinely holds several unrelated forms and its filename names at most one of them, so page 1 is never the whole story: a review that read only the first page of a five-page attachment has not read it. Keep each line to figures, no commentary.\n`
+REQUIRED, and do this before writing any issue: for EACH attached PDF, add ONE line to verifiedItems, prefixed "SCANNED:", naming the file and then every form on every page of it with its key figures — e.g. "SCANNED: taxes.pdf — p1 1099-INT Capital One $1,699.30; p2 1098 First National $35,048.14 (610 Piedmont); p3 1098 CMG $37,513.99 (26350 Cat Tail Dr); p4 Fort Bend 2025 tax bill $23,055.92; p5 Galveston 2025 tax bill $9,445.41". Number the pages you actually saw and never skip one: if page 2 holds a form, page 2 must appear in that line. One scanned file routinely holds several unrelated forms and its filename names at most one of them, so page 1 is never the whole story. Keep each line to figures, no commentary.
+TRANSCRIBE, DO NOT INFER. Copy each figure digit by digit from the image and copy the form type from its printed title. Do not guess a document's contents from its filename: a file called "Health Benefits" turned out to hold a W-2, and a review that assumed otherwise reported dollar amounts that appear nowhere in it. If a figure is not legible, write "illegible" rather than a number.
+A figure you read off an image is NOT verified support. Reading scans is error-prone — real runs have turned $1,699.30 into $699.70, $37,513.99 into $0, and $9,445.41 into $99,445.41 — and a misread number silently becomes a false finding. So: any tie-out line whose support comes from a scanned attachment must be reported with status NOT VERIFIED and a note naming the file and page, however confident you feel. State the figure, cite where it came from, and let the reviewer confirm it against the document.\n`
     : "";
   const volatileSuffix = [
     scanReminder,
