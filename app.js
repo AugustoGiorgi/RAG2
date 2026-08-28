@@ -8370,10 +8370,49 @@ async function extractPdfText(file) {
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     const page = await pdf.getPage(pageNumber);
     const content = await page.getTextContent();
-    const text = content.items.map((item) => item.str || "").join(" ").replace(/\s+/g, " ").trim();
+    const text = pdfPageLines(content).join("\n");
     if (text) pages.push(`--- Page ${pageNumber} ---\n${text}`);
   }
   return pages.join("\n\n");
+}
+
+/**
+ * Rebuilds a PDF page's visual lines from pdf.js text items.
+ *
+ * pdf.js returns items in content-stream order, which on a filed tax return is nowhere near
+ * reading order: the blank form is drawn first and the filled figures afterwards, so joining
+ * the items into one string put every label on one end of the page and every amount on the
+ * other. "5 Stock basis before distributions" and its $621,409 ended up ~10,000 characters
+ * apart, which is why line-oriented checks over that text found nothing and why the model
+ * kept mis-reading which figure belonged to which line.
+ *
+ * Grouping by baseline puts them back together. The tolerance matters: a label and its
+ * amount sit about 1.7 units apart vertically while consecutive rows are ~12 apart, so a
+ * fixed rounding bucket splits the pair as often as it joins it — the gap has to be measured
+ * against the line being built, not against a grid.
+ */
+function pdfPageLines(content) {
+  const items = (content.items || []).filter((item) => item.str && item.str.trim());
+  items.sort((a, b) => b.transform[5] - a.transform[5] || a.transform[4] - b.transform[4]);
+  const lines = [];
+  let current = null;
+  for (const item of items) {
+    const y = item.transform[5];
+    if (!current || Math.abs(current.y - y) > 3) {
+      current = { y, items: [item] };
+      lines.push(current);
+    } else {
+      current.items.push(item);
+    }
+  }
+  return lines
+    .map((line) => line.items
+      .sort((a, b) => a.transform[4] - b.transform[4])
+      .map((item) => item.str)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim())
+    .filter(Boolean);
 }
 
 function renderFiles() {
