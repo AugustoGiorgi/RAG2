@@ -68,7 +68,14 @@ const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDL
 // while a plain timeout change buys the same six-minute review. Set
 // CLAUDE_STREAM_ABOVE_MAX_TOKENS=8000 to re-enable it, alongside a run to compare against.
 const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || Number.MAX_SAFE_INTEGER);
-const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 16000);
+// 20000, not 16000. The run that finally showed its own numbers used 14,378 output tokens of
+// a 16,000 cap - 90% - and the review now has to enumerate what it finds inside each scanned
+// attachment before it starts writing issues. Extended thinking is off here (temperature 0
+// requires it), so the model has no scratchpad: anything it "works out" has to be written
+// down. Asking it to read nine scanned pages without room to record what they say is asking
+// it to skip them, which is exactly what it did. The 10-minute timeout absorbs the extra
+// couple of minutes.
+const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 20000);
 // 420k chars ≈ 110k tokens: a full 1040 package (current + prior return + consolidated
 // 1099s + K-1s + estimate vouchers) fits without middle-truncation. The old 140k budget
 // cut the middle of the current return, so forms like 8960/Sch D/8949 vanished and the
@@ -9970,7 +9977,8 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // gets answered, and both of those runs answered the same one. Recency is the cheap lever
   // against a long prompt: the last instruction is the one that survives it.
   const scanReminder = scannedDocs.length
-    ? `BEFORE YOU CONCLUDE: ${scannedDocs.length} scanned PDF(s) are attached to this message (${scannedDocs.map((d) => d.name).join("; ")}). They are images, so nothing printed inside them appears in the document text above. Open every page of each one and use what you find. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.\n`
+    ? `BEFORE YOU CONCLUDE: ${scannedDocs.length} scanned PDF(s) are attached to this message (${scannedDocs.map((d) => d.name).join("; ")}). They are images, so nothing printed inside them appears in the document text above. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.
+REQUIRED, and do this before writing any issue: for EACH attached PDF, add ONE line to verifiedItems, prefixed "SCANNED:", naming the file and then every form on every page of it with its key figures — e.g. "SCANNED: taxes.pdf — p1 1099-INT Capital One $1,699.30; p2 1098 First National $35,048.14 (610 Piedmont); p3 1098 CMG $37,513.99 (26350 Cat Tail Dr); p4 Fort Bend 2025 tax bill $23,055.92; p5 Galveston 2025 tax bill $9,445.41". One scanned file routinely holds several unrelated forms and its filename names at most one of them, so page 1 is never the whole story: a review that read only the first page of a five-page attachment has not read it. Keep each line to figures, no commentary.\n`
     : "";
   const volatileSuffix = [
     scanReminder,
