@@ -9956,9 +9956,17 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
     parts.push(dxLabel("Status", check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${safeText(check.difference)}` : ""}`));
     parts.push(dxLabel("Note", check.note));
   }
-  if (Array.isArray(structured.openQuestions) && structured.openQuestions.length) {
+  // `questions` first: normalizeReviewForExport renames openQuestions to questions on its way
+  // here, so reading only the original name meant this section never rendered at all. Every
+  // open question the reviewer was meant to see — and every server-side warning written into
+  // that field, including which uploaded documents were never read — was dropped silently
+  // from the exported document.
+  const openQuestions = (Array.isArray(structured.questions) && structured.questions.length)
+    ? structured.questions
+    : (Array.isArray(structured.openQuestions) ? structured.openQuestions : []);
+  if (openQuestions.length) {
     parts.push(dxH("Open Questions"));
-    structured.openQuestions.forEach((q) => parts.push(dxP(`•  ${safeText(q)}`, { size: 21, after: 60 })));
+    openQuestions.forEach((q) => parts.push(dxP(`•  ${safeText(q)}`, { size: 21, after: 60 })));
   }
   if (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) {
     parts.push(dxH("Missing Documents"));
