@@ -9626,6 +9626,7 @@ async function handleReview(req, res) {
     let retriedWithCompactPackage = false;
     if (!result.ok && isReviewTimeoutError(result)) {
       retriedWithCompactPackage = true;
+      console.log(`[Review] first attempt did not complete (${result.error || "unknown"}) — retrying with a tighter extract.`);
       reviewRequest = buildDirectReviewRequest(payload, req, {
         maxTotalChars: REVIEW_RETRY_MAX_TOTAL_CHARS,
         maxCharsPerFile: REVIEW_RETRY_MAX_CHARS_PER_FILE,
@@ -9932,6 +9933,11 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // the Preparation tab already attached them; Review was the one tab that did not, which
   // is why scanned uploads kept coming back reported as "not provided".
   const { scannedDocs, skippedScans } = collectScannedPdfDocuments(scanSource);
+  // Logged every run. Two consecutive reviews of the same package disagreed on whether the
+  // scanned documents had been read, and the output alone could not tell "the model ignored
+  // the attachments" from "the attachments never left the browser".
+  const withText = (scanSource.files || []).filter((f) => String(f.text || "").trim().length > 40).length;
+  console.log(`[Review] package: ${(scanSource.files || []).length} file(s), ${withText} with extractable text, ${scannedDocs.length} scan(s) attached as PDF (${Math.round(scannedDocs.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)${skippedScans.length ? `, ${skippedScans.length} skipped for size: ${skippedScans.join("; ")}` : ""}.`);
   const blocks = [{ type: "text", text: stablePrefix }];
   if (scannedDocs.length) {
     blocks.push({
