@@ -9804,6 +9804,11 @@ function compactReviewDocuments(documents = [], limits = {}) {
     return {
       ...file,
       extractedText: compactedText + note,
+      // Kept alongside the compacted copy for checks that run in CODE. Only the prompt has
+      // a token budget; a regex does not, and feeding it the truncated middle of a return
+      // is how the cross-year checks came back empty on a package whose prior-year Form
+      // 8582 sits at 90% of the document, inside the part compaction removes.
+      originalText,
       originalTextLength: originalText.length,
       compacted,
     };
@@ -9925,7 +9930,7 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   if (scannedDocs.length) {
     blocks.push({
       type: "text",
-      text: `SCANNED SOURCE DOCUMENTS ATTACHED (${scannedDocs.length}): these uploads are image-based PDFs with no extractable text, attached below as documents. READ THEM VISUALLY and pull every reportable figure exactly as printed — payer, form type, box numbers, amounts, withholding. A W-2, a 1098 or a 1099 inside one of these is support that WAS provided: do NOT report it as missing, and do include it when you total a tie-out line. Files: ${scannedDocs.map((d) => d.name).join("; ")}.${skippedScans.length ? ` NOT ATTACHED (over size limits — report these as unreviewed): ${skippedScans.join("; ")}.` : ""}`,
+      text: `SCANNED SOURCE DOCUMENTS ATTACHED (${scannedDocs.length}): these uploads are image-based PDFs with no extractable text, attached below as documents. READ THEM VISUALLY and pull every reportable figure exactly as printed — payer, form type, box numbers, amounts, withholding. One scanned file routinely holds SEVERAL unrelated forms on different pages — a 1099-INT on page 1, a 1098 on page 3, a property tax bill on page 5 — and its filename usually names only one of them, or none. Work through every page of every attachment before concluding anything is missing. A W-2, a 1098 or a 1099 inside one of these is support that WAS provided: do NOT report it as missing, and do include it when you total a tie-out line. Files: ${scannedDocs.map((d) => d.name).join("; ")}.${skippedScans.length ? ` NOT ATTACHED (over size limits — report these as unreviewed): ${skippedScans.join("; ")}.` : ""}`,
     });
     for (const doc of scannedDocs) {
       blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: doc.data }, title: doc.name.slice(0, 120) });
@@ -10091,7 +10096,7 @@ function structureModelCandidates() {
 
 function normalizeDirectReview(review, reviewRequest) {
   if (!review || typeof review !== "object") return null;
-  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size })) }) || {};
+  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, fullText: file.originalText || file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size })) }) || {};
   normalized.clientName = normalized.clientName || reviewRequest.meta.clientName;
   normalized.returnType = normalized.returnType || reviewRequest.meta.returnType;
   normalized.taxYear = normalized.taxYear || reviewRequest.meta.taxYear;

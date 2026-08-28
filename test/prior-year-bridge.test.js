@@ -181,3 +181,25 @@ test("runPriorYearChecks: encadena todo y falla cerrado", () => {
   assert.deepStrictEqual(runPriorYearChecks(null, {}), []);
   assert.deepStrictEqual(runPriorYearChecks([{ name: "x.pdf", reviewRole: "current_return", text: "corto" }], {}), []);
 });
+
+test("los cruces leen el documento íntegro, no el recortado para el prompt", () => {
+  // Falla real de produccion: los cruces corrian sobre `text`, que es lo que entro en el
+  // presupuesto de tokens. La declaracion anterior se compacta de ~199k a ~34k caracteres
+  // conservando principio y final, y su Form 8582 Parte VII cae al 90% del documento —
+  // dentro de lo que la compactacion tira. Los cuatro cruces volvian vacios.
+  const priorFull = `${PRIOR_8582_SUSPENDED}\n${PRIOR_7203_EXCESS}\n${PRIOR_8960_ACTIVE}`;
+  const currentFull = `${CURRENT_8582_PASSIVE_ENTITY}\n${CURRENT_SCHEDULE_E}\n${CURRENT_8960_PASSIVE}`;
+  const relleno = "linea de relleno que empuja las formas fuera del recorte. ".repeat(400);
+  const compactar = (t) => `${t.slice(0, 200)}\n[...]\n${t.slice(-200)}`;
+
+  const files = [
+    { name: "Client 1040 2025.pdf", reviewRole: "current_return", text: compactar(`${relleno}\n${currentFull}\n${relleno}`), fullText: `${relleno}\n${currentFull}\n${relleno}` },
+    { name: "Client 1040 2024.pdf", reviewRole: "prior_return", text: compactar(`${relleno}\n${priorFull}\n${relleno}`), fullText: `${relleno}\n${priorFull}\n${relleno}` },
+    W2_FROM_ENTITY,
+  ];
+  assert.strictEqual(runPriorYearChecks(files, { taxYear: "2025" }).length, 4, "con fullText deben disparar los cuatro");
+
+  // Sin fullText — el estado que produjo el fallo — los formularios no estan en el texto.
+  const soloCompactado = files.map((f) => ({ ...f, fullText: undefined }));
+  assert.strictEqual(runPriorYearChecks(soloCompactado, { taxYear: "2025" }).length, 0);
+});
