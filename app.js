@@ -4712,6 +4712,7 @@ async function runReview(event) {
 async function buildReviewPayload() {
   const qboReviewItems = qboReportsForReview.map((file) => ({ file, type: "workpapers" }));
   const allFiles = [...getAllFiles(), ...qboReviewItems];
+  scanDropped.length = 0;
   const preparedFiles = [];
   for (const item of allFiles) {
     preparedFiles.push(await prepareFileForReview(item));
@@ -4721,6 +4722,7 @@ async function buildReviewPayload() {
     metadata: {
       ...getMetadata(),
       qboReports: qboReportsForReview.map((file) => ({ name: file.name, reportId: file.qboReportId, companyName: file.qboCompanyName, software: file.accountingSoftwareName || "QuickBooks Online", fetchedAt: file.qboFetchedAt })),
+      scanDropped: [...scanDropped],
       qboInstruction: qboReportsForReview.length ? "ACCOUNTING SOFTWARE DATA AVAILABLE: Reports pulled directly from connected accounting software are included as workpapers. Use them as authoritative book data for workpaper tie-out. Flag any difference between accounting software data and the return as a HIGH issue with the exact dollar difference." : "",
     },
     fileGroups: {
@@ -8151,6 +8153,10 @@ function safeSheetName(name) {
   return cleaned || "Sheet";
 }
 
+// Names of scans the browser meant to attach and could not. Sent with the payload so the
+// server log can say whether the attachments were lost here or ignored downstream.
+const scanDropped = [];
+
 async function prepareFileForReview({ file, type }) {
   const guessedRole = guessReviewFileRole(file);
   const base = {
@@ -8189,7 +8195,13 @@ async function prepareFileForReview({ file, type }) {
         try {
           prepared.scannedPdfBase64 = await readAsBase64(file);
           prepared.scannedPdfName = displayFileName(file);
-        } catch (_) { /* best effort — text-only fallback */ }
+        } catch (error) {
+          // Never silent: a scan detected and then dropped is exactly the difference between
+          // "the model ignored the attachment" and "the attachment never left the browser",
+          // and three reviews in a row could not be told apart without knowing which.
+          scanDropped.push(displayFileName(file));
+          console.warn("Scanned PDF detected but could not be attached:", displayFileName(file), error);
+        }
       }
       return prepared;
     } catch (error) {
@@ -8249,7 +8261,12 @@ async function extractZipPackage(file) {
         // attach it as a native PDF document for visual reading (run 67: the 1099-INTs
         // and broker composites were scans and their data was silently lost).
         if (isImageOnlyPdfText(text) && innerFile.size <= 8 * 1024 * 1024 && scannedPdfs.length < 6) {
-          try { scannedPdfs.push({ name: displayFileName(innerFile), data: await readAsBase64(innerFile) }); } catch (_) {}
+          try {
+            scannedPdfs.push({ name: displayFileName(innerFile), data: await readAsBase64(innerFile) });
+          } catch (error) {
+            scanDropped.push(displayFileName(innerFile));
+            console.warn("Scanned PDF inside ZIP could not be attached:", displayFileName(innerFile), error);
+          }
         }
       }
       else if (["xlsx", "xls"].includes(ext)) {
