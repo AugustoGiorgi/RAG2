@@ -9681,6 +9681,24 @@ async function handleReview(req, res) {
     const textBlocks = extractTextBlocksOnly(result.data);
     const truncated = result.data.stop_reason === "max_tokens";
     let review = normalizeDirectReview(parseClaudeJson(textBlocks), reviewRequest);
+    // Written into the review itself, not only the server log. Four consecutive runs failed
+    // to read the scanned attachments and the exported document gave no way to tell whether
+    // they had been sent at all — while the one person who can reproduce it cannot reach the
+    // VPS log. A diagnostic nobody can read is not a diagnostic.
+    if (review) {
+      const composition = collectScannedPdfDocuments(payload);
+      const usage = result?.data?.usage || {};
+      review.openQuestions = Array.isArray(review.openQuestions) ? review.openQuestions : [];
+      review.openQuestions.push(
+        `DIAGNOSTIC (temporary) — package as sent to the model: ${(payload.files || []).length} file(s) uploaded; `
+        + `${composition.scannedDocs.length} scanned PDF(s) attached for visual reading`
+        + `${composition.scannedDocs.length ? ` (${composition.scannedDocs.map((d) => d.name).join("; ")})` : ""}`
+        + `${composition.skippedScans.length ? `; ${composition.skippedScans.length} skipped for size (${composition.skippedScans.join("; ")})` : ""}`
+        + `${(payload.metadata?.scanDropped || []).length ? `; ${payload.metadata.scanDropped.length} DROPPED IN BROWSER (${payload.metadata.scanDropped.join("; ")})` : ""}`
+        + `. Model: ${result.model || "unknown"}; stop_reason: ${result.data?.stop_reason || "unknown"}; `
+        + `output tokens: ${usage.output_tokens || 0}; cache read: ${usage.cache_read_input_tokens || 0}.`
+      );
+    }
     let rawFallback = null;
     let finalResult = result;
 
