@@ -45,13 +45,24 @@ function withReviewCache(block) {
 
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
-const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
+// 10 minutes, not 5. The review asks for 16000 max_tokens and generates ~14k of them, which
+// takes 4-5 minutes: against a 5-minute cap the call was aborted a breath from finishing, and
+// the timeout handler then rebuilt the whole request and ran it a second time with a tighter
+// extract. That second run is what made a review take 15 minutes, and it also explains why
+// some reviews came back thinner than others - they were the compacted retry, not the
+// original. Letting the first attempt finish is the cheapest fix there is: one pass, ~6 min.
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 600000);
 // Silence between chunks, not total duration. A streaming generation that is still producing
 // tokens is not stuck no matter how long it runs; two minutes of nothing is.
 const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS || 120000);
-// Above this, a non-streaming request risks being cut off mid-generation. The review asks
-// for 16000.
-const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || 8000);
+// Streaming is implemented and unit-tested (readAnthropicStream,
+// test/anthropic-stream.test.js) but is OFF by default. It went into the critical path on a
+// hunch, and the three runs that followed produced 23, then 13, then 4 findings - degrading
+// monotonically, with the model's own output gone entirely by the third. That is not proof
+// the hand-written SSE parser is at fault, but it is reason enough not to leave it there
+// while a plain timeout change buys the same six-minute review. Set
+// CLAUDE_STREAM_ABOVE_MAX_TOKENS=8000 to re-enable it, alongside a run to compare against.
+const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || Number.MAX_SAFE_INTEGER);
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 16000);
 // 420k chars ≈ 110k tokens: a full 1040 package (current + prior return + consolidated
 // 1099s + K-1s + estimate vouchers) fits without middle-truncation. The old 140k budget
