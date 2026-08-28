@@ -9948,7 +9948,7 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // scanned documents had been read, and the output alone could not tell "the model ignored
   // the attachments" from "the attachments never left the browser".
   const withText = (scanSource.files || []).filter((f) => String(f.text || "").trim().length > 40).length;
-  console.log(`[Review] package: ${(scanSource.files || []).length} file(s), ${withText} with extractable text, ${scannedDocs.length} scan(s) attached as PDF (${Math.round(scannedDocs.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)${skippedScans.length ? `, ${skippedScans.length} skipped for size: ${skippedScans.join("; ")}` : ""}.`);
+  console.log(`[Review] package: ${(scanSource.files || []).length} file(s), ${withText} with extractable text, ${scannedDocs.length} scan(s) attached as PDF (${Math.round(scannedDocs.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)${skippedScans.length ? `, ${skippedScans.length} skipped for size: ${skippedScans.join("; ")}` : ""}${(metadata.scanDropped || []).length ? `, ${metadata.scanDropped.length} DROPPED IN BROWSER: ${metadata.scanDropped.join("; ")}` : ""}.`);
   const blocks = [{ type: "text", text: stablePrefix }];
   if (scannedDocs.length) {
     blocks.push({
