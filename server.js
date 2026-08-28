@@ -10200,6 +10200,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     }
     console.log(`[Review] ${bridged.length} deterministic cross-year finding(s) added.`);
   }
+  // Always logged, findings or none: a silent zero was indistinguishable from "nothing to
+  // find" and cost two production round-trips to diagnose.
+  if (bridged.identified) {
+    const id = bridged.identified;
+    console.log(`[Review] cross-year inputs — current: ${id.current || "NOT FOUND"}; prior: ${id.prior || "NOT FOUND"}${id.byContent ? " (identified by content; file roles were not set)" : ""}.`);
+  }
 
   const coverage = auditDocumentCoverage(normalized, payload?.files);
   if (coverage.coverage.length) {

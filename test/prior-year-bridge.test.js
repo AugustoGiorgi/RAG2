@@ -176,10 +176,13 @@ test("runPriorYearChecks: encadena todo y falla cerrado", () => {
 
   // Sin declaración anterior solo puede correr el cruce del año actual.
   assert.strictEqual(runPriorYearChecks(files.filter((f) => f.reviewRole !== "prior_return"), { taxYear: "2025" }).length, 1);
-  // Sin nada, nada. Nunca un hallazgo adivinado.
-  assert.deepStrictEqual(runPriorYearChecks([], {}), []);
-  assert.deepStrictEqual(runPriorYearChecks(null, {}), []);
-  assert.deepStrictEqual(runPriorYearChecks([{ name: "x.pdf", reviewRole: "current_return", text: "corto" }], {}), []);
+  // Sin nada, nada. Nunca un hallazgo adivinado. (El array lleva `identified` adosado para
+  // diagnostico, asi que se compara el largo, no la identidad del array.)
+  assert.strictEqual(runPriorYearChecks([], {}).length, 0);
+  assert.strictEqual(runPriorYearChecks(null, {}).length, 0);
+  assert.strictEqual(runPriorYearChecks([{ name: "x.pdf", reviewRole: "current_return", text: "corto" }], {}).length, 0);
+  // Y aun sin hallazgos deja constancia de que no encontro las declaraciones.
+  assert.deepStrictEqual(runPriorYearChecks([], {}).identified, { current: "", prior: "", byContent: false });
 });
 
 test("los cruces leen el documento íntegro, no el recortado para el prompt", () => {
@@ -202,4 +205,31 @@ test("los cruces leen el documento íntegro, no el recortado para el prompt", ()
   // Sin fullText — el estado que produjo el fallo — los formularios no estan en el texto.
   const soloCompactado = files.map((f) => ({ ...f, fullText: undefined }));
   assert.strictEqual(runPriorYearChecks(soloCompactado, { taxYear: "2025" }).length, 0);
+});
+
+test("identifica las declaraciones por contenido cuando nadie las etiquetó", () => {
+  // Falla real de produccion: los roles current_return / prior_return los pone el navegador
+  // solo si quien sube los archivos usa el desplegable, y en la practica llegan sin poner.
+  // Las dos declaraciones estaban en el paquete y los cuatro cruces devolvian cero.
+  const cabecera = (year) => `Form 1040 U.S. Individual Income Tax Return ${year}\n` + `SCHEDULE A (Form 1040) ${year}\nSCHEDULE E (Form 1040) ${year}\nForm 8582 (${year})\nForm 7203 ${year}\nForm 8960 (${year})\n`.repeat(3);
+  const sinRol = [
+    { name: "CLIENTE, NOMBRE.pdf", reviewRole: "supporting_document", fullText: `${cabecera(2025)}\n${CURRENT_8582_PASSIVE_ENTITY}\n${CURRENT_SCHEDULE_E}\n${CURRENT_8960_PASSIVE}` },
+    { name: "2024-1040-CLIENTE.pdf", reviewRole: "supporting_document", fullText: `${cabecera(2024)}\n${PRIOR_8582_SUSPENDED}\n${PRIOR_7203_EXCESS}\n${PRIOR_8960_ACTIVE}` },
+    W2_FROM_ENTITY,
+  ];
+  const found = runPriorYearChecks(sinRol, { taxYear: "2025" });
+  assert.strictEqual(found.length, 4, "debe encontrarlas por el año impreso en los formularios");
+  assert.strictEqual(found.identified.byContent, true);
+  assert.strictEqual(found.identified.current, "CLIENTE, NOMBRE.pdf");
+  assert.strictEqual(found.identified.prior, "2024-1040-CLIENTE.pdf");
+  assert.match(found.find((f) => /2024/.test(f.title)).title, /2024/);
+
+  // Los roles explícitos siguen mandando cuando existen.
+  const conRol = sinRol.map((f) => (f.name.startsWith("2024") ? { ...f, reviewRole: "prior_return" } : /1040/.test(f.fullText || "") ? { ...f, reviewRole: "current_return" } : f));
+  assert.strictEqual(runPriorYearChecks(conRol, { taxYear: "2025" }).identified.byContent, false);
+
+  // Un paquete con UNA sola declaración no inventa una segunda.
+  const sola = runPriorYearChecks([sinRol[0], W2_FROM_ENTITY], { taxYear: "2025" });
+  assert.strictEqual(sola.identified.prior, "");
+  assert.strictEqual(sola.length, 1, "solo el cruce que corre sobre el año actual");
 });
