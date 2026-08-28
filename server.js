@@ -18,6 +18,7 @@ const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
+const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -26,6 +27,22 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
+// Prompt-cache TTL for the Review request. A 5-minute write costs 1.25x base and only pays
+// off if a second run lands inside the window; a 1-hour write costs 2x and needs three.
+// Kept configurable because the answer is an empirical question about how the firm actually
+// works, and the logged cache_read on every review is the evidence. Set REVIEW_CACHE_TTL to
+// "1h" once the log shows reads, or "off" to stop paying the write premium for nothing.
+const REVIEW_CACHE_TTL = String(process.env.REVIEW_CACHE_TTL || "5m").trim().toLowerCase();
+const REVIEW_CACHE_CONTROL = REVIEW_CACHE_TTL === "off"
+  ? null
+  : REVIEW_CACHE_TTL === "1h"
+    ? { type: "ephemeral", ttl: "1h" }
+    : { type: "ephemeral" };
+/** Applies the configured cache breakpoint, or none when caching is switched off. */
+function withReviewCache(block) {
+  return REVIEW_CACHE_CONTROL ? { ...block, cache_control: REVIEW_CACHE_CONTROL } : block;
+}
+
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
 const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
@@ -9589,8 +9606,8 @@ async function handleReview(req, res) {
     const firmContext = await buildReviewFirmContextBlock(payload);
     // Both system blocks are static across runs — each carries a cache breakpoint so the
     // master prompt is cached even when the firm context is empty.
-    const systemBlocks = [{ type: "text", text: reviewRequest.systemPrompt, cache_control: { type: "ephemeral" } }];
-    if (firmContext) systemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
+    const systemBlocks = [withReviewCache({ type: "text", text: reviewRequest.systemPrompt })];
+    if (firmContext) systemBlocks.push(withReviewCache({ type: "text", text: firmContext }));
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
       // Determinism: the review runs without extended thinking, so temperature 0 is
@@ -9627,6 +9644,14 @@ async function handleReview(req, res) {
     }
     logClaudeCost(req, result, "review", "review", payload, startedAt);
 
+    const cacheUsage = result?.data?.usage || {};
+    const cacheWrote = Number(cacheUsage.cache_creation_input_tokens || 0);
+    const cacheRead = Number(cacheUsage.cache_read_input_tokens || 0);
+    if (cacheWrote || cacheRead) {
+      // Written-but-never-read means the 25% write premium is pure cost. If this line keeps
+      // showing writes with no reads, set REVIEW_CACHE_TTL=off (or =1h if runs cluster).
+      console.log(`[Review] prompt cache (${REVIEW_CACHE_TTL}): wrote ${cacheWrote} token(s), read ${cacheRead}${cacheRead ? "" : " — no hit, the write premium bought nothing this run"}.`);
+    }
     console.log("[Review] stop_reason:", result.data.stop_reason);
     console.log("[Review] content block types:", Array.isArray(result.data.content) ? result.data.content.map((block) => block.type) : []);
 
@@ -9716,7 +9741,7 @@ function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
     documentsRead: documents.map((file) => ({ name: file.name, filename: file.name, role: file.role })),
     feedbackApplied: feedback.map((entry) => entry.text).filter(Boolean),
     systemPrompt: buildDirectReviewSystemPrompt(returnType, state),
-    userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata),
+    userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata, payload),
   };
 }
 
@@ -9842,16 +9867,16 @@ ENTITY-TYPE GUARD: only compare identifiers that apply to the entity in question
 
 CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what disagrees, the two amounts, and which documents: "W-2 Box 1 shows $81,824.69 but the return Line 1a shows $91,825; verify the entry." evidence lists only the line references and amounts. riskAnalysis is one sentence maximum and empty for LOW items. proposedSolution is one sentence. No essays, no repetition of the same numbers across fields, no speculative chains.
 
-CHECKBOX CHECKLIST (REQUIRED): Enumerate EVERY checkbox and election visible on the current-year return in checkboxReview — including ones that are correct — each compared against the prior-year return state. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
+CHECKBOX CHECKLIST (REQUIRED): Examine EVERY checkbox and election on the current-year return against the prior-year return, then report in checkboxReview ONLY the ones that are wrong, doubtful, or a real elective choice the reviewer should confirm. Do NOT list boxes that are plainly correct — a page of rows reading "Correct" hides the one row that matters, and every such row is a claim that can itself be wrong. Add ONE final row with box "Boxes verified as correct", currentState = the count you checked and found correct, shouldBe = "No action", explanation = a short list of the areas covered, so the reviewer can see the scope of the check. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
 
-INFORMATIONAL DATA CHECK (REQUIRED): In infoConsistency, verify every informational item across ALL documents: taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info if present. One row per item with status MATCH or MISMATCH and the exact values compared.${checklistBlock}
+INFORMATIONAL DATA CHECK (REQUIRED): Verify every informational item across ALL documents — taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info. Report in infoConsistency: (a) every MISMATCH, with the exact values compared; (b) every item named under CLIENT FACTS TO VERIFY, matched or not; (c) one final row with item "Identifiers verified as matching", status MATCH, and note = the count and a short list of what was checked. Do not spend a row per identifier that matches — the reviewer needs the exceptions and the scope, not a transcript.${checklistBlock}
 
 For each error, provide risk analysis and a specific proposed solution within the length limits above.
 
 CRITICAL OUTPUT RULE: Return your COMPLETE review as a single valid JSON object matching the schema in the user message. Every field is required. The issues array must list every finding. Do not return an empty issues array for a return that has problems. Write every string in clear, complete English. Do not write prose outside the JSON. Return ONLY the JSON object.`;
 }
 
-function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) {
+function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, scanSource = {}) {
   const feedbackBlock = feedback.length ? feedback.map((entry, index) => `${index + 1}. ${entry.text}`).join("\n") : "None on file";
   const userNotes = String(metadata.userNotes || "").trim();
   const clientFacts = String(metadata.clientFacts || "").trim();
@@ -9891,10 +9916,26 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}) 
     "Return the complete senior review as JSON in exactly this schema:",
     reviewJsonSchemaText(),
   ].filter(Boolean).join("\n");
-  return [
-    { type: "text", text: stablePrefix, cache_control: { type: "ephemeral" } },
-    { type: "text", text: volatileSuffix },
-  ];
+  // Image-only PDFs go in as native documents so the model can actually read them.
+  // The browser already ships their bytes (prepareFileForReview -> scannedPdfBase64) and
+  // the Preparation tab already attached them; Review was the one tab that did not, which
+  // is why scanned uploads kept coming back reported as "not provided".
+  const { scannedDocs, skippedScans } = collectScannedPdfDocuments(scanSource);
+  const blocks = [{ type: "text", text: stablePrefix }];
+  if (scannedDocs.length) {
+    blocks.push({
+      type: "text",
+      text: `SCANNED SOURCE DOCUMENTS ATTACHED (${scannedDocs.length}): these uploads are image-based PDFs with no extractable text, attached below as documents. READ THEM VISUALLY and pull every reportable figure exactly as printed — payer, form type, box numbers, amounts, withholding. A W-2, a 1098 or a 1099 inside one of these is support that WAS provided: do NOT report it as missing, and do include it when you total a tie-out line. Files: ${scannedDocs.map((d) => d.name).join("; ")}.${skippedScans.length ? ` NOT ATTACHED (over size limits — report these as unreviewed): ${skippedScans.join("; ")}.` : ""}`,
+    });
+    for (const doc of scannedDocs) {
+      blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: doc.data }, title: doc.name.slice(0, 120) });
+    }
+  }
+  // The cache breakpoint goes on the LAST stable block, so the documents are cached too.
+  // Put it on the volatile suffix and the PDFs get re-uploaded at full price every run.
+  blocks[blocks.length - 1] = withReviewCache(blocks[blocks.length - 1]);
+  blocks.push({ type: "text", text: volatileSuffix });
+  return blocks;
 }
 
 async function callAnthropicDirect(apiKey, requestBody) {
@@ -10128,6 +10169,33 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // Coverage: a file nobody opened cannot have been reviewed, and the review's own prose
   // will never say so. Counted here and surfaced as open questions so it reaches the
   // reviewer even where the UI has no dedicated section for it.
+  // Cross-year and cross-form checks run in code, not in the prompt. The model found the
+  // suspended-loss carryforward in one run out of three of the SAME package; these fire
+  // every time. They are appended rather than merged so a deterministic finding is never
+  // displaced by the model's own list being long.
+  const bridged = runPriorYearChecks(payload?.files, payload?.metadata || {});
+  if (bridged.length) {
+    normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
+    const seen = new Set(normalized.issues.map((i) => String(i?.issueDescription || "").slice(0, 60).toLowerCase()));
+    for (const finding of bridged) {
+      if (seen.has(String(finding.detail).slice(0, 60).toLowerCase())) continue;
+      normalized.issues.unshift({
+        priority: finding.severity,
+        category: finding.category,
+        areaReviewed: finding.category,
+        formOrSchedule: finding.title,
+        issueDescription: finding.detail,
+        evidence: "Computed by RAG Tax AI directly from the filed returns in this package, not by the language model.",
+        riskAnalysis: "This check runs deterministically on every review. Confirm the figures against the forms before acting.",
+        proposedSolution: finding.action,
+        authority: finding.authority,
+        source: "Automated cross-year check",
+        needsMoreInfo: "",
+      });
+    }
+    console.log(`[Review] ${bridged.length} deterministic cross-year finding(s) added.`);
+  }
+
   const coverage = auditDocumentCoverage(normalized, payload?.files);
   if (coverage.coverage.length) {
     normalized.documentCoverage = coverage.coverage;
@@ -13440,6 +13508,37 @@ const RECONCILIATION_PROMPT_LINES = [
   'OWNERS (for the Schedule K-1 allocation the app builds in code): also return a top-level "owners" array: [ { "name": string, "ownershipPct": number } ] — ONLY when the uploaded files evidence the owners and their percentages (prior-year K-1s, prior return, operating agreement, workpaper). Percentages must sum to 100. If ownership is NOT documented, return an empty array — the app will assume a single 100% owner and flag it; NEVER invent names or percentages.',
 ];
 
+/**
+ * Collects the image-only PDFs the browser shipped as raw bytes, under the API's limits.
+ *
+ * Shared because the Review tab needed exactly this and did not have it: its user content
+ * was two text blocks, so a scanned upload reached the model as "[No readable extracted
+ * text was available]". In one real package that hid a Form 1098, a 1099-INT and a W-2 —
+ * and the review dutifully reported all three as "not provided".
+ */
+function collectScannedPdfDocuments(payload = {}) {
+  const scannedDocs = [];
+  const skippedScans = [];
+  for (const file of payload.files || []) {
+    const candidates = [
+      ...(file.scannedPdfBase64 ? [{ name: file.scannedPdfName || file.name || "scanned.pdf", data: file.scannedPdfBase64 }] : []),
+      ...(Array.isArray(file.scannedPdfs) ? file.scannedPdfs : []),
+    ];
+    for (const candidate of candidates) {
+      const data = String(candidate?.data || "");
+      if (!data) continue;
+      const bytes = Math.floor(data.length * 0.75);
+      const total = scannedDocs.reduce((sum, d) => sum + d.bytes, 0);
+      if (scannedDocs.length >= 5 || bytes > 5 * 1024 * 1024 || total + bytes > 15 * 1024 * 1024) {
+        skippedScans.push(String(candidate.name || "scanned.pdf"));
+        continue;
+      }
+      scannedDocs.push({ name: String(candidate.name || "scanned.pdf"), data, bytes });
+    }
+  }
+  return { scannedDocs, skippedScans };
+}
+
 function buildPreparerContent(payload) {
   const metadata = payload.metadata || {};
   const taxYearNum = Number(String(metadata.taxYear || payload.taxYear || "").match(/\d{4}/)?.[0] || 0);
@@ -13599,25 +13698,7 @@ function buildPreparerContent(payload) {
   // Caps stay well under the API's 100-page / request-size limits: max 5 docs, 5 MB each,
   // 15 MB total. Anything beyond the caps is announced as NOT attached so the model
   // flags it instead of silently missing data.
-  const scannedDocs = [];
-  const skippedScans = [];
-  for (const file of payload.files || []) {
-    const candidates = [
-      ...(file.scannedPdfBase64 ? [{ name: file.scannedPdfName || file.name || "scanned.pdf", data: file.scannedPdfBase64 }] : []),
-      ...(Array.isArray(file.scannedPdfs) ? file.scannedPdfs : []),
-    ];
-    for (const candidate of candidates) {
-      const data = String(candidate?.data || "");
-      if (!data) continue;
-      const bytes = Math.floor(data.length * 0.75);
-      const total = scannedDocs.reduce((sum, d) => sum + d.bytes, 0);
-      if (scannedDocs.length >= 5 || bytes > 5 * 1024 * 1024 || total + bytes > 15 * 1024 * 1024) {
-        skippedScans.push(String(candidate.name || "scanned.pdf"));
-        continue;
-      }
-      scannedDocs.push({ name: String(candidate.name || "scanned.pdf"), data, bytes });
-    }
-  }
+  const { scannedDocs, skippedScans } = collectScannedPdfDocuments(payload);
   if (scannedDocs.length) {
     content.push({
       type: "text",
