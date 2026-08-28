@@ -45,13 +45,17 @@ function withReviewCache(block) {
 
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
-// 10 minutes, not 5. The review asks for 16000 max_tokens and generates ~14k of them, which
-// takes 4-5 minutes: against a 5-minute cap the call was aborted a breath from finishing, and
-// the timeout handler then rebuilt the whole request and ran it a second time with a tighter
-// extract. That second run is what made a review take 15 minutes, and it also explains why
-// some reviews came back thinner than others - they were the compacted retry, not the
-// original. Letting the first attempt finish is the cheapest fix there is: one pass, ~6 min.
-const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 600000);
+// Back to 5 minutes: the value the last review that actually worked ran under.
+//
+// Raising this to 10 minutes did cut a review from ~15 minutes to ~6, and the arithmetic
+// behind it still looks right - a 4-5 minute generation was being aborted against a 5-minute
+// cap and re-run from scratch. But the three reviews that followed stopped reading the
+// scanned PDF attachments, which the two before them had read, and no amount of reasoning
+// from the output alone settled why. Two changes were made to shorten the run; both are now
+// undone. Correctness first, and speed again only with the server log in hand: the
+// "[Review] package:" line says whether the attachments are leaving the browser, and that
+// single fact decides which of the two remaining explanations is right.
+const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
 // Silence between chunks, not total duration. A streaming generation that is still producing
 // tokens is not stuck no matter how long it runs; two minutes of nothing is.
 const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS || 120000);
