@@ -60,14 +60,22 @@ const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOU
 // Silence between chunks, not total duration. A streaming generation that is still producing
 // tokens is not stuck no matter how long it runs; two minutes of nothing is.
 const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS || 120000);
-// Streaming is implemented and unit-tested (readAnthropicStream,
-// test/anthropic-stream.test.js) but is OFF by default. It went into the critical path on a
-// hunch, and the three runs that followed produced 23, then 13, then 4 findings - degrading
-// monotonically, with the model's own output gone entirely by the third. That is not proof
-// the hand-written SSE parser is at fault, but it is reason enough not to leave it there
-// while a plain timeout change buys the same six-minute review. Set
-// CLAUDE_STREAM_ABOVE_MAX_TOKENS=8000 to re-enable it, alongside a run to compare against.
-const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || Number.MAX_SAFE_INTEGER);
+// Streaming back on, this time on evidence rather than a hunch.
+//
+// It was switched off after three reviews stopped reading the scanned attachments, on the
+// theory that the hand-written SSE parser was to blame. That theory was wrong: the problem
+// outlived the revert by six more runs, and the package diagnostic eventually showed the
+// attachments arriving intact and the generation ending on end_turn, never truncated. The
+// parser had nothing to do with it - the model was reading page 1 of each scan and stopping.
+//
+// It is needed again now. The page-by-page inventory pushed output past 15k tokens and the
+// generation runs longer than the 10-minute cap, so the request is aborted near the end and
+// the whole thing re-runs compacted: 15 minutes, and the weaker of the two reviews is the
+// one that survives. Without streaming the server sends nothing until it is done, so a long
+// healthy generation is indistinguishable from a hang. With it, the clock measures silence
+// between chunks instead of total duration, and a request still producing tokens is never
+// killed for taking its time.
+const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || 8000);
 // 20000, not 16000. The run that finally showed its own numbers used 14,378 output tokens of
 // a 16,000 cap - 90% - and the review now has to enumerate what it finds inside each scanned
 // attachment before it starts writing issues. Extended thinking is off here (temperature 0
