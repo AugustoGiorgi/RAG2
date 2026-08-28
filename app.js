@@ -9968,6 +9968,18 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
     parts.push(dxH("Open Questions"));
     openQuestions.forEach((q) => parts.push(dxP(`•  ${safeText(q)}`, { size: 21, after: 60 })));
   }
+  // Verified items were never printed either — the second field in this document found to be
+  // populated and then dropped. It is where the review records what it checked and found
+  // correct, where a user's explicitly requested output lands, and where the page-by-page
+  // inventory of each scanned attachment goes. A reviewer needs to see what was checked, not
+  // only what failed: a short list of confirmations is how they judge the scope of the review.
+  const verified = (Array.isArray(structured.reviewerComments) && structured.reviewerComments.length)
+    ? structured.reviewerComments
+    : (Array.isArray(structured.verifiedItems) ? structured.verifiedItems : []);
+  if (verified.length) {
+    parts.push(dxH("Verified Items"));
+    verified.forEach((v) => parts.push(dxP(`•  ${safeText(v)}`, { size: 21, after: 60 })));
+  }
   if (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) {
     parts.push(dxH("Missing Documents"));
     structured.missingDocuments.forEach((d) => parts.push(dxP(`•  ${safeText(d)}`, { size: 21, after: 60 })));
