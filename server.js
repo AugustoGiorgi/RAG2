@@ -46,6 +46,12 @@ function withReviewCache(block) {
 const MODEL_FALLBACKS = (process.env.CLAUDE_MODEL || "claude-sonnet-4-6,claude-haiku-4-5-20251001")
   .split(",").map((m) => m.trim()).filter(Boolean);
 const ANTHROPIC_REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_REQUEST_TIMEOUT_MS || 300000);
+// Silence between chunks, not total duration. A streaming generation that is still producing
+// tokens is not stuck no matter how long it runs; two minutes of nothing is.
+const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDLE_TIMEOUT_MS || 120000);
+// Above this, a non-streaming request risks being cut off mid-generation. The review asks
+// for 16000.
+const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || 8000);
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 16000);
 // 420k chars ≈ 110k tokens: a full 1040 package (current + prior return + consolidated
 // 1099s + K-1s + estimate vouchers) fits without middle-truncation. The old 140k budget
@@ -9943,9 +9949,66 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   return blocks;
 }
 
+/**
+ * Rebuilds a non-streaming response shape out of the SSE event stream, so every caller
+ * downstream keeps reading `data.content[].text`, `data.usage` and `data.stop_reason`
+ * exactly as before. Streaming is a transport change here, not an interface change.
+ */
+async function readAnthropicStream(res, onActivity) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const blocks = [];
+  let usage = {};
+  let stopReason = null;
+  let model = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (onActivity) onActivity();
+    buffer += decoder.decode(value, { stream: true });
+    let split;
+    while ((split = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let event;
+      try { event = JSON.parse(payload); } catch (_) { continue; }
+      if (event.type === "message_start") {
+        model = event.message?.model || model;
+        usage = { ...usage, ...(event.message?.usage || {}) };
+      } else if (event.type === "content_block_start") {
+        blocks[event.index] = { type: event.content_block?.type || "text", text: event.content_block?.text || "" };
+      } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
+        if (!blocks[event.index]) blocks[event.index] = { type: "text", text: "" };
+        blocks[event.index].text += event.delta.text || "";
+      } else if (event.type === "message_delta") {
+        stopReason = event.delta?.stop_reason ?? stopReason;
+        usage = { ...usage, ...(event.usage || {}) };
+      } else if (event.type === "error") {
+        throw new Error(event.error?.message || "Anthropic stream error");
+      }
+    }
+  }
+  return { content: blocks.filter(Boolean), usage, stop_reason: stopReason, model };
+}
+
 async function callAnthropicDirect(apiKey, requestBody) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ANTHROPIC_REQUEST_TIMEOUT_MS);
+  // Streaming for long generations, and the timeout becomes an IDLE timeout rather than a
+  // total one. A review generating ~14k output tokens takes 4-5 minutes; against a 5-minute
+  // total cap it aborted a breath from finishing, and the timeout handler then rebuilt the
+  // whole request and ran it again — which is how a single review came to take 15 minutes.
+  // While tokens keep arriving the request is alive by definition; only real silence is a
+  // hang. Same request, same response shape, roughly half the wall time.
+  const wantsStream = Number(requestBody?.max_tokens || 0) >= STREAM_ABOVE_MAX_TOKENS;
+  const body = wantsStream ? { ...requestBody, stream: true } : requestBody;
+  let timer = null;
+  const armTimer = (ms) => { if (timer) clearTimeout(timer); timer = setTimeout(() => controller.abort(), ms); };
+  armTimer(ANTHROPIC_REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch(ANTHROPIC_URL, {
       method: "POST",
@@ -9956,8 +10019,12 @@ async function callAnthropicDirect(apiKey, requestBody) {
         "anthropic-beta": "prompt-caching-2024-07-31",
       },
       signal: controller.signal,
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(body),
     });
+    if (res.ok && wantsStream) {
+      const data = await readAnthropicStream(res, () => armTimer(ANTHROPIC_STREAM_IDLE_TIMEOUT_MS));
+      return { ok: true, data, model: data.model || requestBody.model };
+    }
     const raw = await res.text().catch(() => "");
     let data = {};
     try {
