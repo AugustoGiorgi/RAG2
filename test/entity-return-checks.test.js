@@ -13,6 +13,7 @@ const assert = require("node:assert");
 const {
   runEntityReturnChecks, checkBalanceSheetContinuity, checkAccumulatedDepreciationRollforward,
   checkCapitalRollforward, checkK1sFootToReturn, checkOwnerAllocationAgainstBooks,
+  checkDistributionSplitAgainstBooks, drawAccountsFromWorkpaper,
   checkRentalWithOnlyDepreciation, scheduleM2, k1CapitalAccounts, k1OwnerNames, amountsOn,
 } = require("../lib/entity-return-checks");
 
@@ -229,4 +230,62 @@ test("sin subtotales legibles y con itemización, se calla", () => {
   // Fail-closed: antes que un hallazgo inventado, ninguno.
   const sinLinea8 = M2_CON_OTROS().replace(/ 8 Add lines 6 and 7[^\n]*\n/, "");
   assert.strictEqual(checkCapitalRollforward(sinLinea8), null);
+});
+
+// El mismo error de asignacion, en un libro que no nombra a sus duenos.
+//
+// checkOwnerAllocationAgainstBooks necesita filas tipo "Partner-Gerard Distributions" con dos
+// columnas comparativas. El otro modo de armar estos libros no nombra nada: dos cuentas de
+// retiros genericas, una sola columna. Nadie las puede mapear a socios leyendolas, asi que el
+// cheque no lo intenta: solo mira si los totales coinciden (lo que las vuelve las
+// distribuciones) y las partes no (lo que las vuelve equivocadas).
+const K1S_CON_RETIROS = ({ uno = "463,888", dos = "4,686" } = {}) => `
+${k1({ name: "SOCIO UNO LLC", begin: 0, contributed: 0, income: "477,594", withdrawals: uno, end: "13,530" })}
+${k1({ name: "SOCIO DOS LLC", begin: 0, contributed: 0, income: "4,825", withdrawals: dos, end: "137" })}
+`;
+
+const LIBRO_SIN_NOMBRES = ({ uno = "435765.51", dos = "32808.73" } = {}) => `--- Sheet: Balance sheet ---
+Liabilities and Equity
+Equity
+Member Draws/Contributions,-${uno}
+Member Draws- Partner Payout,-${dos}
+Total for Member Draws/Contributions,-468574.24,Distribution
+Retained Earnings
+Net Income,482239.32`;
+
+test("los retiros se repartieron por porcentaje y no por quien los cobro", () => {
+  const finding = checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: LIBRO_SIN_NOMBRES() }]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /\$463,888\.00/);
+  assert.match(finding.detail, /Member Draws- Partner Payout/);
+  // El subtotal "Total for ..." es la suma de las dos de arriba, no una cuenta mas.
+  assert.doesNotMatch(finding.detail, /"Total for/);
+});
+
+test("si los K-1 ya siguen a las cuentas de retiros, no hay hallazgo", () => {
+  const alineado = K1S_CON_RETIROS({ uno: "435,766", dos: "32,809" });
+  assert.strictEqual(checkDistributionSplitAgainstBooks(alineado, [{ name: "wp.xlsx", fullText: LIBRO_SIN_NOMBRES() }]), null);
+});
+
+test("si las cuentas no suman las distribuciones de la declaracion, no se compara nada", () => {
+  // Sin esa coincidencia no son las distribuciones y no hay nada que decir.
+  const otroLibro = LIBRO_SIN_NOMBRES({ uno: "100000", dos: "20000" });
+  assert.strictEqual(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: otroLibro }]), null);
+});
+
+test("sin planilla, o con una sola cuenta de retiros, se calla", () => {
+  assert.strictEqual(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), []), null);
+  const unaSola = `--- Sheet: Balance sheet ---
+Equity
+Member Draws/Contributions,-468574.24`;
+  assert.strictEqual(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: unaSola }]), null);
+});
+
+test("drawAccountsFromWorkpaper ignora subtotales y hojas que no son planilla", () => {
+  assert.deepStrictEqual(
+    drawAccountsFromWorkpaper([{ name: "wp.xlsx", fullText: LIBRO_SIN_NOMBRES() }]).map((a) => a.label),
+    ["Member Draws/Contributions", "Member Draws- Partner Payout"],
+  );
+  assert.deepStrictEqual(drawAccountsFromWorkpaper([{ name: "return.pdf", fullText: "Withdrawals and distributions 5,000." }]), []);
 });
