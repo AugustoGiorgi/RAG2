@@ -21,7 +21,7 @@ const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptL
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
-const { verifyAbsenceClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10347,6 +10347,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (absence.corrected) {
     normalized.issues = absence.issues;
     console.log(`[Review] ${absence.corrected} finding(s) claimed a figure was absent from a return that prints it; lowered to LOW.`);
+  }
+
+  // The same error about a form rather than a figure, which the check above cannot see
+  // because such a finding names no dollar amount.
+  const attachments = verifyAttachmentClaims(normalized, payload?.files);
+  if (attachments.corrected) {
+    normalized.issues = attachments.issues;
+    console.log(`[Review] ${attachments.corrected} finding(s) reported a form as missing that is in the package; lowered to LOW.`);
   }
 
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});

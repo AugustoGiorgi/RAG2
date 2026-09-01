@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -190,4 +190,73 @@ test("no le atribuye al hallazgo cifras que nunca dijo que faltaban", () => {
   assert.match(out.issues[0].riskAnalysis, /reports something as absent/);
   assert.match(out.issues[0].riskAnalysis, /\$2,140\.00/);
   assert.doesNotMatch(out.issues[0].riskAnalysis, /says .*are not reported/);
+});
+
+// "El anexo requerido no esta adjunto" -- cuando si esta en el paquete.
+//
+// Dos veces en tres corridas de la misma declaracion, sobre dos anexos distintos. Una review
+// dijo que faltaba el Schedule B-2; la sociedad no estaba eligiendo salir del regimen, asi
+// que nunca hizo falta. La siguiente dijo que el Schedule B-1 no estaba adjunto, citando como
+// evidencia la lista de formularios -- que es el primer lugar donde la declaracion lo nombra,
+// tres renglones abajo del encabezado, con el formulario impreso mas adelante en el mismo
+// paquete. Las dos mandan al preparador a buscar algo que ya tiene delante.
+const PAQUETE = {
+  name: "Client 1065 2025.pdf",
+  reviewRole: "current_return",
+  fullText: `FORMS NEEDED FOR THIS RETURN
+FEDERAL: 1065, SCH B-1, SCH K-1, 1125-A, 6765, 8879-PE
+2 a Did any corporation own 50% or more of the partnership? For rules of constructive
+ownership, see instructions. If "Yes," attach Schedule B-1 . . . . . . . . . . X [ANSWER: Yes]
+SCHEDULE B-1 Information on Partners Owning 50% or More of the Partnership
+${"relleno para que la declaracion pase el largo minimo. ".repeat(20)}`,
+};
+
+test("degrada el hallazgo que dice que falta un anexo que si esta", () => {
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Schedule B Question 2a is marked Yes but Schedule B-1 is not attached.",
+    evidence: "Forms list: no Schedule B-1 listed.",
+    riskAnalysis: "IRS e-file will reject.",
+  })] };
+  const out = verifyAttachmentClaims(review, [PAQUETE]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /CONTRADICTED BY THE PACKAGE/);
+  assert.match(out.issues[0].riskAnalysis, /schedule b-1/i);
+  assert.match(out.issues[0].riskAnalysis, /IRS e-file will reject/);
+});
+
+test("no toca el reclamo sobre un anexo que de verdad falta", () => {
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Schedule K-2 is not attached although the partnership reports foreign activity.",
+  })] };
+  const out = verifyAttachmentClaims(review, [PAQUETE]);
+  assert.strictEqual(out.corrected, 0);
+  assert.strictEqual(out.issues[0].priority, "HIGH");
+});
+
+test("el texto de la instruccion no cuenta como que el formulario esta", () => {
+  // 'If "Yes," attach Schedule B-1' nombra el anexo sin que este presente. Solo cuenta un
+  // renglon que ARRANQUE con el nombre: el encabezado del formulario o la lista de formularios.
+  const soloInstruccion = { ...PAQUETE, fullText: PAQUETE.fullText
+    .replace(/^FEDERAL:.*$/m, "FEDERAL: 1065, SCH K-1, 1125-A")
+    .replace(/^SCHEDULE B-1 .*$/m, "") };
+  assert.strictEqual(formAppearsInPackage("Schedule", "B-1", soloInstruccion.fullText), false);
+  const review = { issues: [issue({ issueDescription: "Schedule B-1 is not attached." })] };
+  assert.strictEqual(verifyAttachmentClaims(review, [soloInstruccion]).corrected, 0);
+});
+
+test("reconoce al formulario por su encabezado o por la lista de formularios", () => {
+  assert.strictEqual(formAppearsInPackage("Schedule", "B-1", PAQUETE.fullText), true);
+  assert.strictEqual(formAppearsInPackage("Schedule", "B-2", PAQUETE.fullText), false);
+  assert.strictEqual(formAppearsInPackage("Form", "6765", PAQUETE.fullText), true, "la lista dice 6765");
+  assert.strictEqual(formAppearsInPackage("Form", "8825", PAQUETE.fullText), false);
+});
+
+test("sin paquete legible no corrige nada", () => {
+  const review = { issues: [issue({ issueDescription: "Schedule B-1 is not attached." })] };
+  assert.strictEqual(verifyAttachmentClaims(review, []).corrected, 0);
+  assert.strictEqual(verifyAttachmentClaims(review, [{ name: "x", fullText: "corto" }]).corrected, 0);
+  assert.strictEqual(verifyAttachmentClaims({ issues: [] }, [PAQUETE]).corrected, 0);
 });
