@@ -1,0 +1,205 @@
+"use strict";
+// Posiciones que la declaracion afirma en un lado y contradice en otro.
+//
+// Los cuatro salen de un 1065 real donde TODOS los numeros cerraban -- el tie-out daba
+// perfecto -- y habia cuatro posiciones equivocadas igual. Ninguna es aritmetica: cada una es
+// un par de hechos impresos a paginas de distancia, y ninguna mitad llama la atencion sola.
+const { test } = require("node:test");
+const assert = require("node:assert");
+const {
+  checkSection280CElection, checkResearchCreditEqualsAllWages,
+  checkCashBasisUnexplainedLiability, checkPaymentsRequiring1099,
+  runReturnConsistencyChecks, answerOn, nonEmployeePayments, unexplainedLiabilities,
+} = require("../lib/return-consistency-checks");
+
+// Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
+const RETURN = ({
+  election = "No", credit = "3,200.", qre = "61,400.", wages = "61,400.",
+  method = "(1) X Cash", form1099 = "No", m1extra = "", liability = "CUSTOMER FUNDS HELD . . . . . . . . 0. 58,900.",
+} = {}) => `
+Form 1065 U.S. Return of Partnership Income
+H Check accounting method: ${method} (2) Accrual (3) Other (specify):
+9 Salaries and wages (other than to partners) (less employment credits) . . . . . . . . 9 ${wages}
+21 Other deductions (att stmt) . . . . . . . . SEE STATEMENT 2 21 180,000.
+Schedule B Other Information Yes No
+16 a Did you make any payments in 2025 that would require you to file Form(s) 1099? See instructions . . . . X [ANSWER: ${form1099}]
+Schedule M-1 Reconciliation of Income (Loss) per Books With Analysis of Net Income (Loss) per Return
+1 Net income (loss) per books . . . . . . . . 402,000.
+4 Expenses recorded on books this year not included on Schedule K
+entertainment . . . . . . $ 260.${m1extra}
+5 Add lines 1 through 4 . . . . . . . . 402,260.
+Form 6765 Credit for Increasing Research Activities
+A Are you electing the reduced credit under section 280C? See instructions . . . . . . Yes X No [ANSWER: ${election}]
+5 Total qualified research expenses (QREs). Enter amount from line 48 . . . . . . . . 5 ${qre}
+30 Add lines 28 and 29 . . . . . . . . . . . . . . . . . . . . . . . . . . 30 ${credit}
+STATEMENT 2
+FORM 1065, LINE 21
+OTHER DEDUCTIONS
+ACCOUNTING $ . . . . . . . . . . . . . . . . 7,100.
+OUTSIDE SERVICES . . . . . . . . . . . . . . 23,400.
+SOFTWARE & SUBSCRIPTIONS . . . . . . . . . . 149,500.
+TOTAL $ 180,000.
+STATEMENT 5
+FORM 1065, SCHEDULE L, LINE 17
+OTHER CURRENT LIABILITIES
+BEGINNING ENDING
+CREDIT CARDS $ . . . . . . . . . . . . . . . 0. 3,100.
+${liability}
+TOTAL $ 0. 62,000.
+STATEMENT 6
+FORM 1125-A, LINE 5
+OTHER COSTS
+READER COMMISSIONS . . . . . . . . . . . . . $ 288,700.
+TOTAL $ 288,700.
+`;
+
+/* --- 1. Seccion 280C ---------------------------------------------------- */
+
+test("credito de investigacion al 20% sin reducir la deduccion", () => {
+  const finding = checkSection280CElection(RETURN());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$3,200\.00/);
+  assert.match(finding.detail, /understated by \$3,200\.00/);
+  // Y le dice al preparador cuanto cuesta cada camino: 3,200 x 79% = 2,528.
+  assert.match(finding.action, /\$2,528\.00/);
+});
+
+test("si eligio el credito reducido, no hay nada que marcar", () => {
+  assert.strictEqual(checkSection280CElection(RETURN({ election: "Yes" })), null);
+});
+
+test("si el M-1 ya trae el ajuste del credito, se calla", () => {
+  const conAjuste = RETURN({ m1extra: "\nsection 280C reduction . . . . . . $ 3,200." });
+  assert.strictEqual(checkSection280CElection(conAjuste), null);
+});
+
+test("sin respuesta legible en la casilla A no se inventa nada", () => {
+  // Fail-closed: si pdfPageLines no pudo resolver la columna, no hay hallazgo.
+  const sinRespuesta = RETURN().replace(/ \[ANSWER: No\]\n5 Total/, "\n5 Total");
+  assert.strictEqual(checkSection280CElection(sinRespuesta), null);
+});
+
+test("sin Form 6765 en el paquete no aplica", () => {
+  assert.strictEqual(checkSection280CElection("Form 1065 sin nada de esto"), null);
+});
+
+/* --- 2. QRE igual a toda la nomina -------------------------------------- */
+
+test("los QRE son exactamente toda la nomina", () => {
+  const finding = checkResearchCreditEqualsAllWages(RETURN());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$61,400\.00/);
+  assert.match(finding.detail, /to the dollar/);
+});
+
+test("una asignacion parcial de la nomina no se marca", () => {
+  assert.strictEqual(checkResearchCreditEqualsAllWages(RETURN({ qre: "38,900." })), null);
+});
+
+test("el numero de linea de la seccion sin usar no se confunde con un importe", () => {
+  // La linea 5 de un filer que usa el credito simplificado imprime solo el numero de casilla.
+  const sinSeccionA = RETURN({ qre: "5" });
+  assert.strictEqual(checkResearchCreditEqualsAllWages(sinSeccionA), null);
+});
+
+/* --- 3. Pasivo que no es un prestamo en base percibido ------------------ */
+
+test("declaracion por lo percibido con fondos de terceros en el balance", () => {
+  const finding = checkCashBasisUnexplainedLiability(RETURN());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /CUSTOMER FUNDS HELD/);
+  assert.match(finding.detail, /\$58,900\.00/);
+  // La tarjeta de credito es un endeudamiento: no entra.
+  assert.doesNotMatch(finding.detail, /CREDIT CARDS/);
+});
+
+test("por lo devengado la pregunta no se hace", () => {
+  assert.strictEqual(checkCashBasisUnexplainedLiability(RETURN({ method: "(2) X Accrual" })), null);
+});
+
+test("un pasivo que si es endeudamiento no dispara", () => {
+  const soloPrestamo = RETURN({ liability: "NOTES PAYABLE - BANK . . . . . . . 0. 58,900." });
+  assert.strictEqual(checkCashBasisUnexplainedLiability(soloPrestamo), null);
+});
+
+test("un saldo chico no vale mandar al revisor de vuelta al cliente", () => {
+  const chico = RETURN({ liability: "CUSTOMER FUNDS HELD . . . . . . . . 0. 900." });
+  assert.strictEqual(checkCashBasisUnexplainedLiability(chico), null);
+});
+
+test("no barre el resto del Schedule L", () => {
+  // El renglon 17 del propio Schedule L dice "Other current liabilities (attach stmt)", y
+  // arrastraba el capital de los socios y el total del balance al hallazgo.
+  const conScheduleL = `${RETURN()}
+17 Other current liabilities (attach stmt) . . . SEE ST 5 62,000.
+21 Partners' capital accounts . . . . . . . . . . . . 340,000.
+22 Total liabilities and capital . . . . . . . . . . . 402,000.`;
+  const finding = checkCashBasisUnexplainedLiability(conScheduleL);
+  assert.ok(finding);
+  assert.doesNotMatch(finding.detail, /capital|Total liabilities/i);
+});
+
+/* --- 4. La pregunta de los 1099 ---------------------------------------- */
+
+test("Schedule B dice No sobre pagos a no empleados", () => {
+  const finding = checkPaymentsRequiring1099(RETURN());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /OUTSIDE SERVICES/);
+  assert.match(finding.detail, /READER COMMISSIONS/);
+  assert.match(finding.detail, /\$312,100\.00/);
+  // El procesador de pagos es una salida legitima y el hallazgo tiene que decirlo.
+  assert.match(finding.action, /third-party settlement/i);
+});
+
+test("si contesto que si, no hay nada que discutir", () => {
+  assert.strictEqual(checkPaymentsRequiring1099(RETURN({ form1099: "Yes" })), null);
+});
+
+test("sin pagos a no empleados la respuesta No es correcta", () => {
+  const sinPagos = RETURN()
+    .replace(/OUTSIDE SERVICES[^\n]*\n/, "")
+    .replace(/READER COMMISSIONS[^\n]*\n/, "");
+  assert.strictEqual(checkPaymentsRequiring1099(sinPagos), null);
+});
+
+test("nada por debajo del umbral de 600", () => {
+  const chico = RETURN().replace("23,400.", "450.").replace("$ 288,700.", "$ 320.");
+  assert.strictEqual(checkPaymentsRequiring1099(chico), null);
+});
+
+/* --- helpers y entrada ------------------------------------------------- */
+
+test("answerOn lee la anotacion y nada mas", () => {
+  assert.strictEqual(answerOn("pregunta [ANSWER: Yes]"), "yes");
+  assert.strictEqual(answerOn("pregunta [ANSWER: No]"), "no");
+  assert.strictEqual(answerOn("pregunta sin anotar X"), null);
+  assert.strictEqual(answerOn(null), null);
+});
+
+test("las etiquetas salen sin la columna de apertura ni el signo peso", () => {
+  assert.deepStrictEqual(
+    unexplainedLiabilities(RETURN()).map((l) => l.label),
+    ["CUSTOMER FUNDS HELD"],
+  );
+  assert.deepStrictEqual(
+    nonEmployeePayments(RETURN()).map((p) => p.label),
+    ["OUTSIDE SERVICES", "READER COMMISSIONS"],
+  );
+});
+
+test("de punta a punta sobre el paquete", () => {
+  const files = [{ name: "Cliente 1065 2025.pdf", reviewRole: "current_return", fullText: RETURN() }];
+  const findings = runReturnConsistencyChecks(files, { returnType: "1065", taxYear: "2025" });
+  assert.strictEqual(findings.length, 4);
+  assert.ok(findings.every((f) => f.severity === "HIGH"));
+});
+
+test("un paquete sin declaracion legible no produce nada", () => {
+  assert.deepStrictEqual(runReturnConsistencyChecks([], {}), []);
+  assert.deepStrictEqual(runReturnConsistencyChecks(null, {}), []);
+  assert.deepStrictEqual(runReturnConsistencyChecks([{ name: "x.pdf", fullText: "corto" }], {}), []);
+});

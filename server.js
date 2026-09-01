@@ -20,6 +20,7 @@ const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
+const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { verifyAbsenceClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
@@ -10360,7 +10361,11 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     normalized.issues = continuity.issues;
     console.log(`[Review] ${continuity.corrected} finding(s) claimed a continuity break that the balance-sheet check had already ruled out; lowered to LOW.`);
   }
-  const bridged = [...individualChecks, ...entityChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
+  // Not gated by return type: a stated position contradicting another stated position reads
+  // the same on a 1065 as on an 1120-S, and each check is anchored on text that only its own
+  // form prints, so a package without that form produces nothing.
+  const consistencyChecks = runReturnConsistencyChecks(payload?.files, payload?.metadata || {});
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];

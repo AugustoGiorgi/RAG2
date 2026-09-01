@@ -8432,14 +8432,84 @@ function pdfPageLines(content) {
       current.items.push(item);
     }
   }
-  return lines
-    .map((line) => line.items
-      .sort((a, b) => a.transform[4] - b.transform[4])
-      .map((item) => item.str)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim())
-    .filter(Boolean);
+  const rendered = lines.map((line) => line.items
+    .sort((a, b) => a.transform[4] - b.transform[4])
+    .map((item) => item.str)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim());
+  annotateYesNoAnswers(lines, rendered);
+  return rendered.filter(Boolean);
+}
+
+const CHECK_MARK = /^[Xx]$/;
+/** How far a tick may sit from its column's label and still belong to it. */
+const COLUMN_TOLERANCE = 12;
+
+/**
+ * Writes " [ANSWER: Yes]" / " [ANSWER: No]" onto the questions whose answer is a tick in a
+ * Yes/No column.
+ *
+ * Schedule B asks about 1099 filing, the centralized audit regime, foreign accounts and
+ * section 754 — answers that carry real consequences and that arrive as a bare "X" floating
+ * at the right margin, its column heading printed once at the top of the page. Flattening the
+ * page to text throws away the x coordinate, and with it the only thing that distinguished
+ * yes from no: a review read "electing out of the centralized audit regime" as Yes when the
+ * tick was in the No column, then asked the client for a Schedule B-2 that was never required.
+ *
+ * Two shapes, because the forms use both. A question with its own inline "Yes ... No" (Form
+ * 6765 line A) is answered by whichever word the tick is nearer. A page with a "Yes No"
+ * column heading answers every question below it, and there the tick often lands on its own
+ * text line, several lines away from the sentence it answers.
+ *
+ * Purely additive: no line is removed, reordered or rewritten, so every other reader of this
+ * text sees exactly what it saw before plus the answer.
+ */
+function annotateYesNoAnswers(lines, rendered) {
+  const columnOf = (line, word) => {
+    const hit = line.items.find((item) => item.str.trim().toLowerCase() === word);
+    return hit ? hit.transform[4] : null;
+  };
+  const ticksOn = (line) => line.items.filter((item) => CHECK_MARK.test(item.str.trim()));
+  const answer = (x, yesX, noX) => {
+    const toYes = Math.abs(x - yesX);
+    const toNo = Math.abs(x - noX);
+    if (Math.min(toYes, toNo) > COLUMN_TOLERANCE) return null;
+    return toYes <= toNo ? "Yes" : "No";
+  };
+
+  let heading = null;
+  lines.forEach((line, index) => {
+    const yesX = columnOf(line, "yes");
+    const noX = columnOf(line, "no");
+    const ticks = ticksOn(line);
+    if (yesX === null || noX === null) {
+      // A tick under a column heading. It may sit on the question's own line or, when the
+      // form prints the box a hair lower than the sentence, on a line all of its own.
+      if (!heading || !ticks.length) return;
+      const said = ticks.map((tick) => answer(tick.transform[4], heading.yesX, heading.noX)).find(Boolean);
+      if (!said) return;
+      const hasWords = /[A-Za-z]{3}/.test(rendered[index]);
+      const target = hasWords ? index : lastIndexWithWords(rendered, index);
+      if (target !== -1) rendered[target] += ` [ANSWER: ${said}]`;
+      return;
+    }
+    if (ticks.length) {
+      // Inline "Yes X No": the question and its answer on one line, no heading involved.
+      const said = ticks.map((tick) => answer(tick.transform[4], yesX, noX)).find(Boolean);
+      if (said) rendered[index] += ` [ANSWER: ${said}]`;
+      return;
+    }
+    heading = { yesX, noX };
+  });
+}
+
+/** The nearest line above `from` that carries actual words rather than a lone tick. */
+function lastIndexWithWords(rendered, from) {
+  for (let index = from - 1; index >= 0 && index >= from - 6; index -= 1) {
+    if (/[A-Za-z]{3}/.test(rendered[index])) return index;
+  }
+  return -1;
 }
 
 function renderFiles() {
