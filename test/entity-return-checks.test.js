@@ -289,3 +289,26 @@ test("drawAccountsFromWorkpaper ignora subtotales y hojas que no son planilla", 
   );
   assert.deepStrictEqual(drawAccountsFromWorkpaper([{ name: "return.pdf", fullText: "Withdrawals and distributions 5,000." }]), []);
 });
+
+test("lee las cuentas de retiros aunque las celdas traigan separador de miles", () => {
+  // SheetJS exporta una celda formateada como "-435,765.51", entre comillas porque lleva
+  // coma. Separar celdas reemplazando toda coma por espacio partia esa cifra en 435 y 765.51,
+  // el cheque no encontraba ninguna cuenta y se quedaba callado sobre la declaracion para la
+  // que fue escrito -- mientras la propia review citaba el numero bien.
+  const formateado = `--- Sheet: Balance sheet ---
+Member Draws/Contributions,"-435,765.51"
+Member Draws- Partner Payout,"-32,808.73"
+Total for Member Draws/Contributions,"-468,574.24",Distribution`;
+  assert.deepStrictEqual(
+    drawAccountsFromWorkpaper([{ name: "wp.xlsx", fullText: formateado }]).map((a) => a.amount),
+    [435765.51, 32808.73],
+  );
+  assert.ok(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: formateado }]));
+});
+
+test("y con la sangria y las columnas vacias que deja el export", () => {
+  const sangrado = `--- Sheet: Balance sheet ---
+,,,Member Draws/Contributions,"-435,765.51",,
+,,,Member Draws- Partner Payout,"-32,808.73",,`;
+  assert.ok(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: sangrado }]));
+});
