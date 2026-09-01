@@ -19,6 +19,7 @@ const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialS
 const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
+const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10334,7 +10335,13 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // suspended-loss carryforward in one run out of three of the SAME package; these fire
   // every time. They are appended rather than merged so a deterministic finding is never
   // displaced by the model's own list being long.
-  const bridged = runPriorYearChecks(payload?.files, payload?.metadata || {});
+  // Two families, gated by return type so neither can fire on the other's forms: the 1040
+  // checks key off Schedule 8582/7203/8960 and W-2s, the entity checks off Schedule L, M-2,
+  // the K-1s and Form 8825. A package only ever satisfies one of them.
+  const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
+  const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
+  const bridged = [...individualChecks, ...entityChecks];
+  bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
     const seen = new Set(normalized.issues.map((i) => String(i?.issueDescription || "").slice(0, 60).toLowerCase()));
