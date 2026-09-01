@@ -20,6 +20,7 @@ const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
+const { verifyAbsenceClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10338,9 +10339,18 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // Two families, gated by return type so neither can fire on the other's forms: the 1040
   // checks key off Schedule 8582/7203/8960 and W-2s, the entity checks off Schedule L, M-2,
   // the K-1s and Form 8825. A package only ever satisfies one of them.
+  // Runs over the finished review, before the deterministic findings are prepended: a claim
+  // that a figure is absent from the return is checked against the return, and a downgraded
+  // finding carries the line that contradicts it.
+  const absence = verifyAbsenceClaims(normalized, payload?.files);
+  if (absence.corrected) {
+    normalized.issues = absence.issues;
+    console.log(`[Review] ${absence.corrected} finding(s) claimed a figure was absent from a return that prints it; lowered to LOW.`);
+  }
+
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
   const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
-  const bridged = [...individualChecks, ...entityChecks];
+  const bridged = [...individualChecks, ...entityChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
