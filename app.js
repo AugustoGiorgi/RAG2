@@ -8443,8 +8443,23 @@ function pdfPageLines(content) {
 }
 
 const CHECK_MARK = /^[Xx]$/;
-/** How far a tick may sit from its column's label and still belong to it. */
-const COLUMN_TOLERANCE = 12;
+/**
+ * A tick belongs to the nearer of the two columns, but only when it is clearly nearer:
+ * within half the gap between them. Relative rather than fixed, because the forms do not
+ * agree on where the box goes. Form 6765 prints the box before its word and the tick lands
+ * ten units left of "No"; the NY IT-204 prints it after, twenty-two units right of "No"; a
+ * Schedule B column heading sits two units left of the tick beneath it. A fixed tolerance
+ * wide enough for the third is wide enough to grab a checkbox belonging to something else.
+ */
+const MAX_COLUMN_TOLERANCE = 30;
+/**
+ * And it has to be nearer by a margin. The forms disagree about which side of its word a box
+ * sits on — Form 6765 puts it before, the NY IT-204 after — so a tick landing near the
+ * midpoint is genuinely unreadable, and distance alone would settle it on a rounding error.
+ * One did: a third-party designee box sat 18.3 from "No" and 19.2 from "Yes", and the nearer
+ * of the two was the wrong answer on a form that named the designee, his phone and his PIN.
+ */
+const REQUIRED_CLARITY = 0.6;
 
 /**
  * Writes " [ANSWER: Yes]" / " [ANSWER: No]" onto the questions whose answer is a tick in a
@@ -8472,9 +8487,15 @@ function annotateYesNoAnswers(lines, rendered) {
   };
   const ticksOn = (line) => line.items.filter((item) => CHECK_MARK.test(item.str.trim()));
   const answer = (x, yesX, noX) => {
+    const spacing = Math.abs(noX - yesX);
+    if (!spacing) return null;
+    const tolerance = Math.min(spacing / 2, MAX_COLUMN_TOLERANCE);
     const toYes = Math.abs(x - yesX);
     const toNo = Math.abs(x - noX);
-    if (Math.min(toYes, toNo) > COLUMN_TOLERANCE) return null;
+    const near = Math.min(toYes, toNo);
+    const far = Math.max(toYes, toNo);
+    if (near > tolerance) return null;
+    if (far > 0 && near / far > REQUIRED_CLARITY) return null;
     return toYes <= toNo ? "Yes" : "No";
   };
 

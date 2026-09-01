@@ -111,3 +111,27 @@ test("sin encabezado no se inventa una respuesta", () => {
     "16a Did you make any payments requiring Form 1099? X",
   ]);
 });
+
+test("la casilla que va DESPUES de la palabra tambien se resuelve", () => {
+  // Los formularios no se ponen de acuerdo con que lado de la palabra lleva la casilla. El
+  // Form 6765 la pone antes (la tilde cae 10 unidades a la izquierda de "No"); el IT-204 de
+  // NY la pone despues, 22.5 a la derecha. Coordenadas del PDF real.
+  const content = { items: [
+    item("H Did the partnership have an interest in real property in NYS?", 55, 338.9),
+    item("Yes", 496.1, 338.9), item("No", 543.1, 338.9), item("X", 565.6, 338.9),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), [
+    "H Did the partnership have an interest in real property in NYS? Yes No X [ANSWER: No]",
+  ]);
+});
+
+test("la tilde que cae en el medio no se responde", () => {
+  // Justamente porque las dos convenciones conviven, una tilde equidistante es ilegible. Esta
+  // estaba a 18.3 de "No" y 19.2 de "Yes": por distancia ganaba "No", y la respuesta correcta
+  // era "Yes" en un formulario que nombraba al designado, su telefono y su PIN.
+  const content = { items: [
+    item("Yes", 42.5, 261.6), item("X", 61.7, 261.6), item("No", 80.0, 261.6),
+    item("Email: SOMEONE@EXAMPLE.COM", 120, 261.6),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), ["Yes X No Email: SOMEONE@EXAMPLE.COM"]);
+});
