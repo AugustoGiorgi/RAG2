@@ -90,7 +90,10 @@ test("amountsOn ignora los números de línea que el formulario imprime dos vece
 
 test("lee Schedule M-2 pese a que las dos columnas comparten renglón", () => {
   const m2 = scheduleM2(RETURN_1065);
-  assert.deepStrictEqual(m2, { beginning: 1000, contributed: 9000, income: -1200, distributions: 12800, ending: -4000 });
+  // additions es la línea 5 y reductions la línea 8: los subtotales que el propio formulario
+  // calcula, y que ya contienen lo itemizado en las líneas 4 y 7. Esta plantilla no imprime
+  // la línea 8, así que reductions queda en null y el cheque cae al camino por componentes.
+  assert.deepStrictEqual(m2, { beginning: 1000, contributed: 9000, income: -1200, distributions: 12800, additions: 99999, reductions: null, ending: -4000 });
 });
 
 test("lee las cuentas de capital y los nombres de cada K-1", () => {
@@ -189,4 +192,41 @@ test("runEntityReturnChecks: encadena, y no pisa a los cheques del 1040", () => 
   assert.strictEqual(runEntityReturnChecks([], {}).length, 0);
   assert.strictEqual(runEntityReturnChecks(null, {}).length, 0);
   assert.strictEqual(runEntityReturnChecks([{ name: "x.pdf", reviewRole: "current_return", fullText: "corto" }], {}).length, 0);
+});
+
+// Una corrida real marcó en ALTO que el M-2 no cerraba, por exactamente los $178 de comidas
+// no deducibles que la propia declaración itemizaba en la línea 7. El renglón "4 Other
+// increases" y el renglón "7 Other decreases" imprimen la etiqueta en una columna y la cifra
+// en la otra, así que la cifra cae en una línea de texto vecina y no se puede atribuir a una
+// u otra. Las líneas 5 y 8 son los subtotales que el formulario ya calculó: ahí no hay nada
+// que adivinar.
+const M2_CON_OTROS = ({ decreases = "400", end = "49,600" } = {}) => `
+1 Balance at beginning of year . . . . . . . . 0. 6 Distributions: a Cash . . . . . . . . 250,000.
+2 Capital contributed: a Cash . . . . . . . . b Property . . . . . . . .
+ b Property . . . . . . . . 7 Other decreases (itemize):
+3 Net income (loss) (see instructions). . . . . . . . 300,000.
+4 Other increases (itemize): STATEMENT 8 ${decreases}.
+ 8 Add lines 6 and 7. . . . . . . . 250,${decreases}.
+5 Add lines 1 through 4 . . . . . . . 300,000. 9 Balance at end of year. Subtract line 8 from line 5 . . . . ${end}.
+`;
+
+test("M-2 con otras disminuciones itemizadas: no es un quiebre", () => {
+  // 300,000 - 250,400 = 49,600. Sumar los componentes sin la línea 7 daría 50,000 y un
+  // hallazgo fantasma de $400 en ALTO sobre una declaración que cierra perfecto.
+  assert.strictEqual(checkCapitalRollforward(M2_CON_OTROS()), null);
+});
+
+test("M-2 que de verdad no cierra se marca por los subtotales", () => {
+  const finding = checkCapitalRollforward(M2_CON_OTROS({ end: "48,000" }));
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /line 5 \(total additions\)/);
+  assert.match(finding.detail, /\$300,000\.00/);
+  assert.match(finding.detail, /\$250,400\.00/);
+});
+
+test("sin subtotales legibles y con itemización, se calla", () => {
+  // Fail-closed: antes que un hallazgo inventado, ninguno.
+  const sinLinea8 = M2_CON_OTROS().replace(/ 8 Add lines 6 and 7[^\n]*\n/, "");
+  assert.strictEqual(checkCapitalRollforward(sinLinea8), null);
 });
