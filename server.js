@@ -20,7 +20,7 @@ const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
-const { verifyAbsenceClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10350,6 +10350,16 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
 
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
   const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
+  // Only meaningful when the continuity check actually compared two returns: an empty result
+  // because there was no prior return says nothing about whether the balances tie.
+  const continuity = verifyContinuityClaims(normalized, {
+    continuityRan: Boolean(entityChecks.identified && entityChecks.identified.prior),
+    continuityFindings: entityChecks.filter((f) => f.category === "Prior-year continuity"),
+  });
+  if (continuity.corrected) {
+    normalized.issues = continuity.issues;
+    console.log(`[Review] ${continuity.corrected} finding(s) claimed a continuity break that the balance-sheet check had already ruled out; lowered to LOW.`);
+  }
   const bridged = [...individualChecks, ...entityChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {

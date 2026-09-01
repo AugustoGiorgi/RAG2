@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, checkUnusedReconcilingLines, claimedAmounts } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -127,4 +127,52 @@ test("una planilla sin conciliación no se mira", () => {
   const otra = { name: "depreciacion.xlsx", reviewRole: "supporting_document", fullText: `--- Sheet: Assets ---
 ,,,Meals 50% Addback,` };
   assert.strictEqual(checkUnusedReconcilingLines([RETURN, otra]), null, "sin contexto de conciliacion no aplica");
+});
+
+test("reconoce las muchas formas de decir que algo no esta", () => {
+  // Una segunda corrida uso "is missing from" y "is blank", y ninguna matcheaba.
+  for (const frase of [
+    "Form 8825 line 8 Interest is blank but the workpaper shows $2,140 of interest paid.",
+    "the $2,140 is missing from the return per Form 8825 line 2b",
+    "Form 8825 line 2b omitted the $2,140 of other income",
+    "Schedule K line 2 does not include the $2,140",
+    "Form 8825 line 2b failed to report $2,140",
+  ]) {
+    const out = verifyAbsenceClaims({ issues: [issue({ issueDescription: frase })] }, [RETURN]);
+    assert.strictEqual(out.corrected, 1, `no reconocio: ${frase}`);
+    assert.strictEqual(out.issues[0].priority, "LOW");
+  }
+});
+
+test("desmiente el reclamo de continuidad que el cheque ya descarto", () => {
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Schedule L beginning balances do not tie to 2024 ending balances for Cash and Buildings.",
+    riskAnalysis: "Balances may be wrong.",
+  })] };
+  const out = verifyContinuityClaims(review, { continuityRan: true, continuityFindings: [] });
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /CONTRADICTED BY A COMPLETED CHECK/);
+  assert.match(out.issues[0].riskAnalysis, /Balances may be wrong/);
+});
+
+test("no desmiente si el cheque de continuidad no corrio o encontro algo", () => {
+  const review = { issues: [issue({
+    issueDescription: "Schedule L beginning balances do not tie to prior year ending balances.",
+  })] };
+  // Sin declaracion anterior el cheque no pudo comparar nada: vacio no significa "coinciden".
+  assert.strictEqual(verifyContinuityClaims(review, { continuityRan: false }).corrected, 0);
+  // Y si el cheque SI encontro una ruptura, el hallazgo del modelo la acompaña.
+  assert.strictEqual(verifyContinuityClaims(review, {
+    continuityRan: true,
+    continuityFindings: [{ category: "Prior-year continuity" }],
+  }).corrected, 0);
+});
+
+test("no desmiente un hallazgo de continuidad que no habla de Schedule L ni M-2", () => {
+  const review = { issues: [issue({
+    issueDescription: "The beginning inventory does not match the prior year ending inventory.",
+  })] };
+  assert.strictEqual(verifyContinuityClaims(review, { continuityRan: true, continuityFindings: [] }).corrected, 0);
 });
