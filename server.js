@@ -5449,9 +5449,28 @@ function encryptUserMap(map = {}) {
   return output;
 }
 
+/**
+ * Decrypts each stored account on its own, so one unreadable entry costs only that account.
+ *
+ * This used to decrypt the whole map in a single pass, and every caller wrapped it in a catch
+ * that returned an empty store. So a single entry written under a different TOKEN_ENCRYPTION_KEY
+ * — or written in plaintext, since encryptSecretObject silently skips encryption when the key is
+ * absent while decryptSecretObject throws when it is — made EVERY user in the file look
+ * disconnected, with nothing logged anywhere. The visible symptom was Google saying "connected"
+ * in the popup and the app showing disconnected a second later, forever: the write succeeded,
+ * the next read hit the old entry and threw, and the catch turned that into "no tokens".
+ */
 function decryptUserMap(map = {}) {
   const output = {};
-  Object.entries(map || {}).forEach(([key, value]) => { output[key] = decryptSecretObject(value); });
+  Object.entries(map || {}).forEach(([key, value]) => {
+    try {
+      output[key] = decryptSecretObject(value);
+    } catch (error) {
+      console.error(`[tokens] stored credentials for "${key}" could not be decrypted (${error.message}). `
+        + `That account needs to reconnect; the rest of the file is unaffected.`
+        + `${TOKEN_ENCRYPTION_KEY_BYTES ? "" : " TOKEN_ENCRYPTION_KEY is not set on this server, so encrypted entries written earlier cannot be read."}`);
+    }
+  });
   return output;
 }
 
@@ -5991,7 +6010,11 @@ function normalizeGoogleTokens(tokenData = {}, username = "default") {
     access_token: tokenData.access_token || existing.access_token || "",
     refresh_token: tokenData.refresh_token || existing.refresh_token || "",
     token_type: tokenData.token_type || existing.token_type || "Bearer",
-    scope: tokenData.scope || existing.scope || GOOGLE_OAUTH_SCOPE,
+    // Whatever Google actually granted, or what was granted before on a refresh — never the
+    // set we asked for. Falling back to GOOGLE_OAUTH_SCOPE meant a token that had only Drive
+    // recorded itself as also holding gmail.compose, so the app believed it could create a
+    // draft and only found out from a 403 at send time, with nothing pointing at the cause.
+    scope: tokenData.scope || existing.scope || "",
     expiry_date: Date.now() + (Number(tokenData.expires_in || 3600) * 1000) - 60000,
   };
 }
@@ -6002,7 +6025,10 @@ function readGoogleTokenStore() {
     const parsed = JSON.parse(fsSync.readFileSync(GOOGLE_TOKEN_PATH, "utf8"));
     if (parsed.users && typeof parsed.users === "object") return { users: decryptUserMap(parsed.users) };
     return { users: { default: parsed } };
-  } catch (_) {
+  } catch (error) {
+    // "Could not read the file" and "nobody ever connected" are the same empty object to
+    // every caller, so the difference has to survive in the log or it is lost for good.
+    console.error(`[tokens] ${GOOGLE_TOKEN_PATH} could not be read (${error.message}). Every Google connection will appear disconnected until this is resolved.`);
     return { users: {} };
   }
 }
@@ -6033,7 +6059,10 @@ function readQboStore() {
     if (!fsSync.existsSync(QBO_TOKEN_PATH)) return { users: {} };
     const parsed = JSON.parse(fsSync.readFileSync(QBO_TOKEN_PATH, "utf8"));
     return { users: decryptUserMap(parsed.users || {}) };
-  } catch (_) {
+  } catch (error) {
+    // "Could not read the file" and "nobody ever connected" are the same empty object to
+    // every caller, so the difference has to survive in the log or it is lost for good.
+    console.error(`[tokens] ${QBO_TOKEN_PATH} could not be read (${error.message}). Every QuickBooks connection will appear disconnected until this is resolved.`);
     return { users: {} };
   }
 }
@@ -6264,7 +6293,10 @@ function readAccountingStore() {
     if (!fsSync.existsSync(ACCOUNTING_TOKEN_PATH)) return { users: {} };
     const parsed = JSON.parse(fsSync.readFileSync(ACCOUNTING_TOKEN_PATH, "utf8"));
     return { users: decryptUserMap(parsed.users || {}) };
-  } catch (_) {
+  } catch (error) {
+    // "Could not read the file" and "nobody ever connected" are the same empty object to
+    // every caller, so the difference has to survive in the log or it is lost for good.
+    console.error(`[tokens] ${ACCOUNTING_TOKEN_PATH} could not be read (${error.message}). Every accounting-software connection will appear disconnected until this is resolved.`);
     return { users: {} };
   }
 }

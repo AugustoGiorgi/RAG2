@@ -3489,8 +3489,18 @@ function openDriveForZone(zoneId) {
 }
 
 function connectGoogleDrive() {
-  if (!window.driveState?.enabled) return;
-  window.open("/auth/google", "google-drive-oauth", "width=520,height=720");
+  // A button that does nothing when clicked is worse than one that explains itself. This used
+  // to return silently whenever Google was unconfigured, and the surrounding flows still told
+  // the user to "connect Google Drive" — so the instruction and the button disagreed and
+  // neither said why.
+  if (!window.driveState?.enabled) {
+    showToast("Google is not configured on this server. An administrator has to set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.", "warning");
+    return;
+  }
+  const popup = window.open("/auth/google", "google-drive-oauth", "width=520,height=720");
+  if (!popup) {
+    showToast("The Google sign-in window was blocked. Allow pop-ups for this site and try again.", "warning");
+  }
 }
 
 async function refreshDriveStatus() {
