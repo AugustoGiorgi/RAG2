@@ -21,7 +21,8 @@ const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptL
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10357,6 +10358,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     console.log(`[Review] ${attachments.corrected} finding(s) reported a form as missing that is in the package; lowered to LOW.`);
   }
 
+  // And the same error about the books: a total on the return often adds up two rows of the
+  // ledger, and a finding written from one of them calls the other one unexplained.
+  const workpaper = verifyWorkpaperClaims(normalized, payload?.files);
+  if (workpaper.corrected) {
+    normalized.issues = workpaper.issues;
+    console.log(`[Review] ${workpaper.corrected} finding(s) called a figure unexplained that the workpaper carries; lowered to LOW.`);
+  }
+
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
   const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
   // Only meaningful when the continuity check actually compared two returns: an empty result
@@ -10373,7 +10382,8 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // the same on a 1065 as on an 1120-S, and each check is anchored on text that only its own
   // form prints, so a package without that form produces nothing.
   const consistencyChecks = runReturnConsistencyChecks(payload?.files, payload?.metadata || {});
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
+  const corporateChecks = runCorporateReturnChecks(payload?.files, payload?.metadata || {});
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];

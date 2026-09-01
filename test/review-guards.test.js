@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -259,4 +259,90 @@ test("sin paquete legible no corrige nada", () => {
   assert.strictEqual(verifyAttachmentClaims(review, []).corrected, 0);
   assert.strictEqual(verifyAttachmentClaims(review, [{ name: "x", fullText: "corto" }]).corrected, 0);
   assert.strictEqual(verifyAttachmentClaims({ issues: [] }, [PAQUETE]).corrected, 0);
+});
+
+// "El workpaper no explica esto" -- cuando si lo explica, en un renglon mas abajo.
+//
+// Una review reporto gastos de interes de $75,016 en la declaracion contra $15,016 en el
+// libro y llamo "sin explicar" a la diferencia de $60,000. El P&L trae DOS renglones de
+// interes -- $60,000 en gastos y $15,016 en otros gastos -- y suman exacto la cifra de la
+// declaracion. El hallazgo salio de leer uno solo de los dos.
+const LIBRO = {
+  name: "Cliente_Profit and Loss.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Sheet1 ---
+Cliente Corporation
+Profit and Loss
+January-December, 2025
+,Jan 1 - Dec 31 2025,Jan 1 - Dec 31 2024 (PY)
+Income
+Sales,884300,712400
+Total for Income,884300,712400
+Expenses
+Accounting fees,31200,28900
+Contract labor,142880.40,118220
+Interest paid,60000
+Legal Fees,214300.55,96410.22
+Rent,74500,74500
+Salaries & wages,602110,551040
+Total for Expenses,1125000.95,969070.22
+Net Operating Income,-240700.95,-256670.22
+Other Expenses
+Amortization expenses,46100,46100
+Interest Expense,15016.16,29774
+Total for Other Expenses,61116.16,75874
+Net Income,-1240806.40,-980110.22`,
+};
+
+test("degrada el reclamo de que el libro no explica una cifra que si trae", () => {
+  const review = { issues: [issue({
+    priority: "MEDIUM",
+    issueDescription: "Interest expense $75,016 on return vs $15,016 in workpaper - $60,000 difference unexplained.",
+    riskAnalysis: "May be an unsupported deduction.",
+  })] };
+  const out = verifyWorkpaperClaims(review, [RETURN, LIBRO]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /CONTRADICTED BY THE WORKPAPER/);
+  assert.match(out.issues[0].riskAnalysis, /\$60,000\.00/);
+  // Cita el renglon del libro que lo desmiente, y conserva lo que decia el hallazgo.
+  assert.match(out.issues[0].riskAnalysis, /Interest paid/);
+  assert.match(out.issues[0].riskAnalysis, /May be an unsupported deduction/);
+});
+
+test("una cifra que de verdad no esta en el libro no se toca", () => {
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Consulting fees of $999,999 do not appear anywhere in the workpaper.",
+  })] };
+  const out = verifyWorkpaperClaims(review, [RETURN, LIBRO]);
+  assert.strictEqual(out.corrected, 0);
+  assert.strictEqual(out.issues[0].priority, "HIGH");
+});
+
+test("un reclamo sobre la declaracion no lo mira esta guarda", () => {
+  // De eso se ocupa verifyAbsenceClaims, contra la declaracion y no contra los libros.
+  const review = { issues: [issue({ issueDescription: "Form 8825 line 2b does not report $2,140." })] };
+  assert.strictEqual(verifyWorkpaperClaims(review, [RETURN, LIBRO]).corrected, 0);
+});
+
+test("sin documentos de respaldo no corrige nada", () => {
+  const review = { issues: [issue({ issueDescription: "The $60,000 is unexplained in the workpaper." })] };
+  assert.strictEqual(verifyWorkpaperClaims(review, [RETURN]).corrected, 0);
+  assert.strictEqual(verifyWorkpaperClaims(review, []).corrected, 0);
+});
+
+test("reconoce que un anexo esta aunque el hallazgo diga 'not visible'", () => {
+  // Tercera redaccion del mismo error, sobre una review que decia que el Form 6765 no estaba
+  // en el paquete mientras su propio hallazgo principal citaba la linea A del Form 6765.
+  const paquete = { ...PAQUETE, fullText: `${PAQUETE.fullText}\nForm 6765 Credit for Increasing Research Activities` };
+  const review = { issues: [issue({
+    priority: "MEDIUM",
+    issueDescription: "R&D credit carryforward with no current-year activity documented.",
+    evidence: "Form 6765 listed on page 9 but not visible in package.",
+  })] };
+  const out = verifyAttachmentClaims(review, [paquete]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /form 6765/i);
 });
