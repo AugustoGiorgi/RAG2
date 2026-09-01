@@ -38,6 +38,8 @@ test("degrada el hallazgo que dice que una cifra no está, cuando sí está", ()
   assert.strictEqual(out.issues[0].priority, "LOW");
   assert.match(out.issues[0].riskAnalysis, /CONTRADICTED BY THE RETURN/);
   assert.match(out.issues[0].riskAnalysis, /\$2,140\.00/);
+  // Dice que la cifra esta en la declaracion; NO le atribuye al hallazgo un reclamo que no hizo.
+  assert.doesNotMatch(out.issues[0].riskAnalysis, /this finding says/);
   // Cita el renglón que lo desmiente, para que el revisor no tenga que buscarlo.
   assert.match(out.issues[0].riskAnalysis, /Other income related to rental real estate activity/);
   // Y conserva lo que decía el hallazgo original.
@@ -175,4 +177,17 @@ test("no desmiente un hallazgo de continuidad que no habla de Schedule L ni M-2"
     issueDescription: "The beginning inventory does not match the prior year ending inventory.",
   })] };
   assert.strictEqual(verifyContinuityClaims(review, { continuityRan: true, continuityFindings: [] }).corrected, 0);
+});
+
+test("no le atribuye al hallazgo cifras que nunca dijo que faltaban", () => {
+  // Un hallazgo cita varias cifras y dice que falta UNA. "this finding says $85,617 and
+  // $1,068 are not reported" le pone en la boca un reclamo que no hizo.
+  const review = { issues: [issue({
+    issueDescription: "Form 8825 line 2a shows gross rents $74,300 plus other income $2,140 = $76,440; the $2,140 is missing from the return.",
+  })] };
+  const out = verifyAbsenceClaims(review, [RETURN]);
+  assert.strictEqual(out.corrected, 1);
+  assert.match(out.issues[0].riskAnalysis, /reports something as absent/);
+  assert.match(out.issues[0].riskAnalysis, /\$2,140\.00/);
+  assert.doesNotMatch(out.issues[0].riskAnalysis, /says .*are not reported/);
 });
