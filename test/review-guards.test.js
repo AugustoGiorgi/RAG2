@@ -396,3 +396,44 @@ test("reconoce 'is not provided' sin el 'was'", () => {
   const review = { issues: [issue({ priority: "HIGH", issueDescription: "Statement 1 is not provided with the return." })] };
   assert.strictEqual(verifyAttachmentClaims(review, [CON_STATEMENTS]).corrected, 1);
 });
+
+// Un hallazgo correcto que la guarda degradaba por leer mal a quien pertenece la cifra.
+//
+// "Form 3800 shows $27,793 of carryforward ... Form 3800 Part III is blank ... verify that no
+// 2025 credits were omitted" es verdadero: habla de una parte vacia del formulario, y los
+// $27,793 los cita como prueba de que SI estan. Las dos guardas lo degradaron igual -- una
+// porque encontro los $27,793 en la declaracion, la otra porque leyo "omitted" a sesenta
+// palabras del nombre de un formulario que si esta en el paquete.
+const GBC = "Form 3800 shows $27,793 GBC carryforward from prior years but no current-year credit generation is shown on Part III; verify the carryforward ties to 2024 and that no 2025 credits were omitted.";
+
+test("no degrada el hallazgo que cita la cifra como presente en la declaracion", () => {
+  // La cifra esta en la declaracion y el hallazgo lo dice; lo vacio es otra cosa.
+  assert.deepStrictEqual(claimedAmounts(GBC), []);
+  const conCifra = { ...RETURN, fullText: `${RETURN.fullText}\n4 Carryforward of general business credit . . . 27,793.` };
+  assert.strictEqual(verifyAbsenceClaims({ issues: [issue({ issueDescription: GBC })] }, [conCifra]).corrected, 0);
+});
+
+test("sigue degradando cuando quien muestra la cifra son los libros", () => {
+  // "The workpaper shows $2,140 ... Form 8825 line 2b does not report this amount": ahi la
+  // cifra en la declaracion si es la contradiccion.
+  assert.deepStrictEqual(claimedAmounts("The workpaper shows $2,140 of other income but Form 8825 line 2b does not report this amount."), [2140]);
+});
+
+test("una negacion con el mismo verbo no cuenta como que la cifra esta", () => {
+  for (const frase of [
+    "Form 8825 line 2b does not report $2,140",
+    "Form 8825 line 2b failed to report $2,140",
+    "Schedule K line 2 does not include the $2,140",
+  ]) {
+    assert.deepStrictEqual(claimedAmounts(frase), [2140], `no reconocio: ${frase}`);
+  }
+});
+
+test("la frase de ausencia tiene que hablar del formulario que nombra", () => {
+  const paquete = { ...PAQUETE, fullText: `${PAQUETE.fullText}\nForm 3800 General Business Credit` };
+  // "omitted" a sesenta palabras de "Form 3800" no es un reclamo sobre el Form 3800.
+  assert.strictEqual(verifyAttachmentClaims({ issues: [issue({ issueDescription: GBC })] }, [paquete]).corrected, 0);
+  // Pegado al nombre, si lo es.
+  const pegado = issue({ issueDescription: "Form 3800 is not attached to the return package." });
+  assert.strictEqual(verifyAttachmentClaims({ issues: [pegado] }, [paquete]).corrected, 1);
+});
