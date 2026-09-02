@@ -346,3 +346,53 @@ test("reconoce que un anexo esta aunque el hallazgo diga 'not visible'", () => {
   assert.strictEqual(out.issues[0].priority, "LOW");
   assert.match(out.issues[0].riskAnalysis, /form 6765/i);
 });
+
+// Los statements del preparador cuentan igual que un formulario: dos hallazgos de la misma
+// review dijeron "STATEMENT 7 ... is not provided" y "Statement 1 is referenced but not
+// provided" sobre statements impresos unas paginas mas adelante en el mismo paquete.
+const CON_STATEMENTS = {
+  ...PAQUETE,
+  fullText: `${PAQUETE.fullText}
+NEW YORK: CT-3, CT-3.4, CT-5, TR-579-CT
+New York State Authorization for (9/25)
+STATEMENT 1
+FORM 1065, LINE 7
+OTHER INCOME
+STATEMENT 7
+FORM 1065, SCHEDULE M-2, LINE 7
+OTHER DECREASES`,
+};
+
+test("un statement impreso en el paquete cuenta como presente", () => {
+  assert.strictEqual(formAppearsInPackage("Statement", "1", CON_STATEMENTS.fullText), true);
+  assert.strictEqual(formAppearsInPackage("Statement", "7", CON_STATEMENTS.fullText), true);
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Line 3 Other increases carries a reference to STATEMENT 7 which is not provided in the package.",
+  })] };
+  const out = verifyAttachmentClaims(review, [CON_STATEMENTS]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /statement 7/i);
+});
+
+test("un statement que de verdad no esta no se degrada", () => {
+  assert.strictEqual(formAppearsInPackage("Statement", "9", CON_STATEMENTS.fullText), false);
+  const review = { issues: [issue({ priority: "HIGH", issueDescription: "Statement 9 is referenced but not provided." })] };
+  assert.strictEqual(verifyAttachmentClaims(review, [CON_STATEMENTS]).corrected, 0);
+});
+
+test("una fecha de revision no es una lista de formularios", () => {
+  // "New York State Authorization for (9/25)" abre con el nombre de un estado y trae un 9
+  // suelto: sin exigir los dos puntos de la lista, ese 9 pasaba por prueba de que el
+  // Statement 9 estaba en el paquete.
+  assert.strictEqual(formAppearsInPackage("Form", "9", CON_STATEMENTS.fullText), false);
+  assert.strictEqual(formAppearsInPackage("Form", "25", CON_STATEMENTS.fullText), false);
+  // Y la lista de verdad sigue contando.
+  assert.strictEqual(formAppearsInPackage("Schedule", "CT-3", CON_STATEMENTS.fullText), true);
+});
+
+test("reconoce 'is not provided' sin el 'was'", () => {
+  const review = { issues: [issue({ priority: "HIGH", issueDescription: "Statement 1 is not provided with the return." })] };
+  assert.strictEqual(verifyAttachmentClaims(review, [CON_STATEMENTS]).corrected, 1);
+});
