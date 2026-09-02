@@ -10366,6 +10366,23 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     console.log(`[Review] ${workpaper.corrected} finding(s) called a figure unexplained that the workpaper carries; lowered to LOW.`);
   }
 
+  // Reported into the review itself, findings or none — the same reason the cross-year inputs
+  // are logged unconditionally further down. A guard that quietly does not run looks exactly
+  // like a guard with nothing to correct, and telling the two apart cost a round-trip of
+  // "it works here, it did not fire there" that nobody could settle from the output.
+  const guardCounts = [
+    ["contradicted by the return", absence.corrected],
+    ["contradicted by the package", attachments.corrected],
+    ["contradicted by the workpaper", workpaper.corrected],
+  ];
+  const guardTotal = guardCounts.reduce((sum, [, count]) => sum + count, 0);
+  normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
+  normalized.verifiedItems.push(
+    guardTotal
+      ? `AUTOMATED GUARDS: ${guardTotal} finding(s) lowered to LOW after being checked against the documents — ${guardCounts.filter(([, n]) => n).map(([label, n]) => `${n} ${label}`).join(", ")}. Each one keeps its original text with the contradiction alongside it.`
+      : "AUTOMATED GUARDS: ran over every finding and none was contradicted by the return, the package or the workpaper.",
+  );
+
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
   const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
   // Only meaningful when the continuity check actually compared two returns: an empty result
