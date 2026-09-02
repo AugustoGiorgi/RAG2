@@ -13,7 +13,7 @@ const assert = require("node:assert");
 const {
   runEntityReturnChecks, checkBalanceSheetContinuity, checkAccumulatedDepreciationRollforward,
   checkCapitalRollforward, checkK1sFootToReturn, checkOwnerAllocationAgainstBooks,
-  checkDistributionSplitAgainstBooks, drawAccountsFromWorkpaper,
+  checkDistributionSplitAgainstBooks, drawAccountsFromWorkpaper, checkNettedEquityAccount,
   checkRentalWithOnlyDepreciation, scheduleM2, k1CapitalAccounts, k1OwnerNames, amountsOn,
 } = require("../lib/entity-return-checks");
 
@@ -26,6 +26,7 @@ b Less accumulated depreciation . . . . . . . . . . . . . ${accumBegin}. ${40000
 `;
 
 const scheduleM2Text = ({ begin, contributed, income, distributions, end }) => `
+Schedule M-2 Analysis of Partners' Capital Accounts
 1 Balance at beginning of year . . . . . . . . . . . . ${begin}. 6 Distributions: a Cash . . . . . . . . . . . . . . . . . . . . ${distributions}.
 2 Capital contributed: a Cash . . . . . . . . . . . . . ${contributed}. b Property . . . . . . . . . . . . . . . . .
 3 Net income (loss) (see instructions) . . . . . . ${income}.
@@ -202,6 +203,7 @@ test("runEntityReturnChecks: encadena, y no pisa a los cheques del 1040", () => 
 // u otra. Las líneas 5 y 8 son los subtotales que el formulario ya calculó: ahí no hay nada
 // que adivinar.
 const M2_CON_OTROS = ({ decreases = "400", end = "49,600" } = {}) => `
+Schedule M-2 Analysis of Partners' Capital Accounts
 1 Balance at beginning of year . . . . . . . . 0. 6 Distributions: a Cash . . . . . . . . 250,000.
 2 Capital contributed: a Cash . . . . . . . . b Property . . . . . . . .
  b Property . . . . . . . . 7 Other decreases (itemize):
@@ -311,4 +313,61 @@ test("y con la sangria y las columnas vacias que deja el export", () => {
 ,,,Member Draws/Contributions,"-435,765.51",,
 ,,,Member Draws- Partner Payout,"-32,808.73",,`;
   assert.ok(checkDistributionSplitAgainstBooks(K1S_CON_RETIROS(), [{ name: "wp.xlsx", fullText: sangrado }]));
+});
+
+// El item L comparte renglon con la casilla de al lado, asi que un campo VACIO deja
+// "Capital contributed during the year . . . $ 23 More than one activity for passive activity
+// purposes" y leer el primer numero del renglon toma 23 como el aporte. Los dos K-1 de un
+// paquete real reportaban $23 de capital aportado, suficiente para que un cheque que se
+// apoya en "cero aportes" se quedara callado. La cifra de verdad sigue al signo peso y trae
+// coma o punto final: un cero real se imprime "0.".
+test("un item L vacio no se lee como un aporte de 23", () => {
+  const vacio = RETURN_1065.replace(
+    /Capital contributed during the year \. \. \. \. \. \$ 4500\. 23 More than one activity for passive activity purposes\*/g,
+    "Capital contributed during the year . . . . . $ 23 More than one activity for passive activity purposes*",
+  );
+  for (const account of k1CapitalAccounts(vacio)) {
+    assert.strictEqual(account.contributed, undefined, "el numero de item de la casilla vecina no es un aporte");
+  }
+  // Y un cero de verdad, que se imprime con punto, si se lee.
+  const cero = RETURN_1065.replace(/\$ 4500\./g, "$ 0.");
+  assert.strictEqual(k1CapitalAccounts(cero)[0].contributed, 0);
+});
+
+const LIBRO_NETEADO = {
+  name: "workpaper.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Balance sheet ---
+Liabilities and Equity
+Equity
+Member Draws/Contributions,-435765.51
+Retained Earnings
+Net Income,482239.32`,
+};
+
+/** El mismo 1065 pero sin un peso de aportes: ni en el M-2 linea 2 ni en el item L. */
+const SIN_APORTES = `U.S. Return of Partnership Income 2025
+${scheduleM2Text({ begin: 1000, contributed: "", income: -1200, distributions: 12800, end: -4000 })}
+${k1({ name: "ALEX MERIDIAN", begin: 500, contributed: "", income: -600, withdrawals: 6400, end: -2000 })}
+${k1({ name: "BRENDA COLTRANE", begin: 500, contributed: "", income: -600, withdrawals: 6400, end: -2000 })}
+${"2025 filler line for length. ".repeat(30)}`;
+
+test("una cuenta de patrimonio que netea aportes contra retiros", () => {
+  // El nombre la delata: una cuenta que titula los dos movimientos no puede contestar un
+  // formulario que los pide por separado.
+  const finding = checkNettedEquityAccount(SIN_APORTES, [LIBRO_NETEADO]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /Member Draws\/Contributions/);
+});
+
+test("si la declaracion si reporta aportes, el neteo fue solo contable", () => {
+  // RETURN_1065 trae 4,500 de aportes en cada K-1: nada se perdio.
+  assert.strictEqual(checkNettedEquityAccount(RETURN_1065, [LIBRO_NETEADO]), null);
+});
+
+test("una cuenta que nombra un solo movimiento no aplica", () => {
+  const soloRetiros = { ...LIBRO_NETEADO, fullText: LIBRO_NETEADO.fullText.replace("Member Draws/Contributions", "Member Draws") };
+  assert.strictEqual(checkNettedEquityAccount(SIN_APORTES, [soloRetiros]), null);
+  assert.strictEqual(checkNettedEquityAccount(SIN_APORTES, []), null);
 });

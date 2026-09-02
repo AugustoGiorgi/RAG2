@@ -10,6 +10,7 @@ const {
   checkSection280CElection, checkResearchCreditEqualsAllWages,
   checkCashBasisUnexplainedLiability, checkPaymentsRequiring1099,
   runReturnConsistencyChecks, answerOn, nonEmployeePayments, unexplainedLiabilities,
+  checkPaymentsWithNoFilingQuestion, checkDeferredRevenueOnAccrual,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -202,4 +203,70 @@ test("un paquete sin declaracion legible no produce nada", () => {
   assert.deepStrictEqual(runReturnConsistencyChecks([], {}), []);
   assert.deepStrictEqual(runReturnConsistencyChecks(null, {}), []);
   assert.deepStrictEqual(runReturnConsistencyChecks([{ name: "x.pdf", fullText: "corto" }], {}), []);
+});
+
+/* --- 5 y 6. Lo que el Form 1120 no pregunta --------------------------- */
+
+// Schedule B le pregunta a una sociedad y a una S corporation si algun pago necesitaba un
+// 1099. El Form 1120 no pregunta, asi que una C corporation deduce lo que quiera a no
+// empleados y nada en la declaracion lo levanta. En dos clientes ese silencio tapo $509,600 y
+// $883,079 de comisiones, consultorias y contract labor.
+const RETURN_1120_SIN_PREGUNTA = `
+Form 1120 U.S. Corporation Income Tax Return
+1 Check accounting method: a Cash b X Accrual c Other (specify)
+26 Other deductions (attach statement) . . . . . . . . SEE STATEMENT 2 26 940,000.
+STATEMENT 2
+FORM 1120, LINE 26
+OTHER DEDUCTIONS
+ACCOUNTING . . . . . . . . . . . . . . . . 31,200.
+OUTSIDE SERVICES . . . . . . . . . . . . . 142,880.
+SOFTWARE AND SUBSCRIPTIONS . . . . . . . . 765,920.
+TOTAL $ 940,000.
+STATEMENT 6
+FORM 1120, SCHEDULE L, LINE 18
+OTHER CURRENT LIABILITIES
+BEGINNING ENDING
+CREDIT CARD . . . . . . . . . . . . . . . 8,100. 3,200.
+CUSTOMER PREPAYMENTS . . . . . . . . . . . 0. 41,500.
+TOTAL $ 8,100. $ 44,700.
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("pagos a no empleados en una declaracion que no pregunta por 1099", () => {
+  const finding = checkPaymentsWithNoFilingQuestion(RETURN_1120_SIN_PREGUNTA);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /OUTSIDE SERVICES/);
+  assert.match(finding.detail, /\$142,880\.00/);
+  // La contabilidad no es un pago a un no empleado por servicios sujetos a 1099-NEC.
+  assert.doesNotMatch(finding.detail, /SOFTWARE/);
+});
+
+test("si la declaracion si pregunta, de eso se ocupa el otro cheque", () => {
+  const conPregunta = `${RETURN_1120_SIN_PREGUNTA}
+16 a Did you make any payments in 2025 that would require you to file Form(s) 1099? . . X [ANSWER: Yes]`;
+  assert.strictEqual(checkPaymentsWithNoFilingQuestion(conPregunta), null);
+});
+
+test("un solo contratista chico no merece un hallazgo", () => {
+  const chico = RETURN_1120_SIN_PREGUNTA.replace("142,880.", "700.");
+  assert.strictEqual(checkPaymentsWithNoFilingQuestion(chico), null);
+});
+
+test("cobrado por adelantado y fuera de ingresos, por lo devengado", () => {
+  const finding = checkDeferredRevenueOnAccrual(RETURN_1120_SIN_PREGUNTA);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /CUSTOMER PREPAYMENTS/);
+  assert.match(finding.detail, /\$41,500\.00/);
+  assert.match(finding.action, /451\(c\)|deferral/i);
+});
+
+test("por lo percibido la pregunta es otra y ya tiene su cheque", () => {
+  const percibido = RETURN_1120_SIN_PREGUNTA.replace("a Cash b X Accrual", "a X Cash b Accrual");
+  assert.strictEqual(checkDeferredRevenueOnAccrual(percibido), null);
+});
+
+test("un saldo chico de anticipos no se marca", () => {
+  const chico = RETURN_1120_SIN_PREGUNTA.replace("0. 41,500.", "0. 900.");
+  assert.strictEqual(checkDeferredRevenueOnAccrual(chico), null);
 });

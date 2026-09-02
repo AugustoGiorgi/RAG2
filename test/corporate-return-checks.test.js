@@ -15,7 +15,7 @@ const {
   runCorporateReturnChecks, checkContributionsThroughRetainedEarnings,
   checkScheduleM1TiesToBooks, checkAmortizationAgainstBooks,
   checkShareholderLoansMisclassified, checkLoanToShareholder,
-  checkApportionmentSwing, apportionmentFactors, scheduleGOwners,
+  checkApportionmentSwing, apportionmentFactors, scheduleGOwners, checkAccruedInterestToShareholder,
 } = require("../lib/corporate-return-checks");
 
 const RETURN_1120 = ({
@@ -237,4 +237,31 @@ test("no corre sobre declaraciones que no son corporativas", () => {
 test("un paquete sin declaracion legible no produce nada", () => {
   assert.deepStrictEqual(runCorporateReturnChecks([], {}), []);
   assert.deepStrictEqual(runCorporateReturnChecks(null, {}), []);
+});
+
+/* --- 7. Interes devengado a un accionista ------------------------------ */
+
+test("interes devengado a un accionista que no se movio en todo el año", () => {
+  const conAccrual = RETURN_1120().replace(
+    "CREDIT CARD . . . . . . . . . . . . . . . . . . . . . . . 8,100. 3,200.",
+    "ACCRUED INTEREST . . . . . . . . . . . . . . . . . . . . 9,400. 9,400.\nCREDIT CARD . . . . . . . . . . . . . . . . . . . . . . . 8,100. 3,200.",
+  ).replace("18 Other current liabilities", "18 Interest . . . . . . . . . . . . . . . . . . . . 18 46,300.\n18 Other current liabilities");
+  const finding = checkAccruedInterestToShareholder(conAccrual);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /\$46,300\.00/);
+  assert.match(finding.detail, /\$9,400\.00/);
+  assert.match(finding.authority, /267/);
+});
+
+test("un saldo devengado que si se pago no pregunta nada", () => {
+  const pagado = RETURN_1120().replace(
+    "CREDIT CARD . . . . . . . . . . . . . . . . . . . . . . . 8,100. 3,200.",
+    "ACCRUED INTEREST . . . . . . . . . . . . . . . . . . . . 9,400. 2,100.\nCREDIT CARD . . . . . . . . . . . . . . . . . . . . . . . 8,100. 3,200.",
+  ).replace("18 Other current liabilities", "18 Interest . . . . . . . . . . . . . . . . . . . . 18 46,300.\n18 Other current liabilities");
+  assert.strictEqual(checkAccruedInterestToShareholder(pagado), null);
+});
+
+test("sin interes devengado, o sin deuda con accionistas, no aplica", () => {
+  assert.strictEqual(checkAccruedInterestToShareholder(RETURN_1120()), null);
 });
