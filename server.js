@@ -10423,6 +10423,23 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     }
     console.log(`[Review] ${bridged.length} deterministic cross-year finding(s) added.`);
   }
+
+  // Reported into the review the same way the guards are, and for the same reason. A run
+  // produced three of the ten deterministic findings it should have and nothing anywhere said
+  // seven were missing: the corporate module had returned an empty array before it looked at
+  // the return, because the return-type dropdown held a value its gate did not recognise. A
+  // module that skips itself has to say so, or the only symptom is a lower number nobody can
+  // account for.
+  const moduleCounts = [
+    ["prior-year (1040)", individualChecks.length],
+    ["entity", entityChecks.length],
+    ["stated positions", consistencyChecks.length],
+    ["corporate", corporateChecks.length],
+  ];
+  normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
+  normalized.verifiedItems.push(
+    `AUTOMATED CHECKS: ${bridged.length} deterministic finding(s) — ${moduleCounts.map(([name, count]) => `${name} ${count}`).join(", ")}. A module reporting zero either found nothing or does not apply to this return type.`,
+  );
   // Always logged, findings or none: a silent zero was indistinguishable from "nothing to
   // find" and cost two production round-trips to diagnose.
   if (bridged.identified) {

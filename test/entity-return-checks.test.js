@@ -176,8 +176,14 @@ test("runEntityReturnChecks: encadena, y no pisa a los cheques del 1040", () => 
   assert.strictEqual(found.length, 2, "reparto de K-1 y propiedad sin renta");
   assert.ok(found.every((f) => f.severity === "HIGH" && f.action && f.authority));
 
-  // Un 1040 no entra acá bajo ninguna circunstancia.
-  assert.strictEqual(runEntityReturnChecks(filesFor(RETURN_1065, PRIOR_1065, [WORKPAPER]), { returnType: "1040" }).length, 0);
+  // Un 1040 no entra aca: lo dice el encabezado de la declaracion, no la etiqueta. Gatear por
+  // el desplegable permitia que una eleccion equivocada apagara el modulo entero en silencio.
+  for (const tipo of ["1065", "Other", "", "1040"]) {
+    assert.strictEqual(
+      runEntityReturnChecks(filesFor(RETURN_1065, PRIOR_1065, [WORKPAPER]), { taxYear: "2025", returnType: tipo }).length, 2,
+      `se apago con returnType=${tipo}`,
+    );
+  }
   const individual = `U.S. Individual Income Tax Return 2025\n${RETURN_1065}`;
   assert.strictEqual(runEntityReturnChecks(filesFor(individual, null), {}).length, 0);
 

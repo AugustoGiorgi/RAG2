@@ -228,9 +228,10 @@ test("de punta a punta sobre el paquete corporativo", () => {
 });
 
 test("no corre sobre declaraciones que no son corporativas", () => {
-  assert.deepStrictEqual(runCorporateReturnChecks(filesFor(RETURN_1120()), { returnType: "1065" }), []);
-  // Y sin el encabezado del 1120 tampoco, aunque no venga declarado el tipo.
+  // El encabezado manda, no la etiqueta: una declaracion de sociedad no recibe estos cheques
+  // aunque el desplegable diga 1120, y una corporativa si los recibe aunque diga 1065.
   const sinEncabezado = RETURN_1120().replace("U.S. Corporation Income Tax Return", "U.S. Return of Partnership Income");
+  assert.deepStrictEqual(runCorporateReturnChecks(filesFor(sinEncabezado), { returnType: "1120" }), []);
   assert.deepStrictEqual(runCorporateReturnChecks(filesFor(sinEncabezado), {}), []);
 });
 
@@ -264,4 +265,26 @@ test("un saldo devengado que si se pago no pregunta nada", () => {
 
 test("sin interes devengado, o sin deuda con accionistas, no aplica", () => {
   assert.strictEqual(checkAccruedInterestToShareholder(RETURN_1120()), null);
+});
+
+test("el desplegable de tipo de declaracion no puede apagar el modulo", () => {
+  // Una corrida real produjo tres de diez cruces y nada dijo que faltaban siete: el
+  // returnType venia con un valor que no contenia el literal "1120" y runCorporateReturnChecks
+  // devolvia un array vacio antes de mirar la declaracion. La primera pagina dice
+  // "U.S. Corporation Income Tax Return"; eso es lo que manda.
+  const files = filesFor(RETURN_1120({ m1Books: "-1,315,443." }), PRIOR_1120);
+  for (const returnType of ["1120", "1120-S", "Other", "", "1040", "990", undefined]) {
+    assert.strictEqual(
+      runCorporateReturnChecks(files, { returnType, taxYear: "2025" }).length, 6,
+      `el modulo se apago con returnType=${JSON.stringify(returnType)}`,
+    );
+  }
+});
+
+test("y sigue sin correr sobre una declaracion que no es corporativa", () => {
+  // El encabezado es el que decide en los dos sentidos.
+  const partnership = RETURN_1120().replace("U.S. Corporation Income Tax Return", "U.S. Return of Partnership Income");
+  for (const returnType of ["1120", "Other", ""]) {
+    assert.deepStrictEqual(runCorporateReturnChecks(filesFor(partnership), { returnType }), []);
+  }
 });
