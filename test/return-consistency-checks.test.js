@@ -11,6 +11,7 @@ const {
   checkCashBasisUnexplainedLiability, checkPaymentsRequiring1099,
   runReturnConsistencyChecks, answerOn, nonEmployeePayments, unexplainedLiabilities,
   checkPaymentsWithNoFilingQuestion, checkDeferredRevenueOnAccrual,
+  checkJurisdictionDropped, checkAccountingMethodChanged, checkCashMethodWithGrowingPayables, accountingMethod,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -269,4 +270,92 @@ test("por lo percibido la pregunta es otra y ya tiene su cheque", () => {
 test("un saldo chico de anticipos no se marca", () => {
   const chico = RETURN_1120_SIN_PREGUNTA.replace("0. 41,500.", "0. 900.");
   assert.strictEqual(checkDeferredRevenueOnAccrual(chico), null);
+});
+
+/* --- 7, 8 y 9. Lo que solo se ve poniendo los dos años al lado ---------- */
+
+// Los tres salen de un 1065 real de un restaurante en Manhattan. Ninguno se ve desde adentro
+// de la declaracion del año: hay que poner 2024 al lado de 2025.
+const REST_2025 = ({ metodo = "(1) X Cash (2) Accrual", apBegin = "134,078.", apEnd = "374,516.", con3115 = "" } = {}) => `
+Form 1065 U.S. Return of Partnership Income
+H Check accounting method: ${metodo} (3) Other (specify):
+Forms needed for this return
+Federal: 1065, Sch B-1, Sch K-1, 1125-A, 8879-PE${con3115}
+New York: IT-204, IT-204.1, IT-204-IP, IT-204-CP, IT-204-LL
+Form IT-204 line 1 . . . IT-204 IT-204 IT-204 IT-204
+15 Accounts payable . . . . . . . . . . . . . . ${apBegin} ${apEnd}
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+const REST_2024 = `
+Form 1065 U.S. Return of Partnership Income
+H Check accounting method: (1) Cash (2) X Accrual (3) Other (specify):
+Form NYC-204 - 2024 Page 2
+NYC-204 NYC-204 NYC-204 NYC-204 NYC-204
+Form IT-204 line 1 . . . IT-204 IT-204 IT-204 IT-204
+15 Accounts payable . . . . . . . . . . . . . . 91,510. 134,078.
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("una jurisdiccion que se presento el año pasado y este no", () => {
+  const finding = checkJurisdictionDropped(REST_2025(), REST_2024, "2024");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /New York City \(NYC-204\)/);
+  // El estado sigue presentandose: no entra.
+  assert.doesNotMatch(finding.detail, /IT-204/);
+});
+
+test("una jurisdiccion nueva no es una caida", () => {
+  // Florida aparece este año y no el pasado: eso no es un incumplimiento.
+  const conFlorida = `${REST_2025()}\nF-1120 F-1120 F-1120 F-1120 F-1120`;
+  assert.strictEqual(checkJurisdictionDropped(conFlorida, REST_2025(), "2024"), null);
+});
+
+test("sin declaracion del año anterior no se compara nada", () => {
+  assert.strictEqual(checkJurisdictionDropped(REST_2025(), null, "2024"), null);
+  // Y una mencion suelta no es un formulario presentado.
+  const mencion = `${REST_2025()}\nsee the instructions for Form NYC-204 if applicable`;
+  assert.strictEqual(checkJurisdictionDropped(REST_2025(), mencion, "2024"), null);
+});
+
+test("el metodo contable cambio y no hay Form 3115", () => {
+  assert.strictEqual(accountingMethod(REST_2025()), "cash");
+  assert.strictEqual(accountingMethod(REST_2024), "accrual");
+  const finding = checkAccountingMethodChanged(REST_2025(), REST_2024, "2024");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /checks the cash method/);
+  assert.match(finding.detail, /2024 return checks accrual/);
+  assert.match(finding.authority, /446\(e\)/);
+});
+
+test("con el Form 3115 en el paquete, el preparador sabe lo que hizo", () => {
+  const con3115 = REST_2025({ con3115: ", 3115" });
+  assert.strictEqual(checkAccountingMethodChanged(con3115, REST_2024, "2024"), null);
+});
+
+test("si el metodo no cambio, no hay nada que preguntar", () => {
+  const igual = REST_2025({ metodo: "(1) Cash (2) X Accrual" });
+  assert.strictEqual(checkAccountingMethodChanged(igual, REST_2024, "2024"), null);
+});
+
+test("las cuentas por pagar crecieron en una declaracion por lo percibido", () => {
+  const finding = checkCashMethodWithGrowingPayables(REST_2025());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$134,078\.00/);
+  assert.match(finding.detail, /\$374,516\.00/);
+  assert.match(finding.detail, /\$240,438\.00/);
+});
+
+test("por lo devengado la pregunta no aplica", () => {
+  const devengado = REST_2025({ metodo: "(1) Cash (2) X Accrual" });
+  assert.strictEqual(checkCashMethodWithGrowingPayables(devengado), null);
+});
+
+test("un movimiento chico de las cuentas por pagar es puro calendario", () => {
+  const chico = REST_2025({ apEnd: "140,000." });
+  assert.strictEqual(checkCashMethodWithGrowingPayables(chico), null);
+  // Y si bajaron, tampoco.
+  const bajaron = REST_2025({ apEnd: "40,000." });
+  assert.strictEqual(checkCashMethodWithGrowingPayables(bajaron), null);
 });
