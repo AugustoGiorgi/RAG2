@@ -12,6 +12,7 @@ const {
   runReturnConsistencyChecks, answerOn, nonEmployeePayments, unexplainedLiabilities,
   checkPaymentsWithNoFilingQuestion, checkDeferredRevenueOnAccrual,
   checkJurisdictionDropped, checkAccountingMethodChanged, checkCashMethodWithGrowingPayables, accountingMethod,
+  checkScheduleM1TiesToBooks, checkClosingInventoryMissing,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -358,4 +359,85 @@ test("un movimiento chico de las cuentas por pagar es puro calendario", () => {
   // Y si bajaron, tampoco.
   const bajaron = REST_2025({ apEnd: "40,000." });
   assert.strictEqual(checkCashMethodWithGrowingPayables(bajaron), null);
+});
+
+/* --- 10 y 11. La declaracion contra los libros del mismo dia ------------ */
+
+// Los dos salen de un 1065 de gastronomia. El M-1 vivia en el modulo corporativo y por eso
+// nunca corria sobre una sociedad: es la misma cedula en 1065, 1120 y 1120-S, y tenerlo
+// atado a un tipo costo un hallazgo. Entidad y montos ficticios.
+const LIBRO_GASTRO = {
+  name: "workpaper.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Profit and Loss ---
+Total Income,2418330.10
+Cost of Goods Sold
+,Less: Opening Inventory,-8415
+Net Operating Income,-203470.55
+Net Income,-203470.55
+--- Sheet: Balance Sheet ---
+Assets
+Bank Accounts,41208.77
+Inventory Asset,8415
+Total for Assets,937679.17`,
+};
+
+const GASTRO_1065 = ({ m1Books = "-210,400.", invFin = "", invIni = "8,415." } = {}) => `
+Form 1065 U.S. Return of Partnership Income
+Form 1125-A Cost of Goods Sold
+1 Inventory at beginning of year . . . . . . . . . . . . . . . . . . . 1 ${invIni}
+2 Purchases less cost of items withdrawn for personal use . . . . . . 2 704,118.
+7 Inventory at end of year . . . . . . . . . . . . . . . . . . . . . . 7 ${invFin}
+8 Cost of goods sold. Subtract line 7 from line 6 . . . . . . . . . . 8 712,533.
+Schedule M-1 Reconciliation of Income (Loss) per Books With Income (Loss) per Return
+1 Net income (loss) per books . . . . . . . . . . . . . . . . . . . . ${m1Books}
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("el M-1 linea 1 tampoco es el resultado contable en una sociedad", () => {
+  const finding = checkScheduleM1TiesToBooks(GASTRO_1065(), [LIBRO_GASTRO]);
+  assert.ok(finding, "el cruce estaba atado al 1120 y no corria sobre un 1065");
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /-\$210,400\.00/);
+  assert.match(finding.detail, /-\$203,470\.55/);
+  assert.match(finding.detail, /-\$6,929\.45/);
+});
+
+test("si la linea 1 es el resultado contable, no hay nada que reconciliar", () => {
+  assert.strictEqual(checkScheduleM1TiesToBooks(GASTRO_1065({ m1Books: "-203,471." }), [LIBRO_GASTRO]), null);
+});
+
+test("el inventario final quedo en blanco y los libros lo siguen teniendo", () => {
+  const finding = checkClosingInventoryMissing(GASTRO_1065(), [LIBRO_GASTRO]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "MEDIUM");
+  assert.match(finding.detail, /\$8,415\.00/);
+  // Es la misma cifra que la declaracion reporta como inventario inicial, y eso se dice.
+  assert.match(finding.detail, /opening inventory on line 1/);
+  assert.match(finding.authority, /471/);
+});
+
+test("una linea 7 en blanco imprime su propio numero de casilla, no un importe", () => {
+  // El mismo modo de fallar que la depreciacion: "7 Inventory at end of year ... 7".
+  const finding = checkClosingInventoryMissing(GASTRO_1065({ invFin: "" }), [LIBRO_GASTRO]);
+  assert.ok(finding, "leyo el 7 de la casilla como si fuera un inventario de siete dolares");
+});
+
+test("con el inventario final contado, el cruce se calla", () => {
+  assert.strictEqual(checkClosingInventoryMissing(GASTRO_1065({ invFin: "8,415." }), [LIBRO_GASTRO]), null);
+});
+
+test("sin inventario en los libros no se reclama ninguno", () => {
+  const sinInventario = { ...LIBRO_GASTRO, fullText: LIBRO_GASTRO.fullText.replace("Inventory Asset,8415\n", "") };
+  assert.strictEqual(checkClosingInventoryMissing(GASTRO_1065(), [sinInventario]), null);
+  assert.strictEqual(checkClosingInventoryMissing(GASTRO_1065(), []), null);
+});
+
+test("un saldo de inventario de redondeo no le interesa a nadie", () => {
+  const migaja = { ...LIBRO_GASTRO, fullText: LIBRO_GASTRO.fullText.replace("Inventory Asset,8415", "Inventory Asset,180") };
+  assert.strictEqual(checkClosingInventoryMissing(GASTRO_1065(), [migaja]), null);
+});
+
+test("sin Form 1125-A no hay inventario que mirar", () => {
+  const sin1125 = GASTRO_1065().replace(/^.*Inventory at (?:beginning|end) of year.*$/gm, "");
+  assert.strictEqual(checkClosingInventoryMissing(sin1125, [LIBRO_GASTRO]), null);
 });

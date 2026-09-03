@@ -13,10 +13,13 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   runCorporateReturnChecks, checkContributionsThroughRetainedEarnings,
-  checkScheduleM1TiesToBooks, checkAmortizationAgainstBooks,
+  checkAmortizationAgainstBooks,
   checkShareholderLoansMisclassified, checkLoanToShareholder,
   checkApportionmentSwing, apportionmentFactors, scheduleGOwners, checkAccruedInterestToShareholder,
 } = require("../lib/corporate-return-checks");
+// El M-1 se mudo al modulo sin gate de tipo: es la misma cedula en 1065, 1120 y 1120-S.
+// Los casos siguen aca porque el fixture corporativo es el que los descubrio.
+const { checkScheduleM1TiesToBooks } = require("../lib/return-consistency-checks");
 
 const RETURN_1120 = ({
   m1Books = "-1,240,806.", paidInBegin = "2,200,000.", paidInEnd = "2,200,000.",
@@ -223,8 +226,9 @@ test("sin declaracion anterior no se compara nada", () => {
 
 test("de punta a punta sobre el paquete corporativo", () => {
   const findings = runCorporateReturnChecks(filesFor(RETURN_1120({ m1Books: "-1,315,443." }), PRIOR_1120), { returnType: "1120", taxYear: "2025" });
-  assert.strictEqual(findings.length, 6);
-  assert.strictEqual(findings.filter((f) => f.severity === "HIGH").length, 4);
+  // Cinco, no seis: el M-1 se mudo al modulo de consistencia y corre para todos los tipos.
+  assert.strictEqual(findings.length, 5);
+  assert.strictEqual(findings.filter((f) => f.severity === "HIGH").length, 3);
 });
 
 test("no corre sobre declaraciones que no son corporativas", () => {
@@ -275,7 +279,7 @@ test("el desplegable de tipo de declaracion no puede apagar el modulo", () => {
   const files = filesFor(RETURN_1120({ m1Books: "-1,315,443." }), PRIOR_1120);
   for (const returnType of ["1120", "1120-S", "Other", "", "1040", "990", undefined]) {
     assert.strictEqual(
-      runCorporateReturnChecks(files, { returnType, taxYear: "2025" }).length, 6,
+      runCorporateReturnChecks(files, { returnType, taxYear: "2025" }).length, 5,
       `el modulo se apago con returnType=${JSON.stringify(returnType)}`,
     );
   }
