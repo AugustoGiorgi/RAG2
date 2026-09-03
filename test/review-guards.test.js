@@ -437,3 +437,36 @@ test("la frase de ausencia tiene que hablar del formulario que nombra", () => {
   const pegado = issue({ issueDescription: "Form 3800 is not attached to the return package." });
   assert.strictEqual(verifyAttachmentClaims({ issues: [pegado] }, [paquete]).corrected, 1);
 });
+
+// Dos correcciones que la corrida siguiente destapo, las dos del mismo tipo: la guarda usaba
+// como contradiccion algo que el hallazgo nunca dijo que faltara.
+test("un formulario que solo esta en la declaracion del año anterior no cuenta", () => {
+  // "Form 4562 is not attached to the return" habla de ESTE año. La del año anterior trae su
+  // propia copia del 4562, y juntar todos los documentos convertia un hallazgo verdadero
+  // sobre un formulario faltante en una contradiccion.
+  const anterior = {
+    name: "Client 1120 2024.pdf",
+    reviewRole: "prior_return",
+    fullText: `U.S. Corporation Income Tax Return\nForm 4562 Depreciation and Amortization\n${"relleno ".repeat(200)}`,
+  };
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Schedule L shows amortization of $168,431 but Form 4562 is not attached to the return.",
+  })] };
+  assert.strictEqual(verifyAttachmentClaims(review, [PAQUETE, anterior]).corrected, 0);
+  // Y si el formulario esta en la declaracion del año corriente, si se degrada.
+  const conForm = { ...PAQUETE, fullText: `${PAQUETE.fullText}\nForm 4562 Depreciation and Amortization` };
+  assert.strictEqual(verifyAttachmentClaims(review, [conForm, anterior]).corrected, 1);
+});
+
+test("una cifra que el hallazgo dice que muestran los libros no lo contradice", () => {
+  // "Workpaper P&L shows Reimbursements $75,480.99 ... no corresponding line on prior year"
+  // es un hallazgo verdadero sobre un gasto nuevo, y la guarda leia los $75,480.99 de vuelta
+  // del P&L y lo daba por contradicho. El verbo puede traer un sustantivo de por medio.
+  const libro = { ...LIBRO, fullText: `${LIBRO.fullText}\nReimbursements,75480.99` };
+  const review = { issues: [issue({
+    priority: "HIGH",
+    issueDescription: "Workpaper P&L shows Reimbursements $75,480.99 in Other Expenses; verify the tax treatment. No corresponding line on prior year.",
+  })] };
+  assert.strictEqual(verifyWorkpaperClaims(review, [RETURN, libro]).corrected, 0);
+});
