@@ -15,7 +15,7 @@ const {
   checkCapitalRollforward, checkK1sFootToReturn, checkOwnerAllocationAgainstBooks,
   checkDistributionSplitAgainstBooks, drawAccountsFromWorkpaper, checkNettedEquityAccount,
   checkRentalWithOnlyDepreciation, scheduleM2, k1CapitalAccounts, k1OwnerNames, amountsOn,
-  depreciationDeducted,
+  depreciationDeducted, checkBalanceSheetBalances, checkBookEquityAgainstReturn, checkDistributionsNotReported,
 } = require("../lib/entity-return-checks");
 
 const scheduleL = ({ assetsBegin, assetsEnd, capBegin, capEnd, accumBegin, accumEnd }) => `
@@ -394,4 +394,106 @@ ${"relleno para el largo minimo. ".repeat(20)}`;
   // Y la depreciacion federal de verdad se sigue leyendo.
   const conFederal = conEstatal.replace("16a\n", "16a 53,195.\n");
   assert.strictEqual(depreciationDeducted(conFederal), 53195);
+});
+
+/* --- El balance que no cierra, y por que ------------------------------- */
+
+// Los tres salen del mismo 1065 de un restaurante. El primero es aritmetica pura de la
+// declaracion; los otros dos explican el descuadre con el workpaper al lado.
+const LIBRO_CON_PATRIMONIO = {
+  name: "workpaper.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Balance Sheet ---
+Assets
+Total for Assets,937679.17
+Liabilities and Equity
+Liabilities
+Total for Liabilities,1756736.99
+Equity
+Capital Accounts (All),-402121
+Distribution.,-13500
+Prior Period Adjustments,-269254.37
+Retained Earnings,4323.01
+Net Income,-138505.46
+Total for Equity,-819057.82`,
+};
+
+const REST_1065 = ({ assets = "937,579.", total = "1,209,181.", capital = "-547,556.", distribuciones = "" } = {}) => `U.S. Return of Partnership Income 2025
+14 Total assets . . . . . . . . . . . . . . . . . . . . . . . . 1,173,565. ${assets}
+21 Partners' capital accounts . . . . . . . . . . . . . . . . . -402,121. ${capital}
+22 Total liabilities and capital . . . . . . . . . . . . . . . . 1,173,565. ${total}
+Schedule M-2 Analysis of Partners' Capital Accounts
+1 Balance at beginning of year . . . . . . . . -402,121. 6 Distributions: a Cash . . . . . . . . ${distribuciones}
+3 Net income (loss) (see instructions) . . . . . . -145,413.
+${k1({ name: "SOCIO UNO", begin: "-201,060", contributed: "", income: "-72,706", withdrawals: "0", end: "-273,778" })}
+${"2025 relleno para el largo minimo. ".repeat(20)}`;
+
+test("Schedule L no cierra", () => {
+  const finding = checkBalanceSheetBalances(REST_1065());
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$937,579\.00/);
+  assert.match(finding.detail, /\$1,209,181\.00/);
+  assert.match(finding.detail, /\$271,602\.00/);
+  assert.match(finding.detail, /closes/);
+});
+
+test("si cierra en los dos extremos, se calla", () => {
+  assert.strictEqual(checkBalanceSheetBalances(REST_1065({ total: "937,579." })), null);
+});
+
+test("un descuadre de apertura tambien se marca", () => {
+  const apertura = REST_1065({ total: "937,579." }).replace(
+    "22 Total liabilities and capital . . . . . . . . . . . . . . . . 1,173,565.",
+    "22 Total liabilities and capital . . . . . . . . . . . . . . . . 1,100,000.",
+  );
+  const finding = checkBalanceSheetBalances(apertura);
+  assert.ok(finding);
+  assert.match(finding.detail, /opens/);
+});
+
+test("el patrimonio del libro no coincide con el de la declaracion", () => {
+  const finding = checkBookEquityAgainstReturn(REST_1065(), [LIBRO_CON_PATRIMONIO]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /-\$547,556\.00/);
+  assert.match(finding.detail, /-\$819,057\.82/);
+  // Nombra las filas que el M-2 no tiene donde poner, y no las que si.
+  assert.match(finding.detail, /Prior Period Adjustments/);
+  assert.match(finding.detail, /Distribution\./);
+  assert.doesNotMatch(finding.detail, /Capital Accounts \(All\)/);
+  assert.doesNotMatch(finding.detail, /Net Income/);
+});
+
+test("unos pesos de redondeo entre libro y declaracion no son un hallazgo", () => {
+  const casi = { ...LIBRO_CON_PATRIMONIO, fullText: LIBRO_CON_PATRIMONIO.fullText.replace("-819057.82", "-547554.10") };
+  assert.strictEqual(checkBookEquityAgainstReturn(REST_1065(), [casi]), null);
+});
+
+test("sin workpaper no se compara nada", () => {
+  assert.strictEqual(checkBookEquityAgainstReturn(REST_1065(), []), null);
+  assert.strictEqual(checkBookEquityAgainstReturn(REST_1065(), [{ name: "x.pdf", fullText: "una declaracion cualquiera" }]), null);
+});
+
+test("distribuciones en el libro que la declaracion no reporta", () => {
+  const finding = checkDistributionsNotReported(REST_1065(), [LIBRO_CON_PATRIMONIO]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$13,500\.00/);
+  assert.match(finding.authority, /731/);
+});
+
+test("si el M-2 las reporta, no hay nada que decir", () => {
+  assert.strictEqual(checkDistributionsNotReported(REST_1065({ distribuciones: "13,500." }), [LIBRO_CON_PATRIMONIO]), null);
+});
+
+test("y si las reporta algun K-1, tampoco", () => {
+  const conK1 = REST_1065().replace("withdrawals: 0", "withdrawals: 13500")
+    .replace("Withdrawals and distributions . . . . . . . . . . . $ ( 0. )", "Withdrawals and distributions . . . . . . . . . . . $ ( 13,500. )");
+  assert.strictEqual(checkDistributionsNotReported(conK1, [LIBRO_CON_PATRIMONIO]), null);
+});
+
+test("una fila de redondeo no es una distribucion", () => {
+  const chica = { ...LIBRO_CON_PATRIMONIO, fullText: LIBRO_CON_PATRIMONIO.fullText.replace("Distribution.,-13500", "Distribution.,-40") };
+  assert.strictEqual(checkDistributionsNotReported(REST_1065(), [chica]), null);
 });
