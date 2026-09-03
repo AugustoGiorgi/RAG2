@@ -15,6 +15,7 @@ const {
   checkCapitalRollforward, checkK1sFootToReturn, checkOwnerAllocationAgainstBooks,
   checkDistributionSplitAgainstBooks, drawAccountsFromWorkpaper, checkNettedEquityAccount,
   checkRentalWithOnlyDepreciation, scheduleM2, k1CapitalAccounts, k1OwnerNames, amountsOn,
+  depreciationDeducted,
 } = require("../lib/entity-return-checks");
 
 const scheduleL = ({ assetsBegin, assetsEnd, capBegin, capEnd, accumBegin, accumEnd }) => `
@@ -376,4 +377,21 @@ test("una cuenta que nombra un solo movimiento no aplica", () => {
   const soloRetiros = { ...LIBRO_NETEADO, fullText: LIBRO_NETEADO.fullText.replace("Member Draws/Contributions", "Member Draws") };
   assert.strictEqual(checkNettedEquityAccount(SIN_APORTES, [soloRetiros]), null);
   assert.strictEqual(checkNettedEquityAccount(SIN_APORTES, []), null);
+});
+
+test("la linea de depreciacion de un formulario estatal no es un importe", () => {
+  // Una IT-204 de Nueva York imprime "18 Depreciation (if required, submit federal Form 4562)"
+  // con el numero de casilla repetido al margen derecho y nada mas. Leerlo reportaba $18 de
+  // depreciacion deducida contra una reserva que no se habia movido, en una sociedad que no
+  // dedujo un peso de depreciacion.
+  const conEstatal = `U.S. Return of Partnership Income 2025
+16 a Depreciation (if required, attach Form 4562) . . . . . . . . . . . . . . 16a
+b Less accumulated depreciation . . . . . . . . . . . . . 394,281. 47,104. 394,281. 47,104.
+18 Depreciation (if required, submit federal Form 4562) . . . . . . . . . . . . . . 18
+${"relleno para el largo minimo. ".repeat(20)}`;
+  assert.strictEqual(depreciationDeducted(conEstatal), null, "el numero de casilla no es un importe");
+  assert.strictEqual(checkAccumulatedDepreciationRollforward(conEstatal), null, "reserva quieta y nada deducido: coinciden");
+  // Y la depreciacion federal de verdad se sigue leyendo.
+  const conFederal = conEstatal.replace("16a\n", "16a 53,195.\n");
+  assert.strictEqual(depreciationDeducted(conFederal), 53195);
 });
