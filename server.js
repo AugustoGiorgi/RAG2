@@ -10633,7 +10633,13 @@ function enforceReviewConciseness(review) {
         issueDescription: limitSentences(issue.issueDescription || issue.description || issue.issue, 2, 320),
         evidence: limitSentences(issue.evidence, 2, 240),
         // LOW findings are informational; a risk essay on them is exactly the noise to cut.
-        riskAnalysis: priority === "LOW" ? "" : limitSentences(issue.riskAnalysis || issue.whyItMatters, 1, 180),
+        // The exception is a finding a guard downgraded: the contradiction IS the reason it
+        // is LOW, and blanking it left the reviewer a demoted finding with no explanation.
+        // That rule silently deleted every guard note ever written -- the counters said ten
+        // findings had been contradicted and the document showed none of them.
+        riskAnalysis: issue.contradictedByGuard
+          ? limitSentences(issue.riskAnalysis, 4, 420)
+          : priority === "LOW" ? "" : limitSentences(issue.riskAnalysis || issue.whyItMatters, 1, 180),
         proposedSolution: limitSentences(issue.proposedSolution || issue.recommendedAction || issue.recommendation, 2, 220),
         needsMoreInfo: limitSentences(issue.needsMoreInfo || issue.needsClientInfo, 1, 160),
       };
