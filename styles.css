@@ -3926,6 +3926,15 @@ h1 {
   color: #64748b;
 }
 
+.deliverable-reset-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.deliverable-reset-row .muted-note { margin: 0; }
+
 .deliverable-redesign {
   display: block;
   min-width: 0;

@@ -34,6 +34,14 @@ const calculationState = { files: [], lastResult: null };
 const taxReturnRoles = new Map();
 const DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
 const API_BASE_URL = "";
+/**
+ * The stage every review is filed under now that the picker is gone from the form.
+ *
+ * The field still travels: it is stamped on the Word header, stored on the session, shown in
+ * the tracker and named in the prompt. Only the choice is gone, so the value is fixed here
+ * rather than scattered as a literal through the places that need one.
+ */
+const DEFAULT_REVIEW_STAGE = "Initial review";
 
 const els = {
   form: document.getElementById("reviewForm"),
@@ -396,6 +404,7 @@ const els = {
   deliverableFirmEmail: document.getElementById("deliverableFirmEmail"),
   deliverablePreparerName: document.getElementById("deliverablePreparerName"),
   deliverableSaveDefaults: document.getElementById("deliverableSaveDefaults"),
+  deliverableStartOver: document.getElementById("deliverableStartOver"),
   deliverableClientName: document.getElementById("deliverableClientName"),
   deliverableClientEmail: document.getElementById("deliverableClientEmail"),
   deliverableFilesSection: document.getElementById("deliverableFilesSection"),
@@ -685,7 +694,7 @@ function init() {
   document.getElementById("prepNotes").addEventListener("input", () => renderPreparerValidation(validatePreparerInputs()));
   document.getElementById("userNotes").addEventListener("input", () => renderValidation(validateBeforeReview({ showWarnings: true })));
   document.getElementById("clientFacts").addEventListener("input", () => renderValidation(validateBeforeReview({ showWarnings: true })));
-  ["clientName", "entityName", "statesIncluded", "taxYear", "returnType", "reviewStage"].forEach((id) => {
+  ["clientName", "entityName", "statesIncluded", "taxYear", "returnType"].forEach((id) => {
     document.getElementById(id).addEventListener("input", updateStepper);
     document.getElementById(id).addEventListener("change", updateStepper);
   });
@@ -4655,7 +4664,6 @@ function applySessionToUi(session, client) {
   document.getElementById("entityName").value = client?.name || "";
   document.getElementById("returnType").value = session.returnType || client?.returnType || "";
   document.getElementById("taxYear").value = session.taxYear || "";
-  document.getElementById("reviewStage").value = normalizeReviewStage(session.reviewStage || "Initial review");
   els.deliverableClientName.value = client?.name || "";
   if (els.deliverableClientEmail) els.deliverableClientEmail.value = client?.email || "";
   if (els.deliverableClientCompany) els.deliverableClientCompany.value = client?.company || client?.name || "";
@@ -4866,7 +4874,7 @@ function getMetadata() {
     taxYear: document.getElementById("taxYear").value.trim(),
     returnType: document.getElementById("returnType").value,
     statesIncluded: document.getElementById("statesIncluded").value.trim(),
-    reviewStage: normalizeReviewStage(document.getElementById("reviewStage").value),
+    reviewStage: normalizeReviewStage(DEFAULT_REVIEW_STAGE),
     userNotes: document.getElementById("userNotes").value.trim(),
     clientFacts: document.getElementById("clientFacts").value.trim(),
     reviewTypes: getSelectedReviewTypes(),
@@ -7752,6 +7760,7 @@ function setupDeliverableEvents() {
   [els.deliverableClientName, els.deliverableClientEmail, els.deliverableClientCompany].forEach((input) => input?.addEventListener("input", updateDeliverableFlow));
   els.deliverableConnectDrive?.addEventListener("click", connectGoogleDrive);
   els.deliverableSelectFolder?.addEventListener("click", openDeliverableFolderPicker);
+  els.deliverableStartOver?.addEventListener("click", resetDeliverableWorkspace);
   els.deliverableAddDriveFiles?.addEventListener("click", openDeliverableDriveFiles);
   els.deliverableAddComputerFiles?.addEventListener("click", () => els.deliverableComputerFiles?.click());
   els.deliverableComputerFiles?.addEventListener("change", () => {
@@ -7845,6 +7854,56 @@ function updateDeliverableFlow() {
   els.deliverableEmailSection?.classList.toggle("locked", !(emailReady && filesReady));
   if (els.generateEmailDraft) els.generateEmailDraft.disabled = false;
   if (els.gmailTo && !els.gmailTo.value.trim()) els.gmailTo.value = els.deliverableClientEmail?.value || "";
+}
+
+/**
+ * Empty the Deliverable workspace so the next email starts from nothing.
+ *
+ * Firm and preparer details are deliberately left alone: those are saved defaults for the
+ * practice, not part of any one email, and having to retype them on every client would make
+ * the button cost more than it saves.
+ *
+ * Asks first. It throws away a composed draft and a file selection that can take real work to
+ * rebuild, and there is no undo.
+ */
+function resetDeliverableWorkspace() {
+  const hasWork = Boolean(
+    deliverableState.files.length
+    || deliverableState.draft
+    || deliverableState.clientFolder
+    || els.deliverableClientEmail?.value.trim()
+    || els.deliverableClientName?.value.trim(),
+  );
+  if (hasWork && !window.confirm("Clear the client, the attached files and the draft, and start a new email? This cannot be undone.")) return;
+
+  deliverableState.files = [];
+  deliverableState.draft = null;
+  deliverableState.clientFolder = null;
+
+  for (const el of [
+    els.deliverableClientName, els.deliverableClientEmail, els.deliverableClientCompany,
+    els.deliverableBalance, els.deliverableDeadline, els.deliverableCustomInstructions,
+    els.gmailTo, els.gmailAdditionalCc,
+  ]) { if (el) el.value = ""; }
+
+  // Selects go back to their first option rather than to an empty value they do not have.
+  for (const el of [els.deliverableReturnType, els.deliverableTaxYear, els.deliverableReviewStage, els.deliverableEmailTone]) {
+    if (el) el.selectedIndex = 0;
+  }
+
+  for (const id of ["deliverableDriveLoaded", "deliverableDraftPanel", "deliverableResults"]) {
+    const el = document.getElementById(id);
+    if (el) { el.innerHTML = ""; el.hidden = true; }
+  }
+  for (const id of ["deliverableKeyPoints", "gmailSendResult", "gmailAttachmentsSummary", "deliverableClientStatus", "deliverableFileStatus"]) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = "";
+  }
+
+  renderDeliverableFiles();
+  updateDeliverableClientMode();
+  updateDeliverableFlow();
+  showToast("Deliverable cleared. Ready for the next email.", "success");
 }
 
 function isValidEmail(value) {
@@ -10286,7 +10345,6 @@ function resetFiles() {
   document.getElementById("entityName").value = "";
   document.getElementById("statesIncluded").value = "";
   document.getElementById("returnType").value = "";
-  document.getElementById("reviewStage").value = "Initial review";
   document.getElementById("userNotes").value = "";
   document.getElementById("clientFacts").value = "";
   refreshDeliverableStatus();

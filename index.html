@@ -732,13 +732,6 @@
                 <span>States included</span>
                 <input id="statesIncluded" type="text" placeholder="Ex. Federal, CA, NY" />
               </label>
-              <label class="field compact">
-                <span>Review stage</span>
-                <select id="reviewStage">
-                  <option value="Initial review">Initial review</option>
-                  <option value="Final review">Final review</option>
-                </select>
-              </label>
             </div>
           </section>
 
@@ -1099,6 +1092,10 @@
           </section>
         </aside>
         <section class="deliverable-redesign">
+          <div class="deliverable-reset-row">
+            <button id="deliverableStartOver" class="ghost-button small-button" type="button">Start a new email</button>
+            <span class="muted-note">Clears the client, the files and the draft. Your firm and preparer details stay.</span>
+          </div>
           <section id="deliverableClientSection" class="deliverable-section">
             <h2 class="deliverable-section-title"><span id="deliverableClientCheck" class="check" hidden>&#10003;</span>1. Client Information</h2>
             <div class="mode-toggle">
