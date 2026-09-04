@@ -9442,9 +9442,12 @@ async function handleDriveApi(req, res, requestUrl) {
       connected: hasToken,
       driveAuthorized,
       driveAccess: access,
-      // Shown in the picker when access is not enough, so the cause is visible from the app
-      // instead of needing someone on the server reading a token file.
-      grantedScopes: hasToken ? String(tokens.scope || "").split(/\s+/).filter((scope) => scope.includes("/auth/drive")).join(" ") : "",
+      // Every granted scope, short-named, so a message can say what Google actually handed
+      // back. Filtering this to Drive hid the answer to "why did Gmail stop too". Scope names
+      // are not secrets; the token they came with is never sent anywhere near the browser.
+      grantedScopes: hasToken
+        ? String(tokens.scope || "").split(/\s+/).filter(Boolean).map((scope) => scope.replace("https://www.googleapis.com/auth/", "")).join(" ")
+        : "",
       // Signed in, but with a Drive scope that cannot see the account's own files. Worth its
       // own flag: the picker has to explain this instead of rendering an empty folder.
       limited: hasToken && (access === "app-only" || access === "metadata"),

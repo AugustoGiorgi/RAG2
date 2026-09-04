@@ -3532,7 +3532,12 @@ function reportGoogleGrant() {
     showToast("Google connected.", "success");
     return;
   }
-  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted. Reconnect and tick every box on the Google screen.`, "warning");
+  // Name what Google actually returned. Without it the message is a conclusion with no
+  // evidence, and the next question is always "but I ticked everything" — which nobody can
+  // answer from either side without seeing the granted list.
+  const granted = window.driveState?.grantedScopes;
+  const detail = granted ? ` Google granted: ${granted}.` : " Google returned no scopes at all for this account.";
+  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted.${detail} Reconnect and tick every box on the Google screen.`, "warning");
 }
 
 function runPendingDriveAction() {
