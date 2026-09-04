@@ -3498,7 +3498,7 @@ function openDriveWhenConnected(action) {
   if (window.driveState?.connected) { action(); return; }
   pendingDriveAction = action;
   if (window.driveState?.limited) {
-    showToast("This Google account did not grant access to your Drive files. Reconnect and allow full Drive access.", "warning");
+    showToast("Google is connected, but the Drive permission was not granted. Reconnect, and tick the Google Drive box on the Google screen.", "warning");
   } else {
     showToast("Connect Google Drive to load files.", "info");
   }
@@ -3510,7 +3510,7 @@ function runPendingDriveAction() {
   pendingDriveAction = null;
   if (!action) return;
   if (window.driveState?.connected) action();
-  else if (window.driveState?.limited) showToast("Google is connected, but this account did not grant access to your Drive files. Reconnect and allow full Drive access.", "warning");
+  else if (window.driveState?.limited) showToast("Google is connected, but the Drive permission was not granted. Reconnect, and tick the Google Drive box on the Google screen.", "warning");
 }
 
 function openDriveForZone(zoneId) {

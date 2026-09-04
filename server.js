@@ -205,12 +205,33 @@ const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.go
 const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || LOCAL_SECRETS.googleClientSecret || "").trim();
 const GOOGLE_REDIRECT_URI = String(process.env.GOOGLE_REDIRECT_URI || LOCAL_SECRETS.googleRedirectUri || `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}/auth/google/callback`).trim();
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const GOOGLE_DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
+const GOOGLE_DRIVE_APPFILES_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const GOOGLE_DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
+/** The only two scopes that can list the files a person already has in Drive. */
+const DRIVE_LISTING_SCOPES = [GOOGLE_DRIVE_SCOPE, GOOGLE_DRIVE_FULL_SCOPE];
 const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
-const GOOGLE_OAUTH_SCOPE = (process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
-  .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean).join(" ");
+/**
+ * What we ask Google for.
+ *
+ * GOOGLE_OAUTH_SCOPES can override the default set, and an override whose Drive scope is
+ * drive.file guarantees a picker that lists nothing: that scope only reaches files this app
+ * created, not the ones already in the account. A listing scope is therefore added back
+ * whenever the configured set does not contain one — the app cannot do its job without it,
+ * and failing silently at file-listing time is the worst place to find out.
+ */
+const GOOGLE_OAUTH_SCOPE = (() => {
+  const configured = String(process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
+    .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean);
+  if (!configured.some((scope) => DRIVE_LISTING_SCOPES.includes(scope))) {
+    console.warn(`[Google] The configured OAuth scopes cannot list Drive files; adding ${GOOGLE_DRIVE_SCOPE}.`);
+    configured.push(GOOGLE_DRIVE_SCOPE);
+  }
+  return Array.from(new Set(configured)).join(" ");
+})();
 const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "false").toLowerCase() === "true";
 const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
 const QBO_CLIENT_SECRET = String(process.env.QBO_CLIENT_SECRET || LOCAL_SECRETS.qboClientSecret || "").trim();
@@ -4584,7 +4605,14 @@ async function handleGoogleCallback(_req, res, requestUrl) {
     return;
   }
   writeGoogleTokens(username, normalizeGoogleTokens(tokenData, username));
-  appendAuditLog({ user: { username } }, "google.connected", { scopes: tokenData.scope || GOOGLE_OAUTH_SCOPE });
+  // The granted set, never the requested one: they differ exactly when something is wrong,
+  // and recording the request instead of the grant hides the only useful fact.
+  const grantedScopes = String(tokenData.scope || "");
+  const grantedDrive = driveAccessLevel({ scope: grantedScopes });
+  if (grantedDrive !== "full") {
+    console.warn(`[Google] ${username} connected without a Drive scope that can list files (granted: ${grantedScopes || "none"}). The Drive picker will have nothing to show until this is re-granted.`);
+  }
+  appendAuditLog({ user: { username } }, "google.connected", { scopes: grantedScopes, driveAccess: grantedDrive });
   sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"google_connected"},"*"); window.close();</script><p>Google connected. You can close this tab.</p></body></html>`);
 }
 
@@ -6002,10 +6030,6 @@ function clearSessionCookie() {
 function isGoogleDriveEnabled() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
-
-const GOOGLE_DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
-const GOOGLE_DRIVE_APPFILES_SCOPE = "https://www.googleapis.com/auth/drive.file";
-const GOOGLE_DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
 
 /**
  * How much of Drive this token can actually see.
@@ -9403,6 +9427,9 @@ async function handleDriveApi(req, res, requestUrl) {
       connected: driveAuthorized,
       driveAuthorized,
       driveAccess: access,
+      // Shown in the picker when access is not enough, so the cause is visible from the app
+      // instead of needing someone on the server reading a token file.
+      grantedScopes: hasToken ? String(tokens.scope || "").split(/\s+/).filter((scope) => scope.includes("/auth/drive")).join(" ") : "",
       // Signed in, but with a Drive scope that cannot see the account's own files. Worth its
       // own flag: the picker has to explain this instead of rendering an empty folder.
       limited: hasToken && (access === "app-only" || access === "metadata"),
@@ -9431,9 +9458,11 @@ async function handleDriveApi(req, res, requestUrl) {
       connected: false,
       limited: true,
       driveAccess: access,
+      // Google shows one checkbox per permission now, and the Drive one is easy to leave
+      // unticked; the grant then succeeds with everything except the part that matters.
       error: access === "app-only"
-        ? "This Google account granted access only to files created by this app, so none of your own Drive files can be listed. Reconnect and allow full Drive access."
-        : "This Google account granted metadata-only Drive access, so file contents cannot be read. Reconnect and allow full Drive access.",
+        ? "This Google account only granted access to files created by this app, so your own Drive files cannot be listed. Reconnect, and on the Google screen tick the box for seeing your Google Drive files before continuing."
+        : "This Google account granted Drive metadata only, so file contents cannot be read. Reconnect, and on the Google screen tick the box for seeing your Google Drive files before continuing.",
     });
     return;
   }
