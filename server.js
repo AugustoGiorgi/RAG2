@@ -217,18 +217,24 @@ const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
 /**
  * What we ask Google for.
  *
- * GOOGLE_OAUTH_SCOPES can override the default set, and an override whose Drive scope is
- * drive.file guarantees a picker that lists nothing: that scope only reaches files this app
- * created, not the ones already in the account. A listing scope is therefore added back
- * whenever the configured set does not contain one — the app cannot do its job without it,
- * and failing silently at file-listing time is the worst place to find out.
+ * An explicit GOOGLE_OAUTH_SCOPES is obeyed exactly, including a set that cannot list Drive.
+ * This used to force drive.readonly in regardless, which looked like a safety net and was not:
+ * drive.readonly is a sensitive scope, so on an OAuth client Google has not verified, adding it
+ * makes every user meet the "Google hasn't verified this app" warning before they can connect.
+ * Which scopes to request — and therefore whether to face verification — is a decision for
+ * whoever runs the deployment, not for this line.
+ *
+ * The case it was guarding against, a picker that lists nothing because the grant only covers
+ * drive.file, now explains itself when the listing is attempted. That is the right place for
+ * it: visible, specific, and without changing what the user is asked to consent to.
  */
 const GOOGLE_OAUTH_SCOPE = (() => {
-  const configured = String(process.env.GOOGLE_OAUTH_SCOPES || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
+  const override = String(process.env.GOOGLE_OAUTH_SCOPES || "").trim();
+  const configured = (override || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
     .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean);
   if (!configured.some((scope) => DRIVE_LISTING_SCOPES.includes(scope))) {
-    console.warn(`[Google] The configured OAuth scopes cannot list Drive files; adding ${GOOGLE_DRIVE_SCOPE}.`);
-    configured.push(GOOGLE_DRIVE_SCOPE);
+    const source = override ? "GOOGLE_OAUTH_SCOPES is set and" : "the configured scopes";
+    console.warn(`[Google] ${source} cannot list a user's existing Drive files. The picker will say so instead of showing an empty folder. Add ${GOOGLE_DRIVE_SCOPE} to change that — it is a sensitive scope and needs a verified OAuth client.`);
   }
   return Array.from(new Set(configured)).join(" ");
 })();
