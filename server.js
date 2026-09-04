@@ -4572,6 +4572,11 @@ async function handleGoogleAuth(req, res) {
     scope: GOOGLE_OAUTH_SCOPE,
     access_type: "offline",
     prompt: "consent",
+    // Without this, every authorization REPLACES the granted set with whatever was ticked on
+    // Google's screen — and Google now shows one checkbox per permission. Reconnecting to fix
+    // Drive silently dropped gmail.compose, and Gmail sending stopped working with nothing
+    // anywhere saying why. Incremental authorization merges what was already granted instead.
+    include_granted_scopes: "true",
     state: statePayload,
   });
   redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);

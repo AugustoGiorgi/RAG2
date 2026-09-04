@@ -727,7 +727,7 @@ function init() {
     if (event.data?.type === "google_connected") {
       await refreshDriveStatus();
       await refreshDeliverableGmailStatus();
-      showToast("Google connected.", "success");
+      reportGoogleGrant();
       if (pendingDeliverableGmailDraft) await createDeliverableGmailDraft();
       runPendingDriveAction();
     }
@@ -3512,6 +3512,27 @@ function openDriveWhenConnected(action) {
   pendingDriveAction = action;
   showToast("Connect Google Drive to load files.", "info");
   connectGoogleDrive();
+}
+
+/**
+ * Say what the connection actually came back with.
+ *
+ * "Google connected." was reported for every outcome, including the one where the consent
+ * screen granted a subset. Google shows a checkbox per permission now, so a partial grant is
+ * a normal accident, and finding out later — an empty Drive picker here, a dead Gmail button
+ * three tabs away — costs far more than being told at the moment it happens.
+ */
+function reportGoogleGrant() {
+  const driveReady = window.driveState?.driveAccess === "full";
+  const gmailReady = Boolean(deliverableState.gmailStatus?.authorized);
+  const missing = [];
+  if (!driveReady) missing.push("seeing your Drive files");
+  if (!gmailReady) missing.push("creating Gmail drafts");
+  if (!missing.length) {
+    showToast("Google connected.", "success");
+    return;
+  }
+  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted. Reconnect and tick every box on the Google screen.`, "warning");
 }
 
 function runPendingDriveAction() {
