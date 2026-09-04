@@ -6790,9 +6790,36 @@ function parseDriveFileTypes(value) {
   return String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
 }
 
+/** File extensions per type, for the files Drive stores with a generic mimeType. */
+const DRIVE_TYPE_EXTENSIONS = {
+  pdf: [".pdf"],
+  xlsx: [".xlsx", ".xls", ".xlsm"],
+  docx: [".docx", ".doc"],
+  txt: [".txt"],
+  json: [".json"],
+  csv: [".csv"],
+  image: [".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"],
+  zip: [".zip"],
+};
+
+/**
+ * The Drive query fragment that narrows a listing to the requested types.
+ *
+ * Empty, or the literal "all", means no narrowing at all: the picker's ALL tab has to show
+ * everything the account can see, which is what a person expects after connecting Drive.
+ *
+ * Types are matched on mimeType OR file extension. Drive hands back
+ * application/octet-stream for a great many uploaded files — a spreadsheet mailed as an
+ * attachment and dropped into a folder is a common one — and a MIME-only filter made those
+ * invisible in the picker while they sat in plain sight on drive.google.com.
+ */
 function driveMimeFilter(fileTypes = []) {
+  const requested = (Array.isArray(fileTypes) ? fileTypes : []).map((type) => String(type).toLowerCase());
+  if (!requested.length || requested.includes("all")) return "";
   const mimes = new Set();
-  fileTypes.forEach((type) => {
+  const extensions = new Set();
+  requested.forEach((type) => { (DRIVE_TYPE_EXTENSIONS[type] || []).forEach((extension) => extensions.add(extension)); });
+  requested.forEach((type) => {
     if (type === "pdf") mimes.add("application/pdf");
     if (type === "xlsx") ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "application/vnd.google-apps.spreadsheet"].forEach((mime) => mimes.add(mime));
     if (type === "docx") ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword", "application/vnd.google-apps.document"].forEach((mime) => mimes.add(mime));
@@ -6802,22 +6829,39 @@ function driveMimeFilter(fileTypes = []) {
     if (type === "image") ["image/png", "image/jpeg", "image/webp", "image/gif"].forEach((mime) => mimes.add(mime));
     if (type === "zip") ["application/zip", "application/x-zip-compressed", "application/octet-stream"].forEach((mime) => mimes.add(mime));
   });
-  return mimes.size ? ` and (${Array.from(mimes).map((mime) => `mimeType='${mime}'`).join(" or ")})` : "";
+  const clauses = [
+    ...Array.from(mimes).map((mime) => `mimeType='${mime}'`),
+    ...Array.from(extensions).map((extension) => `name contains '${extension}'`),
+  ];
+  return clauses.length ? ` and (${clauses.join(" or ")})` : "";
 }
 
 function driveFields() {
   return "files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink),nextPageToken";
 }
 
+/** Enough pages for any realistic folder tree, and a hard stop so a bad token cannot spin. */
+const DRIVE_FOLDER_PAGE_LIMIT = 10;
+
 async function listDriveFolders(parentId = "root", username = "default") {
   const query = parentId === "shared-with-me"
     ? "sharedWithMe=true and trashed=false and mimeType='application/vnd.google-apps.folder'"
     : `'${parentId}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`;
   const q = encodeURIComponent(query);
-  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true`, {}, username);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive folders."), { statusCode: res.status, expose: true });
-  return data.files || [];
+  // Paginated: one page of 100 used to be the whole answer, so an account with more folders
+  // than that in a parent simply never saw the rest, and nothing said they were missing.
+  const folders = [];
+  let pageToken = "";
+  for (let page = 0; page < DRIVE_FOLDER_PAGE_LIMIT; page += 1) {
+    const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+    const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=${encodeURIComponent("files(id,name,mimeType,modifiedTime,webViewLink),nextPageToken")}&orderBy=name&pageSize=100&supportsAllDrives=true&includeItemsFromAllDrives=true${token}`, {}, username);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error?.message || "Could not list Drive folders."), { statusCode: res.status, expose: true });
+    folders.push(...(data.files || []));
+    pageToken = data.nextPageToken || "";
+    if (!pageToken) break;
+  }
+  return folders;
 }
 
 async function listDriveFiles(folderId = "root", fileTypes = [], pageToken = "", username = "default") {

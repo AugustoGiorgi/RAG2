@@ -3431,6 +3431,7 @@ const DRIVE_ZONE_CONFIG = {
   "presentation": { title: "Select Presentation Source Files", subtitle: "Select source materials for the presentation", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
   "calculation": { title: "Select Calculation Files", subtitle: "Select 1099s, W-2s, statements, financial reports, or PDFs", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
   "estimated-reviewed-workbook": { title: "Select Reviewed Workbook", subtitle: "Select the reviewed Excel workpaper to attach to the email", allowedTypes: ["xlsx"], multiSelect: false },
+  "planning-client": { title: "Select Planning Files", subtitle: "Prior-year return, K-1s, statements, the Excel workpaper, or photos of documents", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "image", "zip"], multiSelect: true },
 };
 
 function setupDriveUploadButtons() {
@@ -3444,6 +3445,8 @@ function setupDriveUploadButtons() {
   addDriveButtonAfterInput("presentationFiles", "presentation");
   addDriveButtonAfterInput("calculationFiles", "calculation");
   addDriveButtonAfterInput("estReviewedWorkbookFile", "estimated-reviewed-workbook");
+  // Planning was the one tab with an upload box and no way to reach Drive at all.
+  addDriveButtonAfterInput("planningFiles", "planning-client");
 }
 
 function addDriveButtonAfterInput(inputId, zoneId) {
@@ -3562,6 +3565,9 @@ function addFilesToZone(zoneId, driveFiles) {
   } else if (zoneId === "calculation") {
     calculationState.files = mergeFiles(calculationState.files, files);
     renderCalculationFiles();
+  } else if (zoneId === "planning-client") {
+    planningStudio.files.push(...files.map((file) => ({ name: file.name, type: file.type || "", content: file.content })));
+    planningRenderFileList();
   } else if (zoneId === "estimated-reviewed-workbook") {
     const file = files[0];
     if (file) {
@@ -3669,6 +3675,24 @@ function showToast(message, type = "info") {
   }, 3500);
 }
 
+/**
+ * A Drive API call that fails loudly.
+ *
+ * These were plain `fetch(...).then((r) => r.json())`, and a 401 does not throw — it resolves
+ * with the error body. So an expired token produced `{ files: undefined }`, the picker rendered
+ * zero rows, and the empty state told the user "No files found in this folder". The account was
+ * fine and the folder was full; the session had simply lapsed, and nothing on screen said so.
+ */
+async function driveFetch(path, options) {
+  const response = await fetch(`${API_BASE_URL}${path}`, options);
+  const data = await response.json().catch(() => ({}));
+  if (response.ok) return data;
+  const error = new Error(data.error || `Drive request failed (${response.status}).`);
+  error.status = response.status;
+  error.needsConnection = response.status === 401 || response.status === 403 || data.connected === false;
+  throw error;
+}
+
 class DrivePicker {
   static _instance = null;
 
@@ -3714,6 +3738,8 @@ class DrivePicker {
     this.state.currentFolderId = config.folderId || "root";
     this.state.folderPath = [{ id: "root", name: "My Drive" }];
     this.state.location = "my-drive";
+    this.state.activeTypeFilter = "all";
+    this.state.folderCache.clear();
     document.getElementById("drive-picker-title").textContent = config.title || "Select Files from Google Drive";
     const subtitle = document.getElementById("drive-picker-subtitle");
     subtitle.textContent = config.subtitle || "";
@@ -3746,8 +3772,8 @@ class DrivePicker {
     this.showLoading("Loading folder...");
     try {
       const [foldersRes, filesRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/drive/folders?parentId=${encodeURIComponent(folderId)}`).then((r) => r.json()),
-        fetch(`${API_BASE_URL}/api/drive/files?folderId=${encodeURIComponent(folderId)}&fileTypes=${encodeURIComponent(this.state.allowedTypes.join(","))}`).then((r) => r.json()),
+        driveFetch(`/api/drive/folders?parentId=${encodeURIComponent(folderId)}`),
+        driveFetch(`/api/drive/files?folderId=${encodeURIComponent(folderId)}&fileTypes=${encodeURIComponent(this.activeTypes().join(","))}`),
       ]);
       const folders = foldersRes.folders || [];
       const files = filesRes.files || [];
@@ -3759,7 +3785,7 @@ class DrivePicker {
       this.renderFiles(files);
       this.renderBreadcrumb();
     } catch (error) {
-      this.showError(error.message || "Could not load Drive folder.");
+      this.showError(error.message || "Could not load Drive folder.", error);
     } finally {
       this.hideLoading();
     }
@@ -3788,13 +3814,13 @@ class DrivePicker {
     this.searchTimer = window.setTimeout(async () => {
       this.showLoading("Searching Drive...");
       try {
-        const res = await fetch(`${API_BASE_URL}/api/drive/search?q=${encodeURIComponent(query)}&fileTypes=${encodeURIComponent(this.state.allowedTypes.join(","))}`).then((r) => r.json());
+        const res = await driveFetch(`/api/drive/search?q=${encodeURIComponent(query)}&fileTypes=${encodeURIComponent(this.activeTypes().join(","))}`);
         this.state.loadedFiles = res.files || [];
         this.state.nextPageToken = null;
         document.getElementById("drive-folder-panel").style.display = "none";
         this.renderFiles(this.state.loadedFiles);
       } catch (error) {
-        this.showError(error.message || "Search failed.");
+        this.showError(error.message || "Search failed.", error);
       } finally {
         this.hideLoading();
       }
@@ -3812,10 +3838,12 @@ class DrivePicker {
     if (!this.state.nextPageToken) return;
     this.showLoading("Loading more...");
     try {
-      const res = await fetch(`${API_BASE_URL}/api/drive/files?folderId=${encodeURIComponent(this.state.currentFolderId)}&fileTypes=${encodeURIComponent(this.state.allowedTypes.join(","))}&pageToken=${encodeURIComponent(this.state.nextPageToken)}`).then((r) => r.json());
+      const res = await driveFetch(`/api/drive/files?folderId=${encodeURIComponent(this.state.currentFolderId)}&fileTypes=${encodeURIComponent(this.activeTypes().join(","))}&pageToken=${encodeURIComponent(this.state.nextPageToken)}`);
       this.state.loadedFiles = [...this.state.loadedFiles, ...(res.files || [])];
       this.state.nextPageToken = res.nextPageToken || null;
       this.renderFiles(this.state.loadedFiles);
+    } catch (error) {
+      showToast(error.message || "Could not load more files.", "error");
     } finally {
       this.hideLoading();
     }
@@ -3860,7 +3888,7 @@ class DrivePicker {
         const res = await fetch(`${API_BASE_URL}/api/drive/read-folder`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ folderId: file.id, folderName: file.name, fileTypes: this.state.allowedTypes.join(",") }),
+          body: JSON.stringify({ folderId: file.id, folderName: file.name, fileTypes: this.activeTypes().join(",") }),
         }).then((r) => r.json());
         if (res.files) {
           loaded.push(...res.files.map((item) => ({
@@ -3932,16 +3960,28 @@ class DrivePicker {
     this.updateSelection();
   }
 
+  /**
+   * The types to ask the server for right now.
+   *
+   * Empty means everything. The ALL tab used to leave the zone's own whitelist in place, so
+   * "ALL" meant "all five kinds this upload box happens to accept" and a person who had just
+   * connected Drive could not find files they were looking straight at on drive.google.com.
+   */
+  activeTypes() {
+    return this.state.activeTypeFilter === "all" ? [] : [this.state.activeTypeFilter];
+  }
+
   renderTypeFilters() {
     const types = ["all", ...this.state.allowedTypes];
-    document.getElementById("drive-type-filters").innerHTML = types.map((type) => `<button class="drive-type-filter-btn ${this.state.activeTypeFilter === type ? "active" : ""}" type="button" data-type="${escapeHtml(type)}">${escapeHtml(type.toUpperCase())}</button>`).join("");
+    document.getElementById("drive-type-filters").innerHTML = types.map((type) => `<button class="drive-type-filter-btn ${this.state.activeTypeFilter === type ? "active" : ""}" type="button" data-type="${escapeHtml(type)}">${escapeHtml(type === "all" ? "All files" : type.toUpperCase())}</button>`).join("");
     document.querySelectorAll(".drive-type-filter-btn").forEach((button) => button.addEventListener("click", () => {
+      // The filter is state, not a temporary edit of allowedTypes. Mutating that and putting
+      // it back inside a .then() meant two quick clicks could capture the already-narrowed
+      // list as "original" and lose the zone's types for the rest of the session.
       this.state.activeTypeFilter = button.dataset.type;
-      this.state.folderCache.delete(this.state.currentFolderId);
-      const original = this.state.allowedTypes;
-      if (button.dataset.type !== "all") this.state.allowedTypes = [button.dataset.type];
+      this.state.folderCache.clear();
       this.renderTypeFilters();
-      this.loadFolder(this.state.currentFolderId).then(() => { this.state.allowedTypes = original; });
+      this.loadFolder(this.state.currentFolderId);
     }));
   }
 
@@ -3968,8 +4008,16 @@ class DrivePicker {
     document.getElementById("drive-loading-indicator").style.display = "none";
   }
 
-  showError(message) {
-    document.getElementById("drive-file-list").innerHTML = `<div class="drive-empty-state">${escapeHtml(message)}</div>`;
+  showError(message, error = {}) {
+    // The empty state has to go: "No files found in this folder" over a failed request is the
+    // most misleading thing this modal can say.
+    document.getElementById("drive-file-empty").style.display = "none";
+    document.getElementById("drive-file-count").textContent = "";
+    document.getElementById("drive-load-more").style.display = "none";
+    const reconnect = Boolean(error.needsConnection);
+    const text = reconnect ? `${message} Your Google session is no longer authorized for Drive — reconnect and try again.` : message;
+    document.getElementById("drive-file-list").innerHTML = `<div class="drive-empty-state"><span>${escapeHtml(text)}</span>${reconnect ? ` <button type="button" class="ghost-button small-button" id="drive-reconnect-btn">Connect Google Drive</button>` : ""}</div>`;
+    document.getElementById("drive-reconnect-btn")?.addEventListener("click", () => { this.close(); connectGoogleDrive(); });
   }
 
   fileIcon(mimeType) {
