@@ -720,9 +720,11 @@ function init() {
       await refreshDeliverableGmailStatus();
       showToast("Google connected.", "success");
       if (pendingDeliverableGmailDraft) await createDeliverableGmailDraft();
+      runPendingDriveAction();
     }
     if (event.data?.type === "drive_connected") {
       await refreshDriveStatus();
+      runPendingDriveAction();
     }
     if (event.data?.type === "qbo_connected") {
       initQBOSection();
@@ -1276,13 +1278,16 @@ function openEstimatedDrivePicker() {
     showToast("Google Drive picker is not available in this session.", "warning");
     return;
   }
-  DrivePicker.open({
+  // Same gate as every other Drive button. Opening the picker without a connection produced
+  // a modal that listed nothing, which is how "it works here but everything is empty" happened
+  // on exactly the tabs that skipped this check.
+  openDriveWhenConnected(() => DrivePicker.open({
     title: "Select Estimated Tax Files",
     subtitle: "Choose templates, P&L reports, balance sheets, and returns.",
     allowedTypes: ["pdf", "xlsx", "csv"],
     multiSelect: true,
     onFilesSelected: (files) => addEstimatedDriveFiles(files || []),
-  });
+  }));
 }
 
 function addEstimatedDriveFiles(files) {
@@ -3477,18 +3482,44 @@ function setupDrivePickerDomEvents() {
   document.getElementById("drive-shared-btn")?.addEventListener("click", () => DrivePicker.openSharedWithMe());
 }
 
+/** What the user asked for before we sent them to Google, so we can finish it afterwards. */
+let pendingDriveAction = null;
+
+/**
+ * Do something with Drive, connecting first when needed — and then actually doing it.
+ *
+ * The old flow stopped at the connection: click "Add from Google Drive", get sent to the
+ * Google consent screen, come back, see "Google connected", and nothing else happens. From
+ * the outside that reads as a button that signs you in and then gives up, and the only way
+ * forward was to click the same button a second time. Now the click is remembered and the
+ * picker opens as soon as the connection lands.
+ */
+function openDriveWhenConnected(action) {
+  if (window.driveState?.connected) { action(); return; }
+  pendingDriveAction = action;
+  if (window.driveState?.limited) {
+    showToast("This Google account did not grant access to your Drive files. Reconnect and allow full Drive access.", "warning");
+  } else {
+    showToast("Connect Google Drive to load files.", "info");
+  }
+  connectGoogleDrive();
+}
+
+function runPendingDriveAction() {
+  const action = pendingDriveAction;
+  pendingDriveAction = null;
+  if (!action) return;
+  if (window.driveState?.connected) action();
+  else if (window.driveState?.limited) showToast("Google is connected, but this account did not grant access to your Drive files. Reconnect and allow full Drive access.", "warning");
+}
+
 function openDriveForZone(zoneId) {
   const config = DRIVE_ZONE_CONFIG[zoneId];
   if (!config) return;
-  if (!window.driveState?.connected) {
-    showToast("Connect Google Drive to load files.", "info");
-    connectGoogleDrive();
-    return;
-  }
-  DrivePicker.open({
+  openDriveWhenConnected(() => DrivePicker.open({
     ...config,
     onFilesSelected: (files) => addFilesToZone(zoneId, files),
-  });
+  }));
 }
 
 function connectGoogleDrive() {
@@ -3746,6 +3777,11 @@ class DrivePicker {
     subtitle.style.display = config.subtitle ? "block" : "none";
     this.renderTypeFilters();
     document.getElementById("drive-type-filters").style.display = this.state.folderOnly ? "none" : "";
+    // The location chips kept whatever "active" class the previous session left on them, so
+    // the modal could open showing the My Drive breadcrumb with Shared with me highlighted.
+    document.getElementById("drive-folder-panel").style.display = "block";
+    this.updateLocationButtons();
+    this.showConnectedAccount(config.subtitle || "");
     this.modal.style.display = "flex";
     document.body.style.overflow = "hidden";
     this.loadFolder(this.state.currentFolderId);
@@ -3754,6 +3790,22 @@ class DrivePicker {
   close() {
     this.modal.style.display = "none";
     document.body.style.overflow = "";
+  }
+
+  /**
+   * Name the Google account the listing belongs to.
+   *
+   * Four Google logins in one browser is normal, and picking the wrong one at the consent
+   * screen produces a picker that is correctly empty — an outcome indistinguishable from a
+   * broken integration unless the modal says whose Drive it is showing.
+   */
+  showConnectedAccount(baseSubtitle) {
+    const subtitle = document.getElementById("drive-picker-subtitle");
+    if (!subtitle) return;
+    const email = window.driveState?.email || "";
+    const parts = [baseSubtitle, email ? `Showing Google Drive for ${email}` : ""].filter(Boolean);
+    subtitle.textContent = parts.join(" · ");
+    subtitle.style.display = parts.length ? "block" : "none";
   }
 
   async loadFolder(folderId, folderName = "My Drive") {
@@ -3784,6 +3836,11 @@ class DrivePicker {
       this.renderFolders(folders);
       this.renderFiles(files);
       this.renderBreadcrumb();
+      // A My Drive root with no folders and no files of any type is far more often the wrong
+      // Google account than an empty account, and the plain empty state gives no way to tell.
+      if (folderId === "root" && !folders.length && !files.length && !this.activeTypes().length) {
+        this.showEmptyAccountHint();
+      }
     } catch (error) {
       this.showError(error.message || "Could not load Drive folder.", error);
     } finally {
@@ -4008,6 +4065,13 @@ class DrivePicker {
     document.getElementById("drive-loading-indicator").style.display = "none";
   }
 
+  showEmptyAccountHint() {
+    const email = window.driveState?.email;
+    document.getElementById("drive-file-empty").style.display = "none";
+    document.getElementById("drive-file-list").innerHTML = `<div class="drive-empty-state"><span>No files and no folders in the root of ${escapeHtml(email || "this Google account")}. If that is not the account holding your files, sign out of Google Drive here and connect the right one.</span> <button type="button" class="ghost-button small-button" id="drive-reconnect-btn">Use a different Google account</button></div>`;
+    document.getElementById("drive-reconnect-btn")?.addEventListener("click", () => { this.close(); connectGoogleDrive(); });
+  }
+
   showError(message, error = {}) {
     // The empty state has to go: "No files found in this folder" over a failed request is the
     // most misleading thing this modal can say.
@@ -4015,7 +4079,10 @@ class DrivePicker {
     document.getElementById("drive-file-count").textContent = "";
     document.getElementById("drive-load-more").style.display = "none";
     const reconnect = Boolean(error.needsConnection);
-    const text = reconnect ? `${message} Your Google session is no longer authorized for Drive — reconnect and try again.` : message;
+    // The server already explains the specific cases (limited scope, wrong account). Only add
+    // the generic sentence when it did not, or the modal says the same thing twice in a row.
+    const explained = /reconnect|authoriz|not connected|allow full/i.test(message);
+    const text = reconnect && !explained ? `${message} Your Google session is no longer authorized for Drive — reconnect and try again.` : message;
     document.getElementById("drive-file-list").innerHTML = `<div class="drive-empty-state"><span>${escapeHtml(text)}</span>${reconnect ? ` <button type="button" class="ghost-button small-button" id="drive-reconnect-btn">Connect Google Drive</button>` : ""}</div>`;
     document.getElementById("drive-reconnect-btn")?.addEventListener("click", () => { this.close(); connectGoogleDrive(); });
   }
@@ -7785,7 +7852,7 @@ function isValidEmail(value) {
 }
 
 function openDeliverableFolderPicker() {
-  DrivePicker.open({
+  openDriveWhenConnected(() => DrivePicker.open({
     title: "Select Client Info",
     subtitle: "Select a Word, Google Doc, TXT, JSON file, or a client folder",
     allowedTypes: ["docx", "txt", "json", "pdf"],
@@ -7797,7 +7864,7 @@ function openDeliverableFolderPicker() {
       if (item.kind === "folder" || (!item.content && item.id)) await loadDeliverableClientFolder(item);
       else await loadDeliverableClientInfoFile(item);
     },
-  });
+  }));
 }
 
 async function loadDeliverableClientInfoFile(file) {
@@ -7880,7 +7947,7 @@ function openDeliverableDriveFiles() {
   if (deliverableState.clientFolder?.id) {
     config.folderId = deliverableState.clientFolder.id;
   }
-  DrivePicker.open(config);
+  openDriveWhenConnected(() => DrivePicker.open(config));
 }
 
 function addDeliverableFiles(files, source) {

@@ -6003,6 +6003,32 @@ function isGoogleDriveEnabled() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
+const GOOGLE_DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
+const GOOGLE_DRIVE_APPFILES_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const GOOGLE_DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
+
+/**
+ * How much of Drive this token can actually see.
+ *
+ * The status endpoint used to ask whether the granted scopes contained the exact string
+ * "drive.readonly". Two real grants fail that test while working perfectly against the API:
+ * the broader ".../auth/drive", and a token refreshed under a consent screen configured for a
+ * different Drive scope. The app then reported connected:false with working tokens, and every
+ * upload box that checks the flag bounced the user back into the Google consent screen — which
+ * is what "it says connected and then closes" looks like from the outside.
+ *
+ * "app-only" is the one that matters most: drive.file grants access only to files this app
+ * itself created, so listing a real account returns nothing at all. Reported as its own level
+ * rather than as connected, because an empty picker with no explanation is the worst outcome.
+ */
+function driveAccessLevel(tokens) {
+  const granted = new Set(String(tokens?.scope || "").split(/\s+/).filter(Boolean));
+  if (granted.has(GOOGLE_DRIVE_SCOPE) || granted.has(GOOGLE_DRIVE_FULL_SCOPE)) return "full";
+  if (granted.has(GOOGLE_DRIVE_APPFILES_SCOPE)) return "app-only";
+  if (granted.has(GOOGLE_DRIVE_METADATA_SCOPE)) return "metadata";
+  return "none";
+}
+
 function googleTokenHasScope(tokens, scope) {
   const grantedScopes = String(tokens?.scope || "").split(/\s+/).filter(Boolean);
   return grantedScopes.includes(scope);
@@ -9370,15 +9396,23 @@ async function handleDriveApi(req, res, requestUrl) {
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/status") {
     const tokens = readGoogleTokens(username);
     const hasToken = Boolean(tokens?.refresh_token || tokens?.access_token);
-    const driveAuthorized = hasToken && googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE);
+    const access = hasToken ? driveAccessLevel(tokens) : "none";
+    const driveAuthorized = access === "full";
     const status = {
       enabled: isGoogleDriveEnabled(),
       connected: driveAuthorized,
       driveAuthorized,
+      driveAccess: access,
+      // Signed in, but with a Drive scope that cannot see the account's own files. Worth its
+      // own flag: the picker has to explain this instead of rendering an empty folder.
+      limited: hasToken && (access === "app-only" || access === "metadata"),
       reconnectRequired: hasToken && !driveAuthorized,
       email: "",
     };
-    if (status.enabled && status.connected) {
+    if (status.enabled && hasToken) {
+      // Also when access is limited or the token is stale: an account with four Google logins
+      // on the same machine needs to see WHICH one the picker is showing before an empty list
+      // means anything.
       const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username).then((r) => r.ok ? r.json() : {}).catch(() => ({}));
       status.email = profile.email || "";
     }
@@ -9387,7 +9421,22 @@ async function handleDriveApi(req, res, requestUrl) {
   }
 
   if (!isGoogleDriveEnabled()) { sendJson(res, 503, { enabled: false, connected: false, error: "Google Drive is not configured." }); return; }
-  if (!readGoogleTokens(username)) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
+  const driveTokens = readGoogleTokens(username);
+  if (!driveTokens) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
+  const access = driveAccessLevel(driveTokens);
+  if (access === "app-only" || access === "metadata") {
+    // Listing would succeed and return nothing, which reads as "your Drive is empty".
+    sendJson(res, 403, {
+      enabled: true,
+      connected: false,
+      limited: true,
+      driveAccess: access,
+      error: access === "app-only"
+        ? "This Google account granted access only to files created by this app, so none of your own Drive files can be listed. Reconnect and allow full Drive access."
+        : "This Google account granted metadata-only Drive access, so file contents cannot be read. Reconnect and allow full Drive access.",
+    });
+    return;
+  }
 
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/folders") {
     const parentId = requestUrl.searchParams.get("parentId") || "root";
