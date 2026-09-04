@@ -3504,13 +3504,13 @@ let pendingDriveAction = null;
  * picker opens as soon as the connection lands.
  */
 function openDriveWhenConnected(action) {
+  // Anything short of "no Google connection at all" opens the picker. Refusing to open it
+  // because the granted scope looked too narrow removed the one path that still worked, and a
+  // picker that opens and says what it found — even nothing — beats a button that does not
+  // open. The connect prompt is for the case where there is genuinely nothing to connect with.
   if (window.driveState?.connected) { action(); return; }
   pendingDriveAction = action;
-  if (window.driveState?.limited) {
-    showToast("Google is connected, but the Drive permission was not granted. Reconnect, and tick the Google Drive box on the Google screen.", "warning");
-  } else {
-    showToast("Connect Google Drive to load files.", "info");
-  }
+  showToast("Connect Google Drive to load files.", "info");
   connectGoogleDrive();
 }
 
@@ -3519,7 +3519,6 @@ function runPendingDriveAction() {
   pendingDriveAction = null;
   if (!action) return;
   if (window.driveState?.connected) action();
-  else if (window.driveState?.limited) showToast("Google is connected, but the Drive permission was not granted. Reconnect, and tick the Google Drive box on the Google screen.", "warning");
 }
 
 function openDriveForZone(zoneId) {

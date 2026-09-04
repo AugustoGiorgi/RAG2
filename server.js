@@ -9430,7 +9430,11 @@ async function handleDriveApi(req, res, requestUrl) {
     const driveAuthorized = access === "full";
     const status = {
       enabled: isGoogleDriveEnabled(),
-      connected: driveAuthorized,
+      // Connected means there is a Google connection to use, not that the grant is the exact
+      // scope string this file prefers. Deciding it on scope granularity made every button
+      // that reads the flag bounce the user back into the consent screen while the API itself
+      // was answering fine. The scope level is reported alongside, for messages, not gates.
+      connected: hasToken,
       driveAuthorized,
       driveAccess: access,
       // Shown in the picker when access is not enough, so the cause is visible from the app
@@ -9454,24 +9458,12 @@ async function handleDriveApi(req, res, requestUrl) {
   }
 
   if (!isGoogleDriveEnabled()) { sendJson(res, 503, { enabled: false, connected: false, error: "Google Drive is not configured." }); return; }
-  const driveTokens = readGoogleTokens(username);
-  if (!driveTokens) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
-  const access = driveAccessLevel(driveTokens);
-  if (access === "app-only" || access === "metadata") {
-    // Listing would succeed and return nothing, which reads as "your Drive is empty".
-    sendJson(res, 403, {
-      enabled: true,
-      connected: false,
-      limited: true,
-      driveAccess: access,
-      // Google shows one checkbox per permission now, and the Drive one is easy to leave
-      // unticked; the grant then succeeds with everything except the part that matters.
-      error: access === "app-only"
-        ? "This Google account only granted access to files created by this app, so your own Drive files cannot be listed. Reconnect, and on the Google screen tick the box for seeing your Google Drive files before continuing."
-        : "This Google account granted Drive metadata only, so file contents cannot be read. Reconnect, and on the Google screen tick the box for seeing your Google Drive files before continuing.",
-    });
-    return;
-  }
+  // Only a missing connection stops a Drive call. A grant that turns out to be too narrow used
+  // to be refused here with a 403, and that turned "the picker opens and shows little" into
+  // "nothing opens at all" — a working path taken away to prevent a confusing one. Let Drive
+  // answer; when the answer is empty, the picker explains why, which is the honest version of
+  // the same information and costs nobody their working flow.
+  if (!readGoogleTokens(username)) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
 
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/folders") {
     const parentId = requestUrl.searchParams.get("parentId") || "root";
