@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -469,4 +469,64 @@ test("una cifra que el hallazgo dice que muestran los libros no lo contradice", 
     issueDescription: "Workpaper P&L shows Reimbursements $75,480.99 in Other Expenses; verify the tax treatment. No corresponding line on prior year.",
   })] };
   assert.strictEqual(verifyWorkpaperClaims(review, [RETURN, libro]).corrected, 0);
+});
+
+/* --- El workpaper que sí tenía los importes ------------------------------ */
+
+// De un 1120-S real. El guard partia el CSV con split(",") y "11,274.56" se rompia en '"11'
+// y '274.56"', ninguna de las dos mitades parecia un numero, y cuatro renglones que traian
+// importe salieron reportados como olvidados. Los montos de este libro vienen entre comillas,
+// con signo de peso y con espacios de relleno: las tres cosas juntas.
+const LIBRO_CON_IMPORTES = {
+  name: "Workpaper 2025.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Book to Tax Reconciliation ---
+Book-to-Tax Reconciliation,,,,
+,Net Income Per Books," $118,789.05 ",,
+,Add: Meals 50%,"11,274.56",,
+,Add: Charitable Contribution,215.00,,
+,Taxable Income," $74,808.61 ",,
+--- Sheet: Profit & Loss Statement ---
+Meals," $5,386.23 ", Entertainment on Stmt
+Travel," $53,479.95 ",`,
+};
+
+test("un importe entre comillas con miles no es un renglon vacio", () => {
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([LIBRO_CON_IMPORTES]), []);
+  assert.strictEqual(checkUnusedReconcilingLines([LIBRO_CON_IMPORTES]), null);
+});
+
+test("y el renglon que de verdad esta vacio se sigue viendo", () => {
+  const vacio = { ...LIBRO_CON_IMPORTES, fullText: LIBRO_CON_IMPORTES.fullText.replace(',Add: Meals 50%,"11,274.56",,', ",Add: Meals 50%,,,") };
+  const finding = checkUnusedReconcilingLines([vacio]);
+  assert.ok(finding);
+  assert.match(finding.detail, /Add: Meals 50%/);
+});
+
+test("un porcentaje no cuenta como importe", () => {
+  // "50%" es de lo que se llama el renglon, no lo que vale.
+  const soloPorcentaje = { ...LIBRO_CON_IMPORTES, fullText: `--- Sheet: Book to Tax Reconciliation ---\nBook-to-Tax Reconciliation,,\n,Add: Meals 50%,50%,\n,Taxable Income,"74,808.61",` };
+  assert.ok(checkUnusedReconcilingLines([soloPorcentaje]));
+});
+
+/* --- Falta de evidencia no es falta de cifra ----------------------------- */
+
+// Un hallazgo correcto sobre la bitacora del vehiculo cayo a BAJO porque nombraba los $1,285
+// de depreciacion y el guard los encontro impresos en la declaracion. El hallazgo nunca dijo
+// que faltara la depreciacion: dijo que falta el registro que la respalda.
+const MILEAJE = "Form 4562 Part V Section B (mileage and use) is blank; business-use percentage (100%) and depreciation ($1,285) cannot be verified without mileage logs or other evidence.";
+
+test("un hallazgo sobre la bitacora que falta no se degrada por citar la cifra", () => {
+  assert.deepStrictEqual(claimedAmounts(MILEAJE), []);
+});
+
+test("pero una cifra que de verdad se declara ausente se sigue tomando", () => {
+  const ausencia = "The return does not report the $4,285 of other income shown in the workpaper.";
+  assert.deepStrictEqual(claimedAmounts(ausencia), [4285]);
+});
+
+test("nombrar un recibo no apaga el guard sobre otra cifra de la misma frase", () => {
+  // La palabra de evidencia tiene que estar cerca de la cifra, no en cualquier lugar del texto.
+  const mixto = "Receipts were provided for the meals. Separately, the return omits $9,400 of interest income reported in the books.";
+  assert.deepStrictEqual(claimedAmounts(mixto), [9400]);
 });

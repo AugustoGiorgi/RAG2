@@ -441,3 +441,52 @@ test("sin Form 1125-A no hay inventario que mirar", () => {
   const sin1125 = GASTRO_1065().replace(/^.*Inventory at (?:beginning|end) of year.*$/gm, "");
   assert.strictEqual(checkClosingInventoryMissing(sin1125, [LIBRO_GASTRO]), null);
 });
+
+/* --- Dos workpapers en el mismo paquete --------------------------------- */
+
+// El cruce devolvia la primera coincidencia del array, asi que con el workpaper del año
+// anterior tambien adentro el resultado dependia del orden de subida. Una corrida real cito
+// los $127,382 del año pasado contra la declaracion de este y puso una diferencia equivocada
+// en un hallazgo ALTO. Montos y entidad ficticios.
+const LIBRO_ANTERIOR = {
+  name: "Workpaper 2024.xlsx",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Profit and Loss ---
+Gastro Ejemplo LLC
+Profit and Loss
+January - December 2024
+Total Income,2510440.00
+Net Income,-260118.40`,
+};
+
+const LIBRO_ACTUAL = { ...LIBRO_GASTRO, name: "Workpaper 2025.xlsx" };
+
+test("con dos workpapers, manda el año que se declara y no el orden", () => {
+  for (const orden of [[LIBRO_ACTUAL, LIBRO_ANTERIOR], [LIBRO_ANTERIOR, LIBRO_ACTUAL]]) {
+    const finding = checkScheduleM1TiesToBooks(GASTRO_1065(), orden, "2025");
+    assert.ok(finding, "no encontro el workpaper del año corriente");
+    assert.match(finding.detail, /-\$203,470\.55/);
+    assert.doesNotMatch(finding.detail, /260,118/);
+  }
+});
+
+test("si el nombre no dice el año, lo dice el encabezado del libro", () => {
+  const sinAño = [{ ...LIBRO_ACTUAL, name: "wp.xlsx" }, { ...LIBRO_ANTERIOR, name: "prior.xlsx" }];
+  // El P&L del corriente se titula "January - December 2025"; el otro, 2024.
+  const conFecha = sinAño.map((f) => (f.name === "wp.xlsx" ? { ...f, fullText: f.fullText.replace("--- Sheet: Profit and Loss ---", "--- Sheet: Profit and Loss ---\nJanuary - December 2025") } : f));
+  const finding = checkScheduleM1TiesToBooks(GASTRO_1065(), conFecha, "2025");
+  assert.ok(finding);
+  assert.match(finding.detail, /-\$203,470\.55/);
+});
+
+test("si no se puede decidir cual es cual, no se inventa una cifra", () => {
+  // Dos libros y ninguno dice de que año es: antes devolvia el primero.
+  const ambiguos = [{ ...LIBRO_ACTUAL, name: "a.xlsx" }, { ...LIBRO_ANTERIOR, name: "b.xlsx" }];
+  assert.strictEqual(checkScheduleM1TiesToBooks(GASTRO_1065(), ambiguos, "2025"), null);
+});
+
+test("un solo workpaper no necesita desempate", () => {
+  const finding = checkScheduleM1TiesToBooks(GASTRO_1065(), [{ ...LIBRO_ACTUAL, name: "wp.xlsx" }], "2025");
+  assert.ok(finding);
+  assert.match(finding.detail, /-\$203,470\.55/);
+});

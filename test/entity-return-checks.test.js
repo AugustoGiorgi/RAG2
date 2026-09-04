@@ -497,3 +497,28 @@ test("una fila de redondeo no es una distribucion", () => {
   const chica = { ...LIBRO_CON_PATRIMONIO, fullText: LIBRO_CON_PATRIMONIO.fullText.replace("Distribution.,-13500", "Distribution.,-40") };
   assert.strictEqual(checkDistributionsNotReported(REST_1065(), [chica]), null);
 });
+
+/* --- El Schedule L del 1120-S numera distinto --------------------------- */
+
+// El modulo entero devolvia cero sobre un 1120-S: los activos totales del 1065 estan en la
+// linea 14 y los de un 1120/1120-S en la 15, y el ancla solo aceptaba el 14. Nada decia que
+// el balance no se habia mirado.
+const CORP_1120S = ({ total = "244,630." } = {}) => `U.S. Income Tax Return for an S Corporation 2025
+15 Total assets . . . . . . . . . . . . . . . . . . . . . . . 181,311. 244,630.
+22 Capital stock . . . . . . . . . . . . . . . . . . . . . . . . 1,000. 1,000.
+24 Retained earnings . . . . . . . . . . . . . . . . . . . . . 180,311. 243,630.
+27 Total liabilities and shareholders' equity . . . . . 181,311. ${total}
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("el balance de un 1120-S se lee, aunque los totales esten en la linea 15", () => {
+  const finding = checkBalanceSheetBalances(CORP_1120S({ total: "259,630." }));
+  assert.ok(finding, "no leyo el Schedule L de un 1120-S");
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$244,630\.00/);
+  assert.match(finding.detail, /\$259,630\.00/);
+  assert.match(finding.detail, /\$15,000\.00/);
+});
+
+test("y si el 1120-S cierra, se calla", () => {
+  assert.strictEqual(checkBalanceSheetBalances(CORP_1120S()), null);
+});

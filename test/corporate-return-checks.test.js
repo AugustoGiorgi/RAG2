@@ -16,6 +16,7 @@ const {
   checkAmortizationAgainstBooks,
   checkShareholderLoansMisclassified, checkLoanToShareholder,
   checkApportionmentSwing, apportionmentFactors, scheduleGOwners, checkAccruedInterestToShareholder,
+  checkShareholderBasisContinuity, form7203Basis,
 } = require("../lib/corporate-return-checks");
 // El M-1 se mudo al modulo sin gate de tipo: es la misma cedula en 1065, 1120 y 1120-S.
 // Los casos siguen aca porque el fixture corporativo es el que los descubrio.
@@ -291,4 +292,78 @@ test("y sigue sin correr sobre una declaracion que no es corporativa", () => {
   for (const returnType of ["1120", "Other", ""]) {
     assert.deepStrictEqual(runCorporateReturnChecks(filesFor(partnership), { returnType }), []);
   }
+});
+
+/* --- 7. La base del accionista entre dos años --------------------------- */
+
+// Existe porque una revision invento la respuesta: comparo la apertura de un accionista
+// contra el cierre del OTRO, encontro un hueco de $17 que se habia creado sola, escribio
+// "less $17 rounding" para taparlo y lo archivo entre los items verificados. Las dos bases
+// cerraban exactas. Emparejar por numero de identificacion es toda la dificultad, y por eso
+// va en codigo: una conciliacion fabricada se lee igual que una de verdad.
+//
+// La linea 15 se parte en dos y su importe cae en la continuacion, como en el formulario real.
+const f7203 = (nombre, id, apertura, cierre) => `Name of shareholder Identifying number
+${nombre} ${id}
+A Name of S corporation B Employer identification number
+NORTHSHORE PROVISIONS LLC 45-9910238
+1 Stock basis at the beginning of the corporation's tax year . . . . . . . . . . . . . . . . 1 ${apertura}
+4 Add lines 3a through 3m . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 4 37,404.
+15 Stock basis at the end of the corporation's tax year. Subtract line 14 from line 10. If the result is
+zero or less, enter -0- . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 15 ${cierre}`;
+
+const S_CORP = (a, b) => `U.S. Income Tax Return for an S Corporation 2025
+${f7203("RENATA COLQUHOUN", "402-55-8813", a.apertura, a.cierre)}
+${f7203("MILO ASHGROVE", "417-90-2264", b.apertura, b.cierre)}
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+const S_CORP_2025 = S_CORP({ apertura: "91,538.", cierre: "123,197." }, { apertura: "91,555.", cierre: "123,215." });
+const S_CORP_2024 = S_CORP({ apertura: "88,990.", cierre: "91,538." }, { apertura: "89,005.", cierre: "91,555." });
+
+test("lee cada Form 7203 con su titular y sus dos extremos", () => {
+  assert.deepStrictEqual(form7203Basis(S_CORP_2025), [
+    { id: "402-55-8813", name: "RENATA COLQUHOUN", beginning: 91538, closing: 123197 },
+    { id: "417-90-2264", name: "MILO ASHGROVE", beginning: 91555, closing: 123215 },
+  ]);
+});
+
+test("cruzar accionistas no es un hallazgo: cada base cierra con la suya", () => {
+  // 91,538 contra 91,555 da 17 de hueco solo si se comparan personas distintas.
+  assert.strictEqual(checkShareholderBasisContinuity(S_CORP_2025, S_CORP_2024, "2024"), null);
+});
+
+test("una base que no abre donde cerro se marca, y nombra a quien", () => {
+  const roto = S_CORP({ apertura: "88,000.", cierre: "123,197." }, { apertura: "91,555.", cierre: "123,215." });
+  const finding = checkShareholderBasisContinuity(roto, S_CORP_2024, "2024");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /RENATA COLQUHOUN/);
+  assert.match(finding.detail, /\$91,538\.00/);
+  assert.match(finding.detail, /\$88,000\.00/);
+  // El otro accionista cierra bien y no tiene por que aparecer.
+  assert.doesNotMatch(finding.detail, /MILO ASHGROVE/);
+  assert.match(finding.authority, /1367/);
+});
+
+test("un dolar de redondeo no es una rotura de continuidad", () => {
+  const casi = S_CORP({ apertura: "91,539.", cierre: "123,197." }, { apertura: "91,555.", cierre: "123,215." });
+  assert.strictEqual(checkShareholderBasisContinuity(casi, S_CORP_2024, "2024"), null);
+});
+
+test("un accionista nuevo no tiene contra que compararse", () => {
+  const conNuevo = S_CORP({ apertura: "91,538.", cierre: "123,197." }, { apertura: "91,555.", cierre: "123,215." })
+    .replace("417-90-2264", "433-12-7788");
+  assert.strictEqual(checkShareholderBasisContinuity(conNuevo, S_CORP_2024, "2024"), null);
+});
+
+test("sin declaracion anterior, o sin 7203, no se compara nada", () => {
+  assert.strictEqual(checkShareholderBasisContinuity(S_CORP_2025, null, "2024"), null);
+  assert.strictEqual(checkShareholderBasisContinuity(RETURN_1120(), PRIOR_1120, "2024"), null);
+});
+
+test("una linea 1 en blanco imprime su propio numero de casilla", () => {
+  const vacia = S_CORP_2025.replace("1 91,538.", "1");
+  const leido = form7203Basis(vacia);
+  assert.strictEqual(leido[0].beginning, null, "leyo el 1 de la casilla como una base de un dolar");
+  assert.strictEqual(checkShareholderBasisContinuity(vacia, S_CORP_2024, "2024"), null);
 });
