@@ -3523,6 +3523,11 @@ function openDriveWhenConnected(action) {
  * three tabs away — costs far more than being told at the moment it happens.
  */
 function reportGoogleGrant() {
+  // Only complain with evidence. When Google records no scopes at all there is nothing to
+  // conclude from, and warning anyway sends people back to a consent screen that was never the
+  // problem — which is exactly what a warning with no evidence behind it costs.
+  const granted = window.driveState?.grantedScopes || "";
+  if (!granted) { showToast("Google connected.", "success"); return; }
   const driveReady = window.driveState?.driveAccess === "full";
   const gmailReady = Boolean(deliverableState.gmailStatus?.authorized);
   const missing = [];
@@ -3535,9 +3540,7 @@ function reportGoogleGrant() {
   // Name what Google actually returned. Without it the message is a conclusion with no
   // evidence, and the next question is always "but I ticked everything" — which nobody can
   // answer from either side without seeing the granted list.
-  const granted = window.driveState?.grantedScopes;
-  const detail = granted ? ` Google granted: ${granted}.` : " Google returned no scopes at all for this account.";
-  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted.${detail} Reconnect and tick every box on the Google screen.`, "warning");
+  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted. Google granted: ${granted}. Reconnect and tick every box on the Google screen.`, "warning");
 }
 
 function runPendingDriveAction() {

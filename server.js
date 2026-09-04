@@ -15358,13 +15358,31 @@ async function googleProfileEmail(username = "default") {
 async function gmailAuthorizationStatus(username = "default") {
   const tokens = readGoogleTokens(username);
   if (!tokens || !isGoogleDriveEnabled()) return { authorized: false, email: null };
-  const scopes = String(tokens.scope || "");
   const email = await googleProfileEmail(username).catch(() => null);
-  if (!scopes.includes(GOOGLE_GMAIL_COMPOSE_SCOPE)) return { authorized: false, email };
-  const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username).catch(() => ({ ok: false }));
-  if (!profileRes.ok) return { authorized: true, email };
-  const profile = await profileRes.json().catch(() => ({}));
-  return { authorized: true, email: profile.emailAddress || email };
+  /*
+   * The recorded scope string is a hint, not the authority.
+   *
+   * It used to be the gate: no gmail.compose in the string, no Gmail. But that string can be
+   * thinner than the token really is — a grant stored before scopes were recorded, a refresh
+   * that omitted them, a re-consent that replaced the set — and when it is, a working Gmail
+   * turns into a section that is simply not there, with nothing on screen saying why. The very
+   * next line already conceded the point: it returns authorized when the profile call fails,
+   * because gmail.compose alone cannot read a profile.
+   *
+   * So only Gmail refusing counts as a refusal. Everything else lets the user try, and a real
+   * failure arrives as a real error at the moment they act, which they can act on.
+   */
+  const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username).catch(() => ({ ok: false, status: 0 }));
+  if (profileRes.ok) {
+    const profile = await profileRes.json().catch(() => ({}));
+    return { authorized: true, email: profile.emailAddress || email };
+  }
+  if (profileRes.status === 401 || profileRes.status === 403) {
+    // Gmail itself says this token cannot act. Trust the recorded scope only to soften the
+    // verdict when it positively claims the permission is there.
+    return { authorized: String(tokens.scope || "").includes(GOOGLE_GMAIL_COMPOSE_SCOPE), email };
+  }
+  return { authorized: true, email };
 }
 
 function buildMimeEmail(params) {
