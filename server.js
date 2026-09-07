@@ -6475,6 +6475,39 @@ function accountingOAuthConfig(softwareId) {
   return configs[softwareId] || null;
 }
 
+/** A readable view of an authorization request, with the client id reduced to a fingerprint. */
+function renderAuthUrlInspection(softwareId, authUrl) {
+  const url = new URL(authUrl);
+  const clientId = url.searchParams.get("client_id") || "";
+  const scope = url.searchParams.get("scope") || "";
+  const fingerprint = clientId
+    ? `${clientId.length} chars, starts "${clientId.slice(0, 4)}", ends "${clientId.slice(-4)}"`
+    : "EMPTY — the client id is not set on this server";
+  const rows = [
+    ["provider", softwareId],
+    ["authorize host", url.origin + url.pathname],
+    ["client_id", fingerprint],
+    ["redirect_uri", url.searchParams.get("redirect_uri") || "(none)"],
+    ["response_type", url.searchParams.get("response_type") || "(none)"],
+    ["scope (raw)", scope || "EMPTY"],
+    ["scope count", String(scope ? scope.split(/[\s+]|%20/).filter(Boolean).length : 0)],
+  ];
+  const scopeLines = scope
+    ? scope.split(/[\s+]|%20/).filter(Boolean).map((item, index) => `  ${index + 1}. ${escapeHtml(item)}`).join("\n")
+    : "  (none)";
+  const masked = authUrl.replace(clientId, "CLIENT_ID");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(softwareId)} authorization request</title></head>
+<body style="font:13px ui-monospace,Menlo,Consolas,monospace;padding:24px;max-width:900px">
+<h2 style="font-family:system-ui">${escapeHtml(softwareId)} — what this server sends to authorize</h2>
+<table cellpadding="6" style="border-collapse:collapse">${rows.map(([k, v]) => `<tr><td style="border-bottom:1px solid #ddd;color:#666">${escapeHtml(k)}</td><td style="border-bottom:1px solid #ddd"><strong>${escapeHtml(String(v))}</strong></td></tr>`).join("")}</table>
+<h3 style="font-family:system-ui">Scopes, one per line</h3>
+<pre style="background:#f6f7f9;padding:12px;border-radius:6px;white-space:pre-wrap">${scopeLines}</pre>
+<h3 style="font-family:system-ui">Full URL (client id masked)</h3>
+<pre style="background:#f6f7f9;padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-all">${escapeHtml(masked)}</pre>
+<p style="font-family:system-ui;color:#666">Nothing was sent to ${escapeHtml(softwareId)}. Remove <code>?inspect=1</code> to run the real connection.</p>
+</body></html>`;
+}
+
 function buildAccountingAuthUrl(softwareId, username) {
   const config = accountingOAuthConfig(softwareId);
   if (!config?.clientId || !config?.clientSecret) throw Object.assign(new Error(`${ACCOUNTING_SOFTWARE[softwareId]?.name || softwareId} is not configured.`), { statusCode: 503, expose: true });
@@ -9646,7 +9679,17 @@ async function handleAccountingAuthRoute(req, res, requestUrl) {
     return;
   }
   if (!isCallback) {
-    redirect(res, buildAccountingAuthUrl(softwareId, username));
+    const authUrl = buildAccountingAuthUrl(softwareId, username);
+    // ?inspect=1 shows the authorization request instead of following it. A provider that
+    // rejects the request answers on its own error page, so nothing about what we actually
+    // sent is visible from either side — and reconstructing it from the source is guesswork,
+    // which is how two wrong theories about a Xero invalid_scope got shipped. Same session
+    // requirement as the redirect itself, and the client secret is never part of this URL.
+    if (requestUrl.searchParams.get("inspect") === "1") {
+      sendHtml(res, 200, renderAuthUrlInspection(softwareId, authUrl));
+      return;
+    }
+    redirect(res, authUrl);
     return;
   }
   const code = requestUrl.searchParams.get("code");
