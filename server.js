@@ -254,8 +254,15 @@ const ACCOUNTING_SOFTWARE = {
     authType: "oauth2",
     setupUrl: "https://developer.xero.com",
     envVars: ["XERO_CLIENT_ID", "XERO_CLIENT_SECRET", "XERO_REDIRECT_URI"],
-    scopes: ["openid", "profile", "email", "accounting.reports.read", "accounting.settings.read", "offline_access"],
-    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "CashSummary", "AgedReceivablesByContact", "AgedPayablesByContact", "ExecutiveSummary"],
+    scopes: [
+      "offline_access",
+      "accounting.reports.profitandloss.read",
+      "accounting.reports.balancesheet.read",
+      "accounting.reports.trialbalance.read",
+      "accounting.reports.banksummary.read",
+      "accounting.reports.executivesummary.read",
+    ],
+    reports: ["ProfitAndLoss", "BalanceSheet", "TrialBalance", "BankSummary", "ExecutiveSummary"],
     supportsMultiCompany: true,
     supportsCash: true,
   },
@@ -6389,10 +6396,10 @@ function accountingReportDefinitions(softwareId) {
     ProfitAndLossDetail: { name: "Profit & Loss Detail", category: "income", dateRange: true },
     BalanceSheet: { name: "Balance Sheet", category: "balance", asOfDate: true, supportsComparative: true },
     BalanceSheetDetail: { name: "Balance Sheet Detail", category: "balance", asOfDate: true },
-    TrialBalance: { name: "Trial Balance", category: "balance", dateRange: true },
+    TrialBalance: { name: "Trial Balance", category: "balance", asOfDate: true },
     GeneralLedger: { name: "General Ledger", category: "detail", dateRange: true },
     CashFlow: { name: "Cash Flow", category: "income", dateRange: true },
-    CashSummary: { name: "Cash Summary", category: "income", dateRange: true },
+    BankSummary: { name: "Bank Summary", category: "income", dateRange: true },
     ExecutiveSummary: { name: "Executive Summary", category: "income", dateRange: true },
     AgedReceivables: { name: "Accounts Receivable Aging", category: "balance", asOfDate: true },
     AgedPayables: { name: "Accounts Payable Aging", category: "balance", asOfDate: true },
@@ -6531,8 +6538,8 @@ function buildAccountingAuthUrl(softwareId, username) {
  *
  * URLSearchParams writes a space as "+", which is correct for form encoding and is what every
  * other provider here accepts. Xero's identity server does not: it takes the "+" literally, so
- * "openid profile email accounting.reports.read" arrives as ONE scope named
- * "openid+profile+email+accounting.reports.read", which does not exist — and the connect button
+ * Xero's space-separated scope list arrives as ONE scope with literal plus signs, which does not
+ * exist, and the connect button
  * lands on Xero's own error page saying invalid_scope, with nothing on our side logging a thing.
  *
  * Only the scope parameter is touched, and only for the providers that need it. %20 is the
@@ -6773,17 +6780,15 @@ async function fetchUnifiedAccountingReport(username, softwareId, companyId, spe
         ProfitAndLoss: "ProfitAndLoss",
         BalanceSheet: "BalanceSheet",
         TrialBalance: "TrialBalance",
-        CashSummary: "CashSummary",
+        BankSummary: "BankSummary",
         ExecutiveSummary: "ExecutiveSummary",
-        AgedReceivablesByContact: "AgedReceivablesByContact",
-        AgedPayablesByContact: "AgedPayablesByContact",
       };
       const query = new URLSearchParams();
       if (spec.startDate) query.set("fromDate", spec.startDate);
       if (spec.endDate) query.set("toDate", spec.endDate);
-      // Xero point-in-time reports (BalanceSheet, agings) use `date` as the as-of date.
+      // Xero point-in-time reports use `date`; cash-basis reports use `paymentsOnly`.
       if (spec.asOfDate) query.set("date", spec.asOfDate);
-      query.set("reportingBasis", spec.cash ? "CASH" : "ACCRUAL");
+      if (spec.cash) query.set("paymentsOnly", "true");
       return accountingApiFetch(`https://api.xero.com/api.xro/2.0/Reports/${map[spec.reportId] || spec.reportId}?${query.toString()}`, tok, { headers: { "xero-tenant-id": companyId } });
     }
     if (softwareId === "zoho_books") {
