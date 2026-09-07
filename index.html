@@ -123,7 +123,7 @@
               <button class="primary-button small-button" type="submit">Create User</button>
             </form>
           </section>
-          <section class="admin-users-panel">
+          <section class="admin-users-panel admin-users-panel-wide">
             <div class="admin-users-list-header">
               <h3>Users</h3>
               <button id="adminRefreshUsers" class="ghost-button small-button" type="button">Refresh</button>
@@ -131,6 +131,28 @@
             <div id="adminUsersList" class="admin-users-list"></div>
           </section>
         </div>
+        <div class="admin-usage-shell" id="adminUsageShell">
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <div>
+                <h3>Usage by user</h3>
+                <p class="admin-usage-note">How many times each person ran each feature, and what it cost.</p>
+              </div>
+              <div class="admin-usage-controls">
+                <select id="adminUsagePeriod" aria-label="Period">
+                  <option value="today">Today</option>
+                  <option value="week">This week</option>
+                  <option value="month" selected>This month</option>
+                  <option value="all">All time</option>
+                </select>
+                <button id="adminRefreshUsage" class="ghost-button small-button" type="button">Refresh</button>
+              </div>
+            </div>
+            <div id="adminUsageTotals" class="admin-usage-totals"></div>
+            <div id="adminUsageBody" class="admin-usage-body">Loading usage…</div>
+          </section>
+        </div>
+
         <div class="admin-users-shell" id="adminBudgetShell">
           <section class="admin-users-panel">
             <h3>Create Budget Group</h3>

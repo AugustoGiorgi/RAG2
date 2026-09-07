@@ -5350,12 +5350,240 @@ h1 {
 }
 
 .admin-user-row {
+  background: white;
   border: 1px solid #e2e8f0;
-  border-radius: 9px;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px 16px;
+  /* The identity column carries a name, a firm and a budget line; the rest are short inputs,
+     so it gets real room instead of being the same width as a two-option select. */
+  grid-template-columns: minmax(200px, 1.5fr) minmax(110px, 1fr) minmax(96px, .8fr) minmax(96px, .8fr) minmax(120px, 1fr) minmax(110px, .9fr) auto;
+  padding: 16px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.admin-user-row:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 3px rgba(15, 30, 61, .06);
+}
+
+/* Budget as a bar, not a sentence: three numbers in a row of grey text take a second
+   read to compare, and a filled bar answers "who is close to their limit" at a glance. */
+.admin-budget-meter {
+  background: #eef2f7;
+  border-radius: 999px;
+  height: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.admin-budget-meter span {
+  background: #2563eb;
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+}
+
+.admin-budget-meter.is-high span { background: #d97706; }
+.admin-budget-meter.is-over span { background: #be123c; }
+
+.admin-user-figures {
+  color: #475569;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+
+.admin-user-figures strong { color: #0f1e3d; }
+.admin-user-figures .admin-user-nolimit { color: #64748b; }
+
+/* ---- Uso por usuario y por funcion ---- */
+
+/* La lista de usuarios ocupa el ancho completo: en el grid de dos columnas caia en la
+   angosta, que es donde nacio la sensacion de que todo estaba apretado. */
+.admin-users-panel-wide {
+  grid-column: 1 / -1;
+}
+
+/* Un admin de firma no ve Health ni Budget groups, asi que Create User queda solo arriba. */
+@media (max-width: 1180px) {
+  .admin-user-row {
+    grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(100px, 1fr));
+  }
+  .admin-user-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+@media (max-width: 720px) {
+  .admin-users-shell { grid-template-columns: minmax(0, 1fr); padding: 20px 16px; }
+  .admin-user-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+.admin-usage-shell {
+  display: grid;
+  gap: 20px;
+  padding: 0 32px 8px;
+}
+
+.admin-usage-note {
+  color: #64748b;
+  font-size: 12px;
+  margin: -12px 0 0;
+}
+
+.admin-usage-controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.admin-usage-controls select {
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #0f1e3d;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
+.admin-usage-totals {
   display: grid;
   gap: 12px;
-  grid-template-columns: 1.1fr .8fr .75fr .75fr .75fr auto;
-  padding: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  margin: 4px 0 16px;
+}
+
+.admin-usage-stat {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  padding: 12px 14px;
+}
+
+.admin-usage-stat span {
+  color: #64748b;
+  display: block;
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.admin-usage-stat strong {
+  color: #0f1e3d;
+  display: block;
+  font-size: 19px;
+  margin-top: 3px;
+}
+
+.admin-usage-body { display: grid; gap: 8px; }
+
+.admin-usage-empty {
+  color: #64748b;
+  font-size: 13px;
+  padding: 18px 2px;
+}
+
+.admin-usage-user {
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.admin-usage-user summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(120px, 1fr) minmax(60px, 2fr) auto auto;
+  list-style: none;
+  padding: 12px 14px;
+}
+
+.admin-usage-user summary::-webkit-details-marker { display: none; }
+.admin-usage-user summary:hover { background: #f8fafc; }
+.admin-usage-user[open] summary { border-bottom: 1px solid #e2e8f0; }
+
+.admin-usage-name {
+  color: #0f1e3d;
+  font-size: 14px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Relative to the busiest person, so the column reads as a ranking without needing a scale. */
+.admin-usage-bar {
+  background: #eef2f7;
+  border-radius: 999px;
+  display: block;
+  height: 6px;
+  overflow: hidden;
+}
+
+.admin-usage-bar span {
+  background: #2563eb;
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+  min-width: 3px;
+}
+
+.admin-usage-calls {
+  color: #475569;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.admin-usage-cost {
+  color: #0f1e3d;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 74px;
+  text-align: right;
+}
+
+.admin-usage-features {
+  background: #fbfcfe;
+  display: grid;
+  gap: 1px;
+}
+
+.admin-usage-feature {
+  align-items: center;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 9px 14px 9px 26px;
+}
+
+.admin-usage-feature + .admin-usage-feature { border-top: 1px solid #eef2f7; }
+
+.admin-usage-feature-name {
+  color: #334155;
+  font-size: 13px;
+}
+
+.admin-usage-feature-calls {
+  color: #64748b;
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.admin-usage-feature-cost {
+  color: #475569;
+  font-size: 13px;
+  min-width: 74px;
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .admin-usage-shell { padding: 0 16px 8px; }
+  .admin-usage-user summary { grid-template-columns: 1fr auto; }
+  .admin-usage-bar { display: none; }
 }
 
 .admin-user-identity strong {

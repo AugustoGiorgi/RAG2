@@ -74,6 +74,11 @@ const els = {
   closeAdminDashboardButton: document.getElementById("closeAdminDashboardButton"),
   adminCreateUserForm: document.getElementById("adminCreateUserForm"),
   adminRefreshUsers: document.getElementById("adminRefreshUsers"),
+  adminUsageShell: document.getElementById("adminUsageShell"),
+  adminUsageBody: document.getElementById("adminUsageBody"),
+  adminUsageTotals: document.getElementById("adminUsageTotals"),
+  adminUsagePeriod: document.getElementById("adminUsagePeriod"),
+  adminRefreshUsage: document.getElementById("adminRefreshUsage"),
   adminUsersList: document.getElementById("adminUsersList"),
   adminUserMessage: document.getElementById("adminUserMessage"),
   adminNewUsername: document.getElementById("adminNewUsername"),
@@ -641,6 +646,8 @@ function init() {
   els.adminNavButton?.addEventListener("click", openAdminDashboard);
   els.closeAdminDashboardButton?.addEventListener("click", closeAdminDashboard);
   els.adminRefreshUsers?.addEventListener("click", loadAdminUsers);
+  els.adminRefreshUsage?.addEventListener("click", () => loadAdminUsage().catch(() => {}));
+  els.adminUsagePeriod?.addEventListener("change", () => loadAdminUsage().catch(() => {}));
   els.adminCreateUserForm?.addEventListener("submit", createAdminUser);
   els.adminRefreshGroups?.addEventListener("click", loadBudgetGroups);
   els.adminCreateGroupForm?.addEventListener("submit", createBudgetGroup);
@@ -4369,7 +4376,7 @@ async function openAdminDashboard() {
   els.adminDashboard.hidden = false;
   // Global-only panels/fields stay hidden for a firm administrator: system health,
   // budget groups, role selection and Firm ID (their users always join their own firm).
-  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminRoleField", "adminFirmIdField"];
+  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField"];
   globalOnly.forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isGlobalAdmin; });
   await Promise.all([
     ...(isGlobalAdmin ? [
@@ -4377,7 +4384,125 @@ async function openAdminDashboard() {
       loadAdminHealth().catch(() => {}),
     ] : []),
     loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
+    // Usage comes from the cost log, which only a global admin can read.
+    ...(isGlobalAdmin ? [loadAdminUsage().catch(() => {})] : []),
   ]);
+}
+
+/**
+ * What each feature is called in the cost log, and what a person calls it.
+ *
+ * The log records the internal action name, which is the right thing to store and the wrong
+ * thing to show. Anything not listed here still appears, tidied up, so a feature added later
+ * shows up on its own rather than being silently dropped from someone's total.
+ */
+const ADMIN_FEATURE_LABELS = {
+  review: "Return review",
+  review_response: "Review follow-up",
+  preparation: "Preparation",
+  data_entry_guide: "Data entry guide",
+  drake_ui_extract: "Drake extract",
+  deliverable: "Deliverable email",
+  estimated_taxes: "Estimated taxes",
+  calculations: "Calculations",
+  presentations: "Client presentations",
+  research: "Tax research",
+  notices: "Notices",
+  diagnostics: "Diagnostics",
+  organizer: "Organizer",
+};
+
+function adminFeatureLabel(action) {
+  const key = String(action || "").trim();
+  if (!key) return "Other";
+  return ADMIN_FEATURE_LABELS[key] || key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Usage per person, per feature, for the selected period.
+ *
+ * Built entirely from /api/cost/log, which already records one entry per model call with the
+ * username, the action and what it cost. Counting those entries is the number of times someone
+ * ran something; summing totalCost is the spend. Both come from the same rows, so the calls
+ * and the dollars can never disagree with each other or with the budget figures above.
+ */
+async function loadAdminUsage() {
+  if (!els.adminUsageBody) return;
+  const period = els.adminUsagePeriod?.value || "month";
+  els.adminUsageBody.innerHTML = `<div class="admin-usage-empty">Loading usage…</div>`;
+  if (els.adminUsageTotals) els.adminUsageTotals.innerHTML = "";
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/cost/log?period=${encodeURIComponent(period)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not load usage.");
+    renderAdminUsage(payload.entries || []);
+  } catch (error) {
+    els.adminUsageBody.innerHTML = `<div class="admin-usage-empty">${escapeHtml(error.message || "Could not load usage.")}</div>`;
+  }
+}
+
+function summariseAdminUsage(entries) {
+  const byUser = new Map();
+  for (const entry of entries) {
+    const username = String(entry.username || "unknown");
+    const action = String(entry.action || "other");
+    const cost = Number(entry.totalCost || 0);
+    const user = byUser.get(username) || { username, calls: 0, cost: 0, features: new Map() };
+    user.calls += 1;
+    user.cost += cost;
+    const feature = user.features.get(action) || { action, label: adminFeatureLabel(action), calls: 0, cost: 0 };
+    feature.calls += 1;
+    feature.cost += cost;
+    user.features.set(action, feature);
+    byUser.set(username, user);
+  }
+  return Array.from(byUser.values())
+    .map((user) => ({
+      ...user,
+      features: Array.from(user.features.values()).sort((a, b) => b.calls - a.calls || b.cost - a.cost),
+    }))
+    .sort((a, b) => b.cost - a.cost || b.calls - a.calls);
+}
+
+function renderAdminUsage(entries) {
+  const users = summariseAdminUsage(entries);
+  const totalCalls = entries.length;
+  const totalCost = entries.reduce((sum, entry) => sum + Number(entry.totalCost || 0), 0);
+
+  if (els.adminUsageTotals) {
+    els.adminUsageTotals.innerHTML = [
+      ["Runs", String(totalCalls)],
+      ["Spend", formatUsd(totalCost)],
+      ["People", String(users.length)],
+      ["Average per run", formatUsd(totalCalls ? totalCost / totalCalls : 0)],
+    ].map(([label, value]) => `<div class="admin-usage-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }
+
+  if (!users.length) {
+    els.adminUsageBody.innerHTML = `<div class="admin-usage-empty">Nobody ran anything in this period.</div>`;
+    return;
+  }
+
+  const busiest = Math.max(...users.map((user) => user.calls), 1);
+  els.adminUsageBody.innerHTML = users.map((user) => {
+    const share = Math.round((user.calls / busiest) * 100);
+    const features = user.features.map((feature) => `
+      <div class="admin-usage-feature">
+        <span class="admin-usage-feature-name">${escapeHtml(feature.label)}</span>
+        <span class="admin-usage-feature-calls">${feature.calls}${feature.calls === 1 ? " run" : " runs"}</span>
+        <span class="admin-usage-feature-cost">${escapeHtml(formatUsd(feature.cost))}</span>
+      </div>`).join("");
+    return `
+      <details class="admin-usage-user">
+        <summary>
+          <span class="admin-usage-name">${escapeHtml(user.username)}</span>
+          <span class="admin-usage-bar"><span style="width:${share}%"></span></span>
+          <span class="admin-usage-calls">${user.calls}${user.calls === 1 ? " run" : " runs"}</span>
+          <span class="admin-usage-cost">${escapeHtml(formatUsd(user.cost))}</span>
+        </summary>
+        <div class="admin-usage-features">${features}</div>
+      </details>`;
+  }).join("");
 }
 
 async function loadAdminHealth() {
@@ -4445,15 +4570,23 @@ function renderAdminUsers(users) {
   els.adminUsersList.innerHTML = users.map((user) => {
     const username = user.username || "";
     const limit = user.spendLimitUsd ?? "";
-    const used = formatUsd(user.spendUsedUsd || 0);
-    let budgetText;
-    if (user.budgetGroupId && user.budgetGroupName) {
-      budgetText = `Group "${user.budgetGroupName}" — Used ${used} / Limit ${formatUsd(user.budgetGroupLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)} (shared)`;
-    } else if (user.spendHasLimit) {
-      budgetText = `Used ${used} / Limit ${formatUsd(user.spendLimitUsd || 0)} / Remaining ${formatUsd(user.spendRemainingUsd || 0)}`;
-    } else {
-      budgetText = `Used ${used} / No limit`;
-    }
+    const usedUsd = Number(user.spendUsedUsd || 0);
+    const grouped = Boolean(user.budgetGroupId && user.budgetGroupName);
+    const limitUsd = grouped ? Number(user.budgetGroupLimitUsd || 0) : Number(user.spendLimitUsd || 0);
+    const hasLimit = grouped || user.spendHasLimit;
+    // Three amounts run together as one grey sentence took a second read to compare. Split
+    // into labelled figures with a bar, "who is close to their limit" is answerable at a glance.
+    const figures = hasLimit
+      ? `<span>Used <strong>${escapeHtml(formatUsd(usedUsd))}</strong></span>
+         <span>Limit <strong>${escapeHtml(formatUsd(limitUsd))}</strong></span>
+         <span>Left <strong>${escapeHtml(formatUsd(user.spendRemainingUsd || 0))}</strong></span>
+         ${grouped ? `<span class="admin-user-nolimit">shared · ${escapeHtml(user.budgetGroupName)}</span>` : ""}`
+      : `<span>Used <strong>${escapeHtml(formatUsd(usedUsd))}</strong></span><span class="admin-user-nolimit">No limit</span>`;
+    const ratio = hasLimit && limitUsd > 0 ? Math.min(100, Math.round((usedUsd / limitUsd) * 100)) : 0;
+    const meterClass = ratio >= 100 ? " is-over" : ratio >= 80 ? " is-high" : "";
+    const meter = hasLimit
+      ? `<span class="admin-budget-meter${meterClass}"><span style="width:${ratio}%"></span></span>`
+      : "";
     const groupSelectOptions = groupOptions.replace(
       `value="${escapeHtml(user.budgetGroupId || "")}"`,
       `value="${escapeHtml(user.budgetGroupId || "")}" selected`
@@ -4464,7 +4597,8 @@ function renderAdminUsers(users) {
           <strong>${escapeHtml(username)}</strong>
           <span>${escapeHtml(user.displayName || "")}</span>
           <span class="admin-user-spend">Firm: ${escapeHtml(user.tenantId || "")}</span>
-          <span class="admin-user-spend">${escapeHtml(budgetText)}</span>
+          <div class="admin-user-figures">${figures}</div>
+          ${meter}
         </div>
         <label>
           <span>Display</span>
