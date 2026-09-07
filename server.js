@@ -6490,7 +6490,28 @@ function buildAccountingAuthUrl(softwareId, username) {
     params.set("access_type", "offline");
     params.set("prompt", "consent");
   }
-  return `${config.authUrl}?${params.toString()}`;
+  return `${config.authUrl}?${encodeScopeSpaces(params.toString(), softwareId)}`;
+}
+
+/**
+ * Re-encode the spaces inside the scope parameter as %20.
+ *
+ * URLSearchParams writes a space as "+", which is correct for form encoding and is what every
+ * other provider here accepts. Xero's identity server does not: it takes the "+" literally, so
+ * "openid profile email accounting.reports.read" arrives as ONE scope named
+ * "openid+profile+email+accounting.reports.read", which does not exist — and the connect button
+ * lands on Xero's own error page saying invalid_scope, with nothing on our side logging a thing.
+ *
+ * Only the scope parameter is touched, and only for the providers that need it. %20 is the
+ * correct encoding of a space in a query string, so widening this list is safe if another
+ * provider ever turns out to be as strict; QuickBooks is left exactly as it was because it
+ * works today and this is not the place to find out otherwise.
+ */
+const SCOPE_NEEDS_PERCENT_ENCODING = new Set(["xero"]);
+
+function encodeScopeSpaces(query, softwareId) {
+  if (!SCOPE_NEEDS_PERCENT_ENCODING.has(softwareId)) return query;
+  return query.replace(/(^|&)scope=([^&]*)/, (whole, separator, value) => `${separator}scope=${value.replace(/\+/g, "%20")}`);
 }
 
 async function exchangeAccountingToken(softwareId, code) {
