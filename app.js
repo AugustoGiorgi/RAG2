@@ -551,8 +551,12 @@ let organizerCurrentView = "preparer";
 let qboReportsForReview = [];
 let currentUsername = "";
 let currentUser = { username: "", role: "user", displayName: "" };
-let pendingDeliverableGmailDraft = false;
-let creatingDeliverableGmailDraft = false;
+let sendingDeliverableGmail = false;
+let googleOauthPopup = null;
+let googleOauthPollTimer = null;
+let googleOauthStartedAt = 0;
+let googleOauthCompletionPromise = null;
+let pendingGoogleAction = null;
 let currentSessionId = localStorage.getItem("taxapp_current_session_id") || "";
 let dashboardSessions = [];
 let issueResolutionState = {};
@@ -721,19 +725,21 @@ function init() {
   loadAuthStatus();
   loadServerConfig();
   refreshDriveStatus();
+  refreshDeliverableGmailStatus();
   loadDatabaseData();
   loadDashboardSessions().then(checkRestoreSession).catch(() => null);
   window.addEventListener("message", async (event) => {
+    if (event.origin !== window.location.origin) return;
     if (event.data?.type === "google_connected") {
-      await refreshDriveStatus();
-      await refreshDeliverableGmailStatus();
-      reportGoogleGrant();
-      if (pendingDeliverableGmailDraft) await createDeliverableGmailDraft();
-      runPendingDriveAction();
+      await finishGoogleOauthConnection({ finalize: true });
+    }
+    if (event.data?.type === "google_oauth_error") {
+      stopGoogleOauthPolling();
+      pendingGoogleAction = null;
+      showToast(event.data.message || "Google connection was not completed.", "error");
     }
     if (event.data?.type === "drive_connected") {
       await refreshDriveStatus();
-      runPendingDriveAction();
     }
     if (event.data?.type === "qbo_connected") {
       initQBOSection();
@@ -1125,7 +1131,7 @@ function setupEstimatedTaxesEvents() {
     if (file) {
       estimatedTaxesState.reviewedWorkpaper = file;
       if (els.estReviewedWorkbookStatus) els.estReviewedWorkbookStatus.textContent = `${displayFileName(file)} ready to attach.`;
-      showToast("Reviewed workbook uploaded. Gmail draft will use this file.", "success");
+      showToast("Reviewed workbook uploaded and ready to send.", "success");
     }
     els.estReviewedWorkbookFile.value = "";
   });
@@ -1877,21 +1883,26 @@ function workbookToXlsxBase64(workbook) {
 
 async function sendEstimatedTaxesEmail() {
   const result = estimatedTaxesState.lastResult;
-  if (!result) return showToast("Run the calculation before creating the Gmail draft.", "warning");
+  if (!result) return showToast("Run the calculation before sending the email.", "warning");
   const to = estFieldValue("estClientEmail") || result.clientEmail;
-  if (!to) return showToast("Add a client email before creating the Gmail draft.", "warning");
-  const gmailTab = window.open("about:blank", "_blank", "noopener");
+  if (!to) return showToast("Add a client email before sending.", "warning");
+  if (!estimatedTaxesState.reviewedWorkpaper) return showToast("Upload the reviewed Excel workpaper before sending the client email.", "warning");
+  return runWithGooglePermission("gmail", () => performEstimatedTaxesEmailSend());
+}
+
+async function performEstimatedTaxesEmailSend() {
+  const result = estimatedTaxesState.lastResult;
+  const to = estFieldValue("estClientEmail") || result?.clientEmail;
+  if (!result || !to || !estimatedTaxesState.reviewedWorkpaper) return;
+  if (!window.confirm(`Send this reviewed email to ${to}? This action sends the message immediately through Gmail.`)) return;
   els.estSendEmail.disabled = true;
-  els.estSendEmail.textContent = "Creating Gmail draft...";
+  els.estSendEmail.textContent = "Sending email...";
+  const sendingToast = showToast("Sending email through Gmail...", "info", { persistent: true, loading: true });
   try {
     const reviewedFile = estimatedTaxesState.reviewedWorkpaper;
-    if (!reviewedFile) {
-      showToast("Upload the reviewed Excel workpaper before creating the client email.", "warning");
-      return;
-    }
     const attachmentName = displayFileName(reviewedFile);
     const attachmentBase64 = await readAsBase64(reviewedFile);
-    const response = await fetch(`${API_BASE_URL}/api/deliverable/create-gmail-draft`, {
+    const response = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1907,18 +1918,14 @@ async function sendEstimatedTaxesEmail() {
       }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Gmail could not create the draft.");
-    const url = data.gmailUrl || "https://mail.google.com/mail/u/0/#drafts";
-    if (gmailTab) gmailTab.location.href = url;
-    else window.open(url, "_blank", "noopener");
-    showToast("Gmail draft created with the workpaper attached.", "success");
+    if (!response.ok) throw new Error(data.error || "Gmail could not send the email.");
+    showToast("Email sent with the reviewed workpaper attached.", "success");
   } catch (error) {
-    if (gmailTab) gmailTab.close();
     showToast(error.message, "error");
-    if (String(error.message || "").toLowerCase().includes("permission")) connectGoogleDrive();
   } finally {
+    dismissToast(sendingToast);
     els.estSendEmail.disabled = false;
-    els.estSendEmail.textContent = "Create Gmail Draft with Reviewed Workpaper";
+    els.estSendEmail.textContent = "Review and Send Email with Workpaper";
   }
 }
 
@@ -3446,6 +3453,7 @@ const DRIVE_ZONE_CONFIG = {
   "calculation": { title: "Select Calculation Files", subtitle: "Select 1099s, W-2s, statements, financial reports, or PDFs", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
   "estimated-reviewed-workbook": { title: "Select Reviewed Workbook", subtitle: "Select the reviewed Excel workpaper to attach to the email", allowedTypes: ["xlsx"], multiSelect: false },
   "planning-client": { title: "Select Planning Files", subtitle: "Prior-year return, K-1s, statements, the Excel workpaper, or photos of documents", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "image", "zip"], multiSelect: true },
+  "planning-library": { title: "Select Planning Template", subtitle: "Select a presentation, recommendation, or firm template", allowedTypes: ["pdf", "docx", "pptx", "txt"], multiSelect: false },
 };
 
 function setupDriveUploadButtons() {
@@ -3456,11 +3464,13 @@ function setupDriveUploadButtons() {
   addDriveButtonAfterInput("noticeFile", "notice-document");
   addDriveButtonAfterInput("noticePriorReturn", "notice-prior-return");
   addDriveButtonAfterInput("diagnosticsImage", "diagnostics-screenshot");
+  addDriveButtonAfterInput("organizerPriorReturn", "organizer-prior-return");
   addDriveButtonAfterInput("presentationFiles", "presentation");
   addDriveButtonAfterInput("calculationFiles", "calculation");
   addDriveButtonAfterInput("estReviewedWorkbookFile", "estimated-reviewed-workbook");
   // Planning was the one tab with an upload box and no way to reach Drive at all.
   addDriveButtonAfterInput("planningFiles", "planning-client");
+  addDriveButtonAfterInput("planningLibFile", "planning-library");
 }
 
 function addDriveButtonAfterInput(inputId, zoneId) {
@@ -3491,63 +3501,23 @@ function setupDrivePickerDomEvents() {
   document.getElementById("drive-shared-btn")?.addEventListener("click", () => DrivePicker.openSharedWithMe());
 }
 
-/** What the user asked for before we sent them to Google, so we can finish it afterwards. */
-let pendingDriveAction = null;
+function googleCapabilityReady(capability) {
+  if (capability === "drive") return Boolean(window.driveState?.connected);
+  return Boolean(deliverableState.gmailStatus?.authorized);
+}
 
-/**
- * Do something with Drive, connecting first when needed — and then actually doing it.
- *
- * The old flow stopped at the connection: click "Add from Google Drive", get sent to the
- * Google consent screen, come back, see "Google connected", and nothing else happens. From
- * the outside that reads as a button that signs you in and then gives up, and the only way
- * forward was to click the same button a second time. Now the click is remembered and the
- * picker opens as soon as the connection lands.
- */
-function openDriveWhenConnected(action) {
-  // Anything short of "no Google connection at all" opens the picker. Refusing to open it
-  // because the granted scope looked too narrow removed the one path that still worked, and a
-  // picker that opens and says what it found — even nothing — beats a button that does not
-  // open. The connect prompt is for the case where there is genuinely nothing to connect with.
-  if (window.driveState?.connected) { action(); return; }
-  pendingDriveAction = action;
-  showToast("Connect Google Drive to load files.", "info");
+function runWithGooglePermission(capability, action) {
+  if (googleCapabilityReady(capability)) return action?.();
+  pendingGoogleAction = { capability, action };
+  showToast(capability === "gmail" ? "Connect Google to send this email." : "Connect Google to select Drive files.", "info");
+  // Keep window.open in the original click event. Waiting for a status request first
+  // makes browsers classify the OAuth popup as unsolicited and block it.
   connectGoogleDrive();
+  return false;
 }
 
-/**
- * Say what the connection actually came back with.
- *
- * "Google connected." was reported for every outcome, including the one where the consent
- * screen granted a subset. Google shows a checkbox per permission now, so a partial grant is
- * a normal accident, and finding out later — an empty Drive picker here, a dead Gmail button
- * three tabs away — costs far more than being told at the moment it happens.
- */
-function reportGoogleGrant() {
-  // Only complain with evidence. When Google records no scopes at all there is nothing to
-  // conclude from, and warning anyway sends people back to a consent screen that was never the
-  // problem — which is exactly what a warning with no evidence behind it costs.
-  const granted = window.driveState?.grantedScopes || "";
-  if (!granted) { showToast("Google connected.", "success"); return; }
-  const driveReady = window.driveState?.driveAccess === "full";
-  const gmailReady = Boolean(deliverableState.gmailStatus?.authorized);
-  const missing = [];
-  if (!driveReady) missing.push("seeing your Drive files");
-  if (!gmailReady) missing.push("creating Gmail drafts");
-  if (!missing.length) {
-    showToast("Google connected.", "success");
-    return;
-  }
-  // Name what Google actually returned. Without it the message is a conclusion with no
-  // evidence, and the next question is always "but I ticked everything" — which nobody can
-  // answer from either side without seeing the granted list.
-  showToast(`Google connected, but permission for ${missing.join(" and ")} was not granted. Google granted: ${granted}. Reconnect and tick every box on the Google screen.`, "warning");
-}
-
-function runPendingDriveAction() {
-  const action = pendingDriveAction;
-  pendingDriveAction = null;
-  if (!action) return;
-  if (window.driveState?.connected) action();
+function openDriveWhenConnected(action) {
+  return runWithGooglePermission("drive", action);
 }
 
 function openDriveForZone(zoneId) {
@@ -3559,20 +3529,79 @@ function openDriveForZone(zoneId) {
   }));
 }
 
-function connectGoogleDrive() {
-  // A button that does nothing when clicked is worse than one that explains itself. This used
-  // to return silently whenever Google was unconfigured, and the surrounding flows still told
-  // the user to "connect Google Drive" — so the instruction and the button disagreed and
-  // neither said why.
-  if (!window.driveState?.enabled) {
+function connectGoogleDrive(event) {
+  event?.preventDefault?.();
+  if (window.driveState && !window.driveState.enabled) {
     showToast("Google is not configured on this server. An administrator has to set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.", "warning");
     return;
   }
-  const popup = window.open("/auth/google", "google-drive-oauth", "width=520,height=720");
-  if (!popup) {
+  googleOauthPopup = window.open("", "google-oauth", "width=520,height=720,scrollbars=yes,resizable=yes");
+  if (!googleOauthPopup) {
     showToast("The Google sign-in window was blocked. Allow pop-ups for this site and try again.", "warning");
+    return;
+  }
+  googleOauthStartedAt = Date.now();
+  googleOauthPopup.location.replace("/auth/google");
+  startGoogleOauthPolling();
+  try { googleOauthPopup.focus(); } catch (_) {}
+}
+
+function stopGoogleOauthPolling() {
+  if (googleOauthPollTimer) window.clearInterval(googleOauthPollTimer);
+  googleOauthPollTimer = null;
+  googleOauthPopup = null;
+  googleOauthStartedAt = 0;
+}
+
+async function finishGoogleOauthConnection({ finalize = false } = {}) {
+  if (googleOauthCompletionPromise) return googleOauthCompletionPromise;
+  googleOauthCompletionPromise = (async () => {
+    const driveStatus = await refreshDriveStatus();
+    const gmailStatus = await refreshDeliverableGmailStatus();
+    const pending = pendingGoogleAction;
+    const ready = pending?.capability === "gmail" ? Boolean(gmailStatus?.authorized) : Boolean(driveStatus?.connected);
+    if (pending && ready) {
+      pendingGoogleAction = null;
+      stopGoogleOauthPolling();
+      showToast(`Google connected${driveStatus?.email ? ` as ${driveStatus.email}` : ""}.`, "success");
+      await pending.action?.();
+      return true;
+    }
+    if (!pending && driveStatus?.connected && gmailStatus?.authorized) {
+      stopGoogleOauthPolling();
+      showToast(`Google connected${driveStatus.email ? ` as ${driveStatus.email}` : ""}.`, "success");
+      return true;
+    }
+    if (finalize) {
+      stopGoogleOauthPolling();
+      pendingGoogleAction = null;
+      showToast("Google connected, but the required permissions were not granted. Reconnect and accept every requested permission.", "warning");
+    }
+    return false;
+  })();
+  try {
+    return await googleOauthCompletionPromise;
+  } finally {
+    googleOauthCompletionPromise = null;
   }
 }
+
+function startGoogleOauthPolling() {
+  if (googleOauthPollTimer) window.clearInterval(googleOauthPollTimer);
+  googleOauthPollTimer = window.setInterval(() => {
+    if (Date.now() - googleOauthStartedAt > 120000) {
+      stopGoogleOauthPolling();
+      pendingGoogleAction = null;
+      showToast("Google connection timed out. Please try again.", "warning");
+      return;
+    }
+    if (googleOauthPopup?.closed) finishGoogleOauthConnection({ finalize: true }).catch(() => null);
+  }, 800);
+}
+
+window.addEventListener("focus", () => {
+  if (googleOauthStartedAt && googleOauthPopup?.closed) finishGoogleOauthConnection({ finalize: true }).catch(() => null);
+});
 
 async function refreshDriveStatus() {
   try {
@@ -3589,8 +3618,10 @@ async function refreshDriveStatus() {
     if (els.deliverableDriveConnectPrompt) els.deliverableDriveConnectPrompt.hidden = Boolean(status.connected);
     if (els.deliverableSelectFolder) els.deliverableSelectFolder.hidden = !status.connected;
     renderDriveHeaderStatus(status);
+    return status;
   } catch (error) {
     console.warn("Could not check Drive status:", error);
+    return null;
   }
 }
 
@@ -3605,7 +3636,7 @@ function renderDriveHeaderStatus(status) {
   els.driveHeaderStatus.classList.toggle("success", Boolean(status.connected));
 }
 
-function addFilesToZone(zoneId, driveFiles) {
+async function addFilesToZone(zoneId, driveFiles) {
   const files = driveFiles.map(normalizeDriveFile);
   if (zoneId === "prep-package") {
     preparerFiles.packageFiles = mergeFiles(preparerFiles.packageFiles, files);
@@ -3636,6 +3667,9 @@ function addFilesToZone(zoneId, driveFiles) {
   } else if (zoneId === "planning-client") {
     planningStudio.files.push(...files.map((file) => ({ name: file.name, type: file.type || "", content: file.content })));
     planningRenderFileList();
+  } else if (zoneId === "planning-library") {
+    const file = files[0];
+    if (file) await planningUploadTemplate(file);
   } else if (zoneId === "estimated-reviewed-workbook") {
     const file = files[0];
     if (file) {
@@ -3731,16 +3765,20 @@ async function fileTextContent(file) {
   return file.text();
 }
 
-function showToast(message, type = "info") {
+function showToast(message, type = "info", options = {}) {
   const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
+  toast.className = `toast toast-${type}${options.loading ? " toast-loading" : ""}`;
   toast.textContent = message;
   document.body.appendChild(toast);
   window.setTimeout(() => toast.classList.add("show"), 10);
-  window.setTimeout(() => {
-    toast.classList.remove("show");
-    window.setTimeout(() => toast.remove(), 300);
-  }, 3500);
+  if (!options.persistent) window.setTimeout(() => dismissToast(toast), options.duration || 3500);
+  return toast;
+}
+
+function dismissToast(toast) {
+  if (!toast?.isConnected) return;
+  toast.classList.remove("show");
+  window.setTimeout(() => toast.remove(), 300);
 }
 
 /**
@@ -3797,7 +3835,96 @@ class DrivePicker {
     };
   }
 
-  open(config = {}) {
+  async open(config = {}) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/drive/picker-config`);
+      const pickerConfig = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error = new Error(pickerConfig.error || "Google Picker is not configured.");
+        error.status = response.status;
+        throw error;
+      }
+      await loadGooglePickerApi();
+      const view = new google.picker.DocsView(config.folderOnly ? google.picker.ViewId.FOLDERS : google.picker.ViewId.DOCS);
+      if (config.folderOnly) {
+        view.setIncludeFolders(true);
+        view.setSelectFolderEnabled(true);
+        view.setMimeTypes("application/vnd.google-apps.folder");
+      } else {
+        const mimeTypes = drivePickerMimeTypes(config.allowedTypes || []);
+        if (mimeTypes) view.setMimeTypes(mimeTypes);
+        view.setIncludeFolders(false);
+      }
+      if (config.folderId && config.folderId !== "root" && typeof view.setParent === "function") view.setParent(config.folderId);
+      const builder = new google.picker.PickerBuilder()
+        .setAppId(pickerConfig.appId)
+        .setDeveloperKey(pickerConfig.apiKey)
+        .setOAuthToken(pickerConfig.accessToken)
+        .setOrigin(window.location.origin)
+        .addView(view)
+        .setCallback((data) => this.handleGooglePickerResult(data, config));
+      if (config.multiSelect !== false && !config.folderOnly) builder.enableFeature(google.picker.Feature.MULTISELECT_ENABLED);
+      builder.build().setVisible(true);
+    } catch (error) {
+      showToast(error.message || "Google Drive picker could not open.", "error");
+      if (error.status === 401 || error.status === 403) {
+        runWithGooglePermission("drive", () => this.open(config));
+      }
+    }
+  }
+
+  async handleGooglePickerResult(data, config) {
+    const action = data?.action || data?.[google.picker.Response?.ACTION];
+    if (action !== google.picker.Action.PICKED) return;
+    const documents = data?.docs || data?.[google.picker.Response?.DOCUMENTS];
+    const picked = Array.isArray(documents) ? documents : [];
+    if (!picked.length) {
+      showToast("Google Drive did not return the selected item. Please select it again.", "warning");
+      return;
+    }
+    if (config.folderOnly) {
+      await config.onFilesSelected?.(picked.map((doc) => ({
+        id: doc.id,
+        name: doc.name || "Drive folder",
+        mimeType: doc.mimeType || "application/vnd.google-apps.folder",
+        kind: "folder",
+      })));
+      return;
+    }
+    const loadingToast = showToast(
+      `Loading ${picked.length} selected Drive file${picked.length === 1 ? "" : "s"}...`,
+      "info",
+      { persistent: true, loading: true }
+    );
+    const loaded = [];
+    try {
+      for (const doc of picked) {
+        const fileId = doc.id || doc[google.picker.Document?.ID];
+        const fileName = doc.name || doc[google.picker.Document?.NAME] || "Selected Drive file";
+        const mimeType = doc.mimeType || doc[google.picker.Document?.MIME_TYPE] || "";
+        const webViewLink = doc.url || doc[google.picker.Document?.URL] || "";
+        loadingToast.textContent = `Loading ${fileName} from Google Drive...`;
+        const response = await fetch(`${API_BASE_URL}/api/drive/read-file`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ fileId, fileName, mimeType }),
+        });
+        const file = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(file.error || `Could not read ${fileName}.`);
+        loaded.push({ name: file.fileName, type: file.mimeType, content: file.contentBase64, source: "google_drive", driveFileId: fileId, driveWebViewLink: webViewLink, size: file.sizeBytes });
+      }
+      if (loaded.length) {
+        await config.onFilesSelected?.(loaded);
+        showToast(`${loaded.length} Drive file${loaded.length === 1 ? "" : "s"} loaded.`, "success");
+      }
+    } catch (error) {
+      showToast(error.message || "The selected Google Drive file could not be loaded.", "error");
+    } finally {
+      dismissToast(loadingToast);
+    }
+  }
+
+  openLegacy(config = {}) {
     this.state.onFilesSelected = config.onFilesSelected || (() => {});
     this.state.allowedTypes = config.allowedTypes || ["pdf", "xlsx", "docx", "txt", "csv"];
     this.state.multiSelect = config.multiSelect !== false;
@@ -4131,6 +4258,57 @@ class DrivePicker {
     if ((mimeType || "").includes("image")) return "IMG";
     return "FILE";
   }
+}
+
+let googlePickerApiPromise = null;
+
+function loadGooglePickerApi() {
+  if (window.google?.picker) return Promise.resolve();
+  if (googlePickerApiPromise) return googlePickerApiPromise;
+  googlePickerApiPromise = new Promise((resolve, reject) => {
+    const loadPickerModule = () => {
+      if (!window.gapi?.load) {
+        reject(new Error("Google Picker library did not load."));
+        return;
+      }
+      window.gapi.load("picker", {
+        callback: resolve,
+        onerror: () => reject(new Error("Google Picker module could not load.")),
+      });
+    };
+    const existing = document.querySelector('script[data-google-picker-api="true"]');
+    if (existing) {
+      existing.addEventListener("load", loadPickerModule, { once: true });
+      existing.addEventListener("error", () => reject(new Error("Google Picker library could not load.")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://apis.google.com/js/api.js";
+    script.async = true;
+    script.defer = true;
+    script.dataset.googlePickerApi = "true";
+    script.onload = loadPickerModule;
+    script.onerror = () => reject(new Error("Google Picker library could not load."));
+    document.head.appendChild(script);
+  });
+  return googlePickerApiPromise;
+}
+
+function drivePickerMimeTypes(allowedTypes) {
+  const map = {
+    pdf: ["application/pdf"],
+    docx: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.google-apps.document"],
+    pptx: ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.google-apps.presentation"],
+    xlsx: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.google-apps.spreadsheet"],
+    csv: ["text/csv"],
+    txt: ["text/plain"],
+    zip: ["application/zip", "application/x-zip-compressed"],
+    image: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    png: ["image/png"],
+    jpg: ["image/jpeg"],
+    jpeg: ["image/jpeg"],
+  };
+  return Array.from(new Set((allowedTypes || []).flatMap((type) => map[String(type).toLowerCase()] || []))).join(",");
 }
 
 async function loadAuthStatus() {
@@ -5475,6 +5653,9 @@ async function searchClientFiles() {
     showToast("Select at least one source to search.", "warning");
     return;
   }
+  if (sources.includes("drive") && !googleCapabilityReady("drive")) {
+    return runWithGooglePermission("drive", () => searchClientFiles());
+  }
   if (els.requestResultsList) els.requestResultsList.innerHTML = `<div class="database-empty">Searching files...</div>`;
   try {
     const response = await fetch(`${API_BASE_URL}/api/requests/search-files`, {
@@ -5681,11 +5862,19 @@ function renderRequestEmailPreview(email) {
         <button id="sendRequestButton" class="btn-send-gmail" type="button">Send via Gmail</button>
       </div>` : `
       <div class="gmail-not-connected">Gmail is not connected. You can copy the email or open Gmail and attach files manually.</div>
-      <button class="secondary-button" type="button" onclick="connectGoogleDrive()">Connect Gmail</button>`}`;
+      <button id="requestConnectGmail" class="secondary-button" type="button">Connect Gmail</button>`}`;
   document.getElementById("requestRegenerate")?.addEventListener("click", generateRequestEmail);
   document.getElementById("requestCopyEmail")?.addEventListener("click", () => copyText(`${document.getElementById("requestEmailSubject")?.value || ""}\n\n${document.getElementById("requestEmailBody")?.value || ""}`));
   document.getElementById("requestOpenGmail")?.addEventListener("click", openRequestMailto);
   document.getElementById("sendRequestButton")?.addEventListener("click", sendRequestEmail);
+  document.getElementById("requestConnectGmail")?.addEventListener("click", requestGoogleGmailPermission);
+}
+
+function requestGoogleGmailPermission() {
+  return runWithGooglePermission("gmail", () => {
+    renderRequestEmailPreview(requestState.generatedEmail);
+    showToast("Gmail is connected and ready to send.", "success");
+  });
 }
 
 function openRequestMailto() {
@@ -5697,11 +5886,20 @@ function openRequestMailto() {
 
 async function sendRequestEmail() {
   if (!requestState.generatedEmail || requestState.isSending) return;
+  return runWithGooglePermission("gmail", () => performRequestEmailSend());
+}
+
+async function performRequestEmailSend() {
+  if (!requestState.generatedEmail || requestState.isSending) return;
+  const to = document.getElementById("requestEmailTo")?.value || "";
+  if (!isValidEmail(to)) return showToast("Enter a valid recipient email before sending.", "warning");
+  if (!window.confirm(`Send this email to ${to}? This action sends the message immediately through Gmail.`)) return;
   requestState.isSending = true;
   const button = document.getElementById("sendRequestButton");
-  button.disabled = true;
+  if (button) button.disabled = true;
+  const sendingToast = showToast("Preparing attachments...", "info", { persistent: true, loading: true });
   try {
-    button.textContent = "Reading files...";
+    if (button) button.textContent = "Preparing attachments...";
     const readResponse = await fetch(`${API_BASE_URL}/api/requests/read-files`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5714,10 +5912,10 @@ async function sendRequestEmail() {
     if (!readResponse.ok) throw new Error(readData.error || "Could not read selected files");
     if (readData.errors?.length) showToast(`${readData.errors.length} file(s) could not be read.`, "warning");
 
-    button.textContent = "Sending...";
+    sendingToast.textContent = "Sending email through Gmail...";
+    if (button) button.textContent = "Sending email...";
     const subject = document.getElementById("requestEmailSubject")?.value || "";
     const bodyText = document.getElementById("requestEmailBody")?.value || "";
-    const to = document.getElementById("requestEmailTo")?.value || "";
     const sendResponse = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -5751,9 +5949,12 @@ async function sendRequestEmail() {
     await loadDatabaseClients();
   } catch (error) {
     showToast(`Failed to send: ${error.message}`, "error");
-    button.disabled = false;
-    button.textContent = "Send via Gmail";
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Send via Gmail";
+    }
   } finally {
+    dismissToast(sendingToast);
     requestState.isSending = false;
   }
 }
@@ -7798,9 +7999,9 @@ function setupDeliverableEvents() {
   els.generateEmailDraft?.addEventListener("click", () => generateDeliverableEmailDraft());
   els.regenerateDeliverableEmail?.addEventListener("click", () => generateDeliverableEmailDraft({ force: true }));
   els.copyDeliverableEmail?.addEventListener("click", copyDeliverableEmail);
-  els.openDeliverableGmail?.addEventListener("click", (event) => createDeliverableGmailDraft(event.currentTarget));
-  els.connectGmailButton?.addEventListener("click", (event) => createDeliverableGmailDraft(event.currentTarget));
-  els.sendGmailButton?.addEventListener("click", (event) => createDeliverableGmailDraft(event.currentTarget));
+  els.openDeliverableGmail?.addEventListener("click", (event) => sendDeliverableGmail(event.currentTarget));
+  els.connectGmailButton?.addEventListener("click", requestDeliverableGmailPermission);
+  els.sendGmailButton?.addEventListener("click", (event) => sendDeliverableGmail(event.currentTarget));
   ["deliverableFirmName", "deliverableFirmEmail", "deliverableFirmPhone", "deliverablePreparerName"].forEach((id) => {
     document.getElementById(id)?.addEventListener("input", () => {
       if (els.deliverableSaveDefaults?.checked) saveFirmDefaults();
@@ -7858,9 +8059,11 @@ async function refreshDeliverableGmailStatus() {
     const status = await fetch(`${API_BASE_URL}/api/deliverable/gmail-status`).then((r) => r.json());
     deliverableState.gmailStatus = status;
     renderGmailStatus();
+    return status;
   } catch (_) {
     deliverableState.gmailStatus = { authorized: false, email: null };
     renderGmailStatus();
+    return deliverableState.gmailStatus;
   }
 }
 
@@ -8259,69 +8462,45 @@ function buildDeliverableGmailPayload(attachments) {
   };
 }
 
-async function createDeliverableGmailDraft(triggerButton) {
-  if (creatingDeliverableGmailDraft) return;
-  pendingDeliverableGmailDraft = true;
-  await refreshDeliverableGmailStatus();
-  if (!deliverableState.gmailStatus?.authorized) {
-    showToast("Grant Gmail permission, then the draft will be created automatically.", "info");
-    connectGoogleDrive();
-    return;
-  }
-  if (!deliverableState.draft && !els.emailSubjectDraft.value.trim()) {
-    await generateDeliverableEmailDraft();
-  }
-  if (!els.emailSubjectDraft.value.trim() || !els.emailBodyDraft.value.trim()) {
-    showToast("Generate the email draft before opening Gmail.", "warning");
-    pendingDeliverableGmailDraft = false;
-    return;
-  }
-  const gmailTab = window.open("about:blank", "_blank", "noopener");
-  const button = triggerButton || els.sendGmailButton || els.connectGmailButton || els.openDeliverableGmail;
-  const originalButtonText = button?.textContent || "";
-  creatingDeliverableGmailDraft = true;
-  if (button) {
-    button.disabled = true;
-    button.textContent = "Creating Gmail draft...";
-  }
-  try {
-    const attachments = await collectDeliverableEmailAttachments();
-    const response = await fetch(`${API_BASE_URL}/api/deliverable/create-gmail-draft`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(buildDeliverableGmailPayload(attachments)),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Gmail could not create the draft.");
-    pendingDeliverableGmailDraft = false;
-    const url = data.gmailUrl || "https://mail.google.com/mail/u/0/#drafts";
-    if (gmailTab) {
-      gmailTab.location.href = url;
-    } else {
-      window.open(url, "_blank", "noopener");
-    }
-    els.gmailSendResult.innerHTML = `<div class="send-success-banner">Gmail draft created with ${attachments.length} attachment(s).<br><a href="${escapeHtml(url)}" target="_blank" rel="noopener">Open Gmail drafts</a></div>`;
-  } catch (error) {
-    if (gmailTab) gmailTab.close();
-    els.gmailSendResult.innerHTML = `<div class="gmail-not-connected">${escapeHtml(error.message)}</div>`;
-    if (String(error.message || "").toLowerCase().includes("permission")) connectGoogleDrive();
-  } finally {
-    creatingDeliverableGmailDraft = false;
-    if (button) {
-      button.disabled = false;
-      button.textContent = originalButtonText || "Create Draft in Gmail";
-    }
-  }
+function requestDeliverableGmailPermission() {
+  return runWithGooglePermission("gmail", () => {
+    renderGmailStatus();
+    showToast("Gmail is connected and ready to send.", "success");
+  });
 }
 
-async function sendDeliverableGmail() {
-  const attachments = await collectDeliverableEmailAttachments();
-  const payload = {
-    ...buildDeliverableGmailPayload(attachments),
-  };
-  els.sendGmailButton.disabled = true;
-  els.sendGmailButton.textContent = "Sending email...";
+async function sendDeliverableGmail(triggerButton) {
+  if (sendingDeliverableGmail) return;
+  if (!els.emailSubjectDraft.value.trim() || !els.emailBodyDraft.value.trim()) {
+    showToast("Generate and review the email before sending.", "warning");
+    return;
+  }
+  if (!isValidEmail(els.gmailTo.value.trim())) {
+    showToast("Enter a valid recipient email before sending.", "warning");
+    return;
+  }
+  return runWithGooglePermission("gmail", () => performDeliverableGmailSend(triggerButton));
+}
+
+async function performDeliverableGmailSend(triggerButton) {
+  if (sendingDeliverableGmail) return;
+  const recipient = els.gmailTo.value.trim();
+  if (!window.confirm(`Send this email to ${recipient}? This action sends the message immediately through Gmail.`)) return;
+  const button = triggerButton || els.sendGmailButton || els.openDeliverableGmail;
+  const originalButtonText = button?.textContent || "Send Email";
+  sendingDeliverableGmail = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Preparing attachments...";
+  }
+  const sendingToast = showToast("Preparing attachments...", "info", { persistent: true, loading: true });
+  let emailSent = false;
+  let record = null;
   try {
+    const attachments = await collectDeliverableEmailAttachments();
+    const payload = buildDeliverableGmailPayload(attachments);
+    sendingToast.textContent = "Sending email through Gmail...";
+    if (button) button.textContent = "Sending email...";
     const response = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -8329,23 +8508,36 @@ async function sendDeliverableGmail() {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Gmail could not send the email.");
-    const record = { sentAt: new Date().toISOString(), to: payload.to, subject: payload.subject, attachmentNames: attachments.map((item) => item.name), status: "Sent", messageId: data.messageId };
+    emailSent = true;
+    record = { sentAt: new Date().toISOString(), to: payload.to, subject: payload.subject, attachmentNames: attachments.map((item) => item.name), status: "Sent", messageId: data.messageId };
+    els.gmailSendResult.innerHTML = `<div class="send-success-banner">Email sent successfully<br>Sent to: ${escapeHtml(payload.to)}<br>Message ID: ${escapeHtml(data.messageId || "")}</div>`;
+    showToast("Email sent successfully.", "success");
     deliverableState.sendHistory.unshift(record);
     renderDeliverableSendHistory();
-    els.gmailSendResult.innerHTML = `<div class="send-success-banner">Email sent successfully<br>Sent to: ${escapeHtml(payload.to)}<br>Message ID: ${escapeHtml(data.messageId || "")}</div>`;
-    await autosaveSession({
-      deliverableResult: { draft: deliverableState.draft, sent: record },
-      deliverableSent: {
-        ...record,
-        taxYear: els.deliverableTaxYear.value.trim() || getMetadata()?.taxYear || "",
-      },
-      status: "delivered",
-    });
+    try {
+      await autosaveSession({
+        deliverableResult: { draft: deliverableState.draft, sent: record },
+        deliverableSent: {
+          ...record,
+          taxYear: els.deliverableTaxYear.value.trim() || getMetadata()?.taxYear || "",
+        },
+        status: "delivered",
+      });
+    } catch (_) {
+      showToast("Email sent, but its local history could not be saved.", "warning");
+    }
   } catch (error) {
-    els.gmailSendResult.innerHTML = `<div class="gmail-not-connected">${escapeHtml(error.message)}</div>`;
+    if (!emailSent) {
+      els.gmailSendResult.innerHTML = `<div class="gmail-not-connected">${escapeHtml(error.message)}</div>`;
+      showToast(error.message || "Gmail could not send the email.", "error");
+    }
   } finally {
-    els.sendGmailButton.disabled = false;
-    els.sendGmailButton.textContent = "Send Email";
+    dismissToast(sendingToast);
+    sendingDeliverableGmail = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalButtonText;
+    }
   }
 }
 

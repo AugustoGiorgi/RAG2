@@ -41,7 +41,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=20260527-blue-palette" />
+    <link rel="stylesheet" href="styles.css?v=20260907-google-unified" />
     <style>
       .step-list {
         display: grid !important;
@@ -1243,20 +1243,20 @@
               <div class="deliverable-actions">
                 <button id="regenerateDeliverableEmail" class="ghost-button small-button" type="button">Regenerate</button>
                 <button id="copyDeliverableEmail" class="ghost-button small-button" type="button">Copy Email</button>
-                <button id="openDeliverableGmail" class="ghost-button small-button" type="button">Create Gmail Draft</button>
+                <button id="openDeliverableGmail" class="ghost-button small-button" type="button">Review and Send</button>
               </div>
                 <div class="gmail-send-section">
-                <div class="gmail-send-section-title">Create Gmail draft</div>
+                <div class="gmail-send-section-title">Send through Gmail</div>
                 <div id="gmailNotConnected" class="gmail-not-connected" hidden>
                   Gmail is not connected. You can still copy the email and send manually.
-                  <button id="connectGmailButton" class="ghost-button small-button" type="button">Grant Gmail Permission</button>
+                  <button id="connectGmailButton" class="ghost-button small-button" type="button">Connect Gmail</button>
                 </div>
                 <div id="gmailSendForm" hidden>
                   <div class="gmail-field-row"><span class="gmail-field-label">From</span><span id="gmailFrom" class="gmail-field-value"></span></div>
                   <div class="gmail-field-row"><span class="gmail-field-label">To</span><input id="gmailTo" class="gmail-field-value" type="email" /></div>
                   <div class="gmail-field-row"><span class="gmail-field-label">CC</span><label><input id="gmailCcSelf" type="checkbox" checked /> CC myself</label><input id="gmailAdditionalCc" class="gmail-field-value" type="text" placeholder="additional@example.com" /></div>
                   <div id="gmailAttachmentsSummary" class="email-key-points"></div>
-                  <button id="sendGmailButton" class="btn-send-gmail" type="button">Create Draft in Gmail</button>
+                  <button id="sendGmailButton" class="btn-send-gmail" type="button">Review and Send Email</button>
                 </div>
                 <div id="gmailSendResult"></div>
               </div>
@@ -1593,14 +1593,14 @@
               <div class="gmail-send-section-title">Email to client</div>
               <div class="est-reviewed-workpaper-box" data-drive-button-host>
                 <strong>Reviewed workpaper</strong>
-                <p class="muted-note">After you review the downloaded Excel, upload the final version here. The Gmail draft will attach this reviewed file.</p>
+                <p class="muted-note">After you review the downloaded Excel, upload the final version here. It will be attached to the Gmail message.</p>
                 <button id="estUploadReviewedWorkbook" class="ghost-button small-button" type="button">Upload Reviewed Excel</button>
                 <input id="estReviewedWorkbookFile" type="file" accept=".xlsx,.xls" hidden />
                 <span id="estReviewedWorkbookStatus" class="muted-note">No reviewed workbook uploaded yet.</span>
               </div>
               <label class="field full"><span>Subject</span><input id="estEmailSubject" class="email-subject-input" type="text" /></label>
               <label class="field full"><span>Body</span><textarea id="estEmailBody" class="email-body-textarea" rows="9"></textarea></label>
-              <button id="estSendEmail" class="btn-send-gmail" type="button">Create Gmail Draft with Reviewed Workpaper</button>
+              <button id="estSendEmail" class="btn-send-gmail" type="button">Review and Send Email with Workpaper</button>
             </div>
           </section>
         </section>
@@ -2210,6 +2210,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260611-qbo-only"></script>
+    <script src="app.js?v=20260907-google-unified"></script>
   </body>
 </html>

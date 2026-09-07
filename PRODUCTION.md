@@ -34,11 +34,13 @@ ENABLE_CLAUDE_WEB_SEARCH=true
 CLAUDE_WEB_SEARCH_MAX_USES=3
 CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.gov
 GOOGLE_REDIRECT_URI=https://your-production-domain.com/auth/google/callback
-GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose
-ENABLE_GMAIL_SEND=false
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send
+GOOGLE_PICKER_API_KEY=restricted-browser-api-key
+GOOGLE_CLOUD_PROJECT_NUMBER=numeric-project-number
+ENABLE_GMAIL_SEND=true
 ```
 
-Existing Google connections created without `drive.readonly` must reconnect once before Drive folders and files can be read.
+Google Picker is required with `drive.file`; it grants access only to files the user explicitly selects. Existing connections created with another scope set must reconnect once.
 
 ## Runtime Endpoints
 
@@ -62,4 +64,4 @@ Use `/healthz` for hosting health checks.
 - Keep `senior-review-master-prompt.txt` under firm control. End users can add case-specific notes, but they cannot edit the master prompt in the browser.
 - ZIP uploads are extracted in the browser before review. Very large ZIPs still count against browser memory and request-size limits.
 - Set `CLAUDE_INPUT_COST_PER_MTOK` and `CLAUDE_OUTPUT_COST_PER_MTOK` if pricing changes or if a different Claude model is used.
-- Use `gmail.compose` for Gmail draft creation. Enable direct Gmail sending only after adding `gmail.send` and completing any required Google verification.
+- Keep the exact approved OAuth scope set aligned between the code, production environment, and Google Cloud Console. Direct Gmail sending requires the verified `gmail.send` scope.

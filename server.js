@@ -204,41 +204,20 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || LOCAL_SECRETS.
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.googleClientId || "").trim();
 const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || LOCAL_SECRETS.googleClientSecret || "").trim();
 const GOOGLE_REDIRECT_URI = String(process.env.GOOGLE_REDIRECT_URI || LOCAL_SECRETS.googleRedirectUri || `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}/auth/google/callback`).trim();
-const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-const GOOGLE_DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
-const GOOGLE_DRIVE_APPFILES_SCOPE = "https://www.googleapis.com/auth/drive.file";
-const GOOGLE_DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly";
-/** The only two scopes that can list the files a person already has in Drive. */
-const DRIVE_LISTING_SCOPES = [GOOGLE_DRIVE_SCOPE, GOOGLE_DRIVE_FULL_SCOPE];
+const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
-const GOOGLE_GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const GOOGLE_USERINFO_SCOPE = "https://www.googleapis.com/auth/userinfo.email";
-/**
- * What we ask Google for.
- *
- * An explicit GOOGLE_OAUTH_SCOPES is obeyed exactly, including a set that cannot list Drive.
- * This used to force drive.readonly in regardless, which looked like a safety net and was not:
- * drive.readonly is a sensitive scope, so on an OAuth client Google has not verified, adding it
- * makes every user meet the "Google hasn't verified this app" warning before they can connect.
- * Which scopes to request — and therefore whether to face verification — is a decision for
- * whoever runs the deployment, not for this line.
- *
- * The case it was guarding against, a picker that lists nothing because the grant only covers
- * drive.file, now explains itself when the listing is attempted. That is the right place for
- * it: visible, specific, and without changing what the user is asked to consent to.
- */
-const GOOGLE_OAUTH_SCOPE = (() => {
-  const override = String(process.env.GOOGLE_OAUTH_SCOPES || "").trim();
-  const configured = (override || [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_COMPOSE_SCOPE].join(" "))
-    .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean);
-  if (!configured.some((scope) => DRIVE_LISTING_SCOPES.includes(scope))) {
-    const source = override ? "GOOGLE_OAUTH_SCOPES is set and" : "the configured scopes";
-    console.warn(`[Google] ${source} cannot list a user's existing Drive files. The picker will say so instead of showing an empty folder. Add ${GOOGLE_DRIVE_SCOPE} to change that — it is a sensitive scope and needs a verified OAuth client.`);
-  }
-  return Array.from(new Set(configured)).join(" ");
-})();
-const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "false").toLowerCase() === "true";
+const REQUIRED_GOOGLE_OAUTH_SCOPES = [GOOGLE_USERINFO_SCOPE, GOOGLE_DRIVE_SCOPE, GOOGLE_GMAIL_SEND_SCOPE];
+const GOOGLE_OAUTH_SCOPE = REQUIRED_GOOGLE_OAUTH_SCOPES.join(" ");
+const configuredGoogleScopes = Array.from(new Set(String(process.env.GOOGLE_OAUTH_SCOPES || "")
+  .split(/[,\s]+/).map((scope) => scope.trim()).filter(Boolean)));
+if (configuredGoogleScopes.length && configuredGoogleScopes.sort().join(" ") !== [...REQUIRED_GOOGLE_OAUTH_SCOPES].sort().join(" ")) {
+  console.warn("[Google] GOOGLE_OAUTH_SCOPES does not match the approved production scopes and will be ignored.");
+}
+const GMAIL_SEND_ENABLED = String(process.env.ENABLE_GMAIL_SEND || "true").toLowerCase() !== "false";
+const GOOGLE_PICKER_API_KEY = String(process.env.GOOGLE_PICKER_API_KEY || "").trim();
+const GOOGLE_CLOUD_PROJECT_NUMBER = String(process.env.GOOGLE_CLOUD_PROJECT_NUMBER || GOOGLE_CLIENT_ID.split("-")[0] || "").trim();
 const QBO_CLIENT_ID = String(process.env.QBO_CLIENT_ID || LOCAL_SECRETS.qboClientId || "").trim();
 const QBO_CLIENT_SECRET = String(process.env.QBO_CLIENT_SECRET || LOCAL_SECRETS.qboClientSecret || "").trim();
 const QBO_REDIRECT_URI = String(process.env.QBO_REDIRECT_URI || LOCAL_SECRETS.qboRedirectUri || `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/auth/accounting/quickbooks/callback`).trim();
@@ -830,7 +809,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/deliverable/load-client-folder") { await handleDeliverableLoadClientFolder(req, res); return; }
     if (req.method === "POST" && req.url === "/api/deliverable/generate-draft") { await handleDeliverableGenerateDraft(req, res); return; }
     if (req.method === "POST" && req.url === "/api/deliverable/send-gmail") { await handleDeliverableSendGmail(req, res); return; }
-    if (req.method === "POST" && req.url === "/api/deliverable/create-gmail-draft") { await handleDeliverableCreateGmailDraft(req, res); return; }
     if (req.method === "GET" && req.url === "/api/deliverable/gmail-status") { await handleDeliverableGmailStatus(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/api/tax-software/list") { sendJson(res, 200, publicTaxSoftwareList()); return; }
     if (req.method === "GET" && requestUrl.pathname === "/api/preparation/archive") {
@@ -4572,11 +4550,7 @@ async function handleGoogleAuth(req, res) {
     scope: GOOGLE_OAUTH_SCOPE,
     access_type: "offline",
     prompt: "consent",
-    // Without this, every authorization REPLACES the granted set with whatever was ticked on
-    // Google's screen — and Google now shows one checkbox per permission. Reconnecting to fix
-    // Drive silently dropped gmail.compose, and Gmail sending stopped working with nothing
-    // anywhere saying why. Incremental authorization merges what was already granted instead.
-    include_granted_scopes: "true",
+    include_granted_scopes: "false",
     state: statePayload,
   });
   redirect(res, `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
@@ -4587,16 +4561,22 @@ async function handleGoogleCallback(_req, res, requestUrl) {
     sendHtml(res, 503, "<p>Google Drive is not configured.</p>");
     return;
   }
+  const oauthError = requestUrl.searchParams.get("error");
+  if (oauthError) {
+    const message = oauthError === "access_denied" ? "Google access was cancelled." : "Google connection was not completed.";
+    sendHtml(res, 400, googleOauthCallbackHtml(false, message));
+    return;
+  }
   const code = requestUrl.searchParams.get("code");
   if (!code) {
-    sendHtml(res, 400, "<p>Missing Google OAuth code.</p>");
+    sendHtml(res, 400, googleOauthCallbackHtml(false, "Google did not return an authorization code."));
     return;
   }
   let state = {};
   try { state = JSON.parse(Buffer.from(requestUrl.searchParams.get("state") || "", "base64url").toString("utf8")); } catch (_) {}
   const username = String(state.username || "");
   if (!username || !safeEqual(String(state.sig || ""), hmac(`google:${username}`))) {
-    sendHtml(res, 400, "<p>Google OAuth state is invalid. Start the connection again from the app.</p>");
+    sendHtml(res, 400, googleOauthCallbackHtml(false, "The Google connection expired. Start it again from the app."));
     return;
   }
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
@@ -4612,19 +4592,20 @@ async function handleGoogleCallback(_req, res, requestUrl) {
   });
   const tokenData = await tokenResponse.json().catch(() => ({}));
   if (!tokenResponse.ok) {
-    sendHtml(res, 400, `<p>Google OAuth failed: ${escapeHtml(String(tokenData.error_description || tokenData.error || "Unknown error"))}</p>`);
+    appendAuditLog({ user: { username } }, "google.connection_failed", { reason: String(tokenData.error || "token_exchange_failed") });
+    sendHtml(res, 400, googleOauthCallbackHtml(false, "Google could not complete the connection. Please try again."));
     return;
   }
   writeGoogleTokens(username, normalizeGoogleTokens(tokenData, username));
-  // The granted set, never the requested one: they differ exactly when something is wrong,
-  // and recording the request instead of the grant hides the only useful fact.
-  const grantedScopes = String(tokenData.scope || "");
-  const grantedDrive = driveAccessLevel({ scope: grantedScopes });
-  if (grantedDrive !== "full") {
-    console.warn(`[Google] ${username} connected without a Drive scope that can list files (granted: ${grantedScopes || "none"}). The Drive picker will have nothing to show until this is re-granted.`);
-  }
-  appendAuditLog({ user: { username } }, "google.connected", { scopes: grantedScopes, driveAccess: grantedDrive });
-  sendHtml(res, 200, `<!doctype html><html><body><script>if (window.opener) window.opener.postMessage({type:"google_connected"},"*"); window.close();</script><p>Google connected. You can close this tab.</p></body></html>`);
+  appendAuditLog({ user: { username } }, "google.connected", { scopes: tokenData.scope || GOOGLE_OAUTH_SCOPE });
+  sendHtml(res, 200, googleOauthCallbackHtml(true, "Google connected. You can close this window."));
+}
+
+function googleOauthCallbackHtml(success, message) {
+  const payload = JSON.stringify(success
+    ? { type: "google_connected" }
+    : { type: "google_oauth_error", message: String(message || "Google connection was not completed.") });
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Google connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);}setTimeout(function(){window.close();},150);</script></body></html>`;
 }
 
 async function handleQboAuth(req, res) {
@@ -6042,28 +6023,6 @@ function isGoogleDriveEnabled() {
   return Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 }
 
-/**
- * How much of Drive this token can actually see.
- *
- * The status endpoint used to ask whether the granted scopes contained the exact string
- * "drive.readonly". Two real grants fail that test while working perfectly against the API:
- * the broader ".../auth/drive", and a token refreshed under a consent screen configured for a
- * different Drive scope. The app then reported connected:false with working tokens, and every
- * upload box that checks the flag bounced the user back into the Google consent screen — which
- * is what "it says connected and then closes" looks like from the outside.
- *
- * "app-only" is the one that matters most: drive.file grants access only to files this app
- * itself created, so listing a real account returns nothing at all. Reported as its own level
- * rather than as connected, because an empty picker with no explanation is the worst outcome.
- */
-function driveAccessLevel(tokens) {
-  const granted = new Set(String(tokens?.scope || "").split(/\s+/).filter(Boolean));
-  if (granted.has(GOOGLE_DRIVE_SCOPE) || granted.has(GOOGLE_DRIVE_FULL_SCOPE)) return "full";
-  if (granted.has(GOOGLE_DRIVE_APPFILES_SCOPE)) return "app-only";
-  if (granted.has(GOOGLE_DRIVE_METADATA_SCOPE)) return "metadata";
-  return "none";
-}
-
 function googleTokenHasScope(tokens, scope) {
   const grantedScopes = String(tokens?.scope || "").split(/\s+/).filter(Boolean);
   return grantedScopes.includes(scope);
@@ -6075,10 +6034,6 @@ function normalizeGoogleTokens(tokenData = {}, username = "default") {
     access_token: tokenData.access_token || existing.access_token || "",
     refresh_token: tokenData.refresh_token || existing.refresh_token || "",
     token_type: tokenData.token_type || existing.token_type || "Bearer",
-    // Whatever Google actually granted, or what was granted before on a refresh — never the
-    // set we asked for. Falling back to GOOGLE_OAUTH_SCOPE meant a token that had only Drive
-    // recorded itself as also holding gmail.compose, so the app believed it could create a
-    // draft and only found out from a 403 at send time, with nothing pointing at the cause.
     scope: tokenData.scope || existing.scope || "",
     expiry_date: Date.now() + (Number(tokenData.expires_in || 3600) * 1000) - 60000,
   };
@@ -9431,33 +9386,18 @@ async function handleDriveApi(req, res, requestUrl) {
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/status") {
     const tokens = readGoogleTokens(username);
     const hasToken = Boolean(tokens?.refresh_token || tokens?.access_token);
-    const access = hasToken ? driveAccessLevel(tokens) : "none";
-    const driveAuthorized = access === "full";
+    const driveAuthorized = hasToken && googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE);
     const status = {
       enabled: isGoogleDriveEnabled(),
-      // Connected means there is a Google connection to use, not that the grant is the exact
-      // scope string this file prefers. Deciding it on scope granularity made every button
-      // that reads the flag bounce the user back into the consent screen while the API itself
-      // was answering fine. The scope level is reported alongside, for messages, not gates.
-      connected: hasToken,
+      connected: driveAuthorized,
       driveAuthorized,
-      driveAccess: access,
-      // Every granted scope, short-named, so a message can say what Google actually handed
-      // back. Filtering this to Drive hid the answer to "why did Gmail stop too". Scope names
-      // are not secrets; the token they came with is never sent anywhere near the browser.
       grantedScopes: hasToken
         ? String(tokens.scope || "").split(/\s+/).filter(Boolean).map((scope) => scope.replace("https://www.googleapis.com/auth/", "")).join(" ")
         : "",
-      // Signed in, but with a Drive scope that cannot see the account's own files. Worth its
-      // own flag: the picker has to explain this instead of rendering an empty folder.
-      limited: hasToken && (access === "app-only" || access === "metadata"),
       reconnectRequired: hasToken && !driveAuthorized,
       email: "",
     };
-    if (status.enabled && hasToken) {
-      // Also when access is limited or the token is stale: an account with four Google logins
-      // on the same machine needs to see WHICH one the picker is showing before an empty list
-      // means anything.
+    if (status.enabled && status.connected) {
       const profile = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username).then((r) => r.ok ? r.json() : {}).catch(() => ({}));
       status.email = profile.email || "";
     }
@@ -9465,13 +9405,33 @@ async function handleDriveApi(req, res, requestUrl) {
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/api/drive/picker-config") {
+    if (!isGoogleDriveEnabled()) {
+      sendJson(res, 503, { error: "Google is not configured on this server." });
+      return;
+    }
+    const tokens = readGoogleTokens(username);
+    if (!tokens || !googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE)) {
+      sendJson(res, 401, { error: "Reconnect Google and grant access to user-selected Drive files." });
+      return;
+    }
+    if (!GOOGLE_PICKER_API_KEY || !GOOGLE_CLOUD_PROJECT_NUMBER) {
+      sendJson(res, 503, { error: "Google Picker is not configured yet." });
+      return;
+    }
+    const accessToken = await getGoogleAccessToken(username);
+    res.setHeader("Cache-Control", "no-store");
+    sendJson(res, 200, {
+      apiKey: GOOGLE_PICKER_API_KEY,
+      appId: GOOGLE_CLOUD_PROJECT_NUMBER,
+      accessToken,
+    });
+    return;
+  }
+
   if (!isGoogleDriveEnabled()) { sendJson(res, 503, { enabled: false, connected: false, error: "Google Drive is not configured." }); return; }
-  // Only a missing connection stops a Drive call. A grant that turns out to be too narrow used
-  // to be refused here with a 403, and that turned "the picker opens and shows little" into
-  // "nothing opens at all" — a working path taken away to prevent a confusing one. Let Drive
-  // answer; when the answer is empty, the picker explains why, which is the honest version of
-  // the same information and costs nobody their working flow.
-  if (!readGoogleTokens(username)) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
+  const tokens = readGoogleTokens(username);
+  if (!tokens || !googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE)) { sendJson(res, 401, { enabled: true, connected: false, error: "Google Drive is not connected." }); return; }
 
   if (req.method === "GET" && requestUrl.pathname === "/api/drive/folders") {
     const parentId = requestUrl.searchParams.get("parentId") || "root";
@@ -12724,7 +12684,7 @@ async function handleDeliverableGmailStatus(req, res) {
 
 async function handleDeliverableSendGmail(req, res) {
   if (!GMAIL_SEND_ENABLED || !GOOGLE_OAUTH_SCOPE.includes(GOOGLE_GMAIL_SEND_SCOPE)) {
-    sendJson(res, 403, { error: "Direct Gmail sending is disabled. Create a Gmail draft, review it in Gmail, and send it from there." });
+    sendJson(res, 403, { error: "Gmail sending is disabled or the required permission is not configured." });
     return;
   }
   const payload = await readJsonBody(req);
@@ -12764,52 +12724,6 @@ async function handleDeliverableSendGmail(req, res) {
   }
   appendAuditLog(req, "gmail.sent", { to: payload.to, attachmentCount: (payload.attachments || []).length });
   sendJson(res, 200, { ok: true, messageId: data.id, threadId: data.threadId });
-}
-
-async function handleDeliverableCreateGmailDraft(req, res) {
-  const payload = await readJsonBody(req);
-  if (!payload.to || !payload.subject || (!payload.bodyHtml && !payload.bodyText)) {
-    sendJson(res, 400, { error: "Recipient, subject, and email body are required before creating a Gmail draft." });
-    return;
-  }
-  const totalSize = (payload.attachments || []).reduce((sum, item) => sum + Buffer.byteLength(String(item.contentBase64 || ""), "base64"), 0);
-  if (totalSize > 25 * 1024 * 1024) {
-    sendJson(res, 400, { error: "Total attachments exceed Gmail's 25MB limit. Consider sending Drive links instead." });
-    return;
-  }
-  const username = req.user?.username || "default";
-  const gmailStatus = await gmailAuthorizationStatus(username);
-  if (!gmailStatus.authorized) {
-    sendJson(res, 403, { error: "Gmail permission is not authorized. Reconnect Google and grant Gmail permission." });
-    return;
-  }
-  const rawEmail = buildMimeEmail({
-    to: payload.to,
-    cc: [payload.ccPreparer ? payload.preparerEmail : "", payload.cc].filter(Boolean).join(", "),
-    subject: payload.subject,
-    bodyText: payload.bodyText || htmlToPlainText(payload.bodyHtml || ""),
-    bodyHtml: payload.bodyHtml || plainTextToHtml(payload.bodyText || ""),
-    attachments: payload.attachments || [],
-  });
-  const encodedEmail = Buffer.from(rawEmail).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const response = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: { raw: encodedEmail } }),
-  }, username);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    sendJson(res, response.status, { error: data.error?.message || "Gmail could not create the draft." });
-    return;
-  }
-  const draftId = data.id || "";
-  appendAuditLog(req, "gmail.draft_created", { to: payload.to, attachmentCount: (payload.attachments || []).length });
-  sendJson(res, 200, {
-    ok: true,
-    draftId,
-    messageId: data.message?.id || "",
-    gmailUrl: "https://mail.google.com/mail/u/0/#drafts",
-  });
 }
 
 async function handleResearchChat(req, res) {
@@ -15358,29 +15272,15 @@ async function googleProfileEmail(username = "default") {
 async function gmailAuthorizationStatus(username = "default") {
   const tokens = readGoogleTokens(username);
   if (!tokens || !isGoogleDriveEnabled()) return { authorized: false, email: null };
+  if (!googleTokenHasScope(tokens, GOOGLE_GMAIL_SEND_SCOPE)) {
+    const email = await googleProfileEmail(username).catch(() => null);
+    return { authorized: false, email };
+  }
   const email = await googleProfileEmail(username).catch(() => null);
-  /*
-   * The recorded scope string is a hint, not the authority.
-   *
-   * It used to be the gate: no gmail.compose in the string, no Gmail. But that string can be
-   * thinner than the token really is — a grant stored before scopes were recorded, a refresh
-   * that omitted them, a re-consent that replaced the set — and when it is, a working Gmail
-   * turns into a section that is simply not there, with nothing on screen saying why. The very
-   * next line already conceded the point: it returns authorized when the profile call fails,
-   * because gmail.compose alone cannot read a profile.
-   *
-   * So only Gmail refusing counts as a refusal. Everything else lets the user try, and a real
-   * failure arrives as a real error at the moment they act, which they can act on.
-   */
   const profileRes = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username).catch(() => ({ ok: false, status: 0 }));
   if (profileRes.ok) {
     const profile = await profileRes.json().catch(() => ({}));
     return { authorized: true, email: profile.emailAddress || email };
-  }
-  if (profileRes.status === 401 || profileRes.status === 403) {
-    // Gmail itself says this token cannot act. Trust the recorded scope only to soften the
-    // verdict when it positively claims the permission is there.
-    return { authorized: String(tokens.scope || "").includes(GOOGLE_GMAIL_COMPOSE_SCOPE), email };
   }
   return { authorized: true, email };
 }
@@ -16121,7 +16021,7 @@ function servePrivacyPolicy(res) {
       <li><strong>Uploaded tax and financial materials:</strong> tax returns, workpapers, organizer files, notices, trial balances, financial statements, PDFs, spreadsheets, images, and other documents users submit for review, preparation, extraction, or analysis.</li>
       <li><strong>Client and workflow records:</strong> client names, entity details, tax years, return types, deadlines, tracker items, review findings, notes, firm library entries, generated drafts, and user-entered workflow data.</li>
       <li><strong>Accounting software data:</strong> when authorized by a user, the App may retrieve reports and related data from connected accounting platforms such as QuickBooks Online and Xero, including profit and loss reports, balance sheets, trial balances, accounts, contacts, and other report data needed for tax workflows.</li>
-      <li><strong>Google account data:</strong> when authorized by a user, the App may access selected Google services such as Google Drive file metadata/content selected by the user, Gmail draft/compose functionality, and the user's Google email address, depending on the scopes granted.</li>
+      <li><strong>Google account data:</strong> when authorized by a user, the App may read Google Drive files the user explicitly selects, send Gmail messages only after the user reviews and confirms them, and read the user's Google email address, depending on the scopes granted.</li>
       <li><strong>AI usage and cost data:</strong> model used, action type, token counts, estimated processing costs, timestamps, duration, and related operational metadata used for budgets, security, auditing, and service monitoring.</li>
       <li><strong>Technical and security logs:</strong> IP-derived request information, browser and device metadata, server logs, rate-limit events, error logs, audit events, and security diagnostics.</li>
       <li><strong>Access request data:</strong> information submitted through the "Request access" form, such as email, firm/company/person name, and estimated annual filed returns.</li>
@@ -16378,11 +16278,12 @@ function setSecurityHeaders(res) {
   res.setHeader("strict-transport-security", "max-age=31536000; includeSubDomains");
   res.setHeader("content-security-policy", [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' https://apis.google.com",
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
-    "connect-src 'self'",
+    "connect-src 'self' https://apis.google.com https://www.googleapis.com",
+    "frame-src 'self' https://accounts.google.com https://docs.google.com https://drive.google.com",
     "worker-src 'self' blob:",
     "frame-ancestors 'none'",
     "object-src 'none'",

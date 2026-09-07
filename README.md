@@ -97,20 +97,21 @@ CLAUDE_WEB_ALLOWED_DOMAINS=irs.gov,uscode.house.gov,ecfr.gov,ftb.ca.gov,tax.ny.g
 
 This requires Anthropic web search access on the account and a model that supports the tool. If web research is disabled, Claude is instructed not to claim it searched the internet.
 
-## Gmail Draft Setup
+## Google Drive and Gmail Setup
 
-For Google Drive file access and Gmail draft creation, request these scopes:
+Every Google integration uses the same exact OAuth grant. Configure only these scopes:
 
 ```text
 GOOGLE_CLIENT_ID=your_google_oauth_client_id
 GOOGLE_CLIENT_SECRET=your_google_oauth_client_secret
-GOOGLE_REDIRECT_URI=https://your-render-service.onrender.com/auth/google/callback
-GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose
-ENABLE_GMAIL_SEND=false
+GOOGLE_REDIRECT_URI=https://your-domain.com/auth/google/callback
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send
+GOOGLE_PICKER_API_KEY=your_restricted_browser_api_key
+GOOGLE_CLOUD_PROJECT_NUMBER=your_numeric_google_cloud_project_number
+ENABLE_GMAIL_SEND=true
 ```
 
-`gmail.compose` lets the app create a draft for the user to review and send in Gmail. Direct sending requires `gmail.send` and should only be enabled after Google OAuth verification.
-`drive.readonly` lets the app browse and read files selected from Google Drive without modifying them. Users who connected Google before this scope was added must reconnect once.
+`gmail.send` sends only after the user reviews the recipient, subject, body, and attachments and confirms the action. `drive.file` uses Google Picker so the app can read only files the user explicitly selects. Users connected with an older scope set must reconnect once.
 
 ## QuickBooks Online Setup
 
