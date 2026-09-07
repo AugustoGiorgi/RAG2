@@ -3853,7 +3853,9 @@ class DrivePicker {
       } else {
         const mimeTypes = drivePickerMimeTypes(config.allowedTypes || []);
         if (mimeTypes) view.setMimeTypes(mimeTypes);
-        view.setIncludeFolders(false);
+        // Show folders for navigation while keeping the final selection limited to files.
+        view.setIncludeFolders(true);
+        view.setSelectFolderEnabled(false);
       }
       if (config.folderId && config.folderId !== "root" && typeof view.setParent === "function") view.setParent(config.folderId);
       const builder = new google.picker.PickerBuilder()

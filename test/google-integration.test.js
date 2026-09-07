@@ -50,6 +50,7 @@ test("every Drive entry point uses the shared OAuth gate and official Google Pic
   assert.match(app, /return runWithGooglePermission\("drive", action\)/);
   assert.match(app, /sources\.includes\("drive"\).*googleCapabilityReady\("drive"\)/);
   assert.match(app, /new google\.picker\.PickerBuilder\(\)/);
+  assert.match(app, /view\.setIncludeFolders\(true\);\s*view\.setSelectFolderEnabled\(false\);/);
   assert.match(app, /\/api\/drive\/picker-config/);
   assert.match(app, /Loading \$\{fileName\} from Google Drive/);
   assert.match(server, /requestUrl\.pathname === "\/api\/drive\/picker-config"/);
