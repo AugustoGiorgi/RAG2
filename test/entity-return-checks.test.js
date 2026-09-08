@@ -538,3 +538,44 @@ test("y los renglones con importes de verdad siguen sumando igual", () => {
   assert.strictEqual(depreciationDeducted(conLinea14("14 Depreciation (see instructions). . . . . . . . 14                    3,058.  10,544.")), 13602);
   assert.strictEqual(depreciationDeducted(conLinea14("14 Depreciation (see instructions). . . . . . . . 14   9,400.")), 9400);
 });
+
+/* --- Las letras del margen del 1065 ------------------------------------ */
+
+// La palabra DEDUCTIONS va impresa en vertical en el margen izquierdo del formulario, y
+// pdf.js entrega cada letra a la fila de texto mas cercana. La linea de depreciacion llega
+// entonces como "U O 16 a Depreciation (...)" -- ningun ancla ^\s*16 la engancha -- y el
+// importe cae en la linea SIGUIENTE, "C R 53,195.". Leyendo solo la linea de la etiqueta, una
+// sociedad que dedujo $53,195 devolvia null, y el cruce que dependia de eso no disparo nunca
+// sobre una sociedad. Montos ficticios; el layout es el que produce pdf.js en produccion.
+const CON_MARGEN = (importe) => `U.S. Return of Partnership Income 2025
+U O 16 a Depreciation (if required, attach Form 4562) . . . . . . . . . . . 16a
+C R ${importe}
+T b Less depreciation reported on Form 1125-A and elsewhere on return . . . . 16b 16c
+b Less accumulated depreciation . . . . . . . . . . . . . 210,400. 61,900. 268,300. 43,100.
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("el importe que quedo en la linea siguiente se lee igual", () => {
+  assert.strictEqual(depreciationDeducted(CON_MARGEN("57,900.")), 57900);
+});
+
+test("y si de verdad no hay importe, no se inventa uno", () => {
+  assert.strictEqual(depreciationDeducted(CON_MARGEN("")), null);
+});
+
+test("la continuacion tiene que ser una continuacion, no el renglon siguiente", () => {
+  // Sin el importe, la linea de abajo es "T b Less depreciation ... 16b 16c": si se tomara
+  // como continuacion, el 16 de la casilla se leeria como un importe.
+  const sinImporte = CON_MARGEN("").replace("C R\n", "");
+  assert.strictEqual(depreciationDeducted(sinImporte), null);
+});
+
+test("el cruce de la reserva ya puede disparar sobre una sociedad", () => {
+  // Reserva 210,400 -> 268,300 son 57,900, igual a lo deducido: silencio.
+  assert.strictEqual(checkAccumulatedDepreciationRollforward(CON_MARGEN("57,900.")), null);
+  // Y con la reserva movida de otra forma, aparece.
+  const roto = CON_MARGEN("57,900.").replace("268,300. 43,100.", "240,000. 43,100.");
+  const finding = checkAccumulatedDepreciationRollforward(roto);
+  assert.ok(finding, "el cruce sigue sin poder leer una sociedad");
+  assert.match(finding.detail, /\$57,900\.00/);
+  assert.match(finding.detail, /\$29,600\.00/);
+});
