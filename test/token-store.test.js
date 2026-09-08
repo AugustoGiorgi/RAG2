@@ -39,10 +39,14 @@ function build(key) {
 
 test("ida y vuelta con la clave correcta", () => {
   const { encryptUserMap, decryptUserMap } = build("clave-de-prueba");
-  const original = { ana: { access_token: "a1", scope: "drive gmail" }, beto: { access_token: "b2" } };
+  // Tokens largos a proposito: el test afirma que el texto plano NO aparece en el archivo,
+  // y con un valor de dos caracteres esa cadena sale por azar adentro del base64 del cifrado.
+  // Fallaba dos de cada diez corridas, que es lo que hace que "todos los tests pasan" no
+  // signifique nada cuando de verdad se rompe algo.
+  const original = { ana: { access_token: "ya29-token-de-ana-no-debe-verse", scope: "drive gmail" }, beto: { access_token: "ya29-token-de-beto-tampoco" } };
   const guardado = encryptUserMap(original);
   assert.strictEqual(guardado.ana.encrypted, true, "debe quedar cifrado en disco");
-  assert.ok(!JSON.stringify(guardado).includes("a1"), "el token no puede quedar legible en el archivo");
+  assert.ok(!JSON.stringify(guardado).includes("ya29-token-de-ana"), "el token no puede quedar legible en el archivo");
   assert.deepStrictEqual(decryptUserMap(guardado), original);
 });
 
