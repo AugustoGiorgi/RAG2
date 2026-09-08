@@ -14,7 +14,7 @@ const {
   checkJurisdictionDropped, checkAccountingMethodChanged, checkCashMethodWithGrowingPayables, accountingMethod,
   checkScheduleM1TiesToBooks, checkClosingInventoryMissing,
   checkSpecifiedServiceQbi, qbiBusinesses, qbiCeiling,
-  checkUnrecapturedGainNotCarried, unrecapturedGainOnK1s,
+  checkUnrecapturedGainNotCarried, unrecapturedGainOnK1s, checkNiitDispositionAdjustment,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -630,4 +630,77 @@ test("varios K-1 con codigo AD se suman", () => {
   // Dos K-1, no cuatro: la fila del Form 8308 ("... 84,300. AD") no cuenta como codigo, solo
   // la linea propia del codigo, asi que la misma cifra no se suma dos veces por documento.
   assert.match(finding.detail, /across 2 K-1s/);
+});
+
+/* --- 14. La ganancia que sale del NIIT sin calculo detras --------------- */
+
+// De un 1040 real: la linea 5c sacaba $9,367,130 de una ganancia de $9,548,612 -- el 98% -- y
+// el paquete no tenia ni una cedula de venta ficticia ni una mencion de "section 1411
+// property". Al 3.8% esa linea vale $355,951, el numero mas grande de la declaracion y el que
+// menos respaldo tenia. Montos ficticios.
+const F8960 = ({ ajuste = "-4,180,900.", ganancia = "4,266,300." } = {}) => `
+Form 8960 Net Investment Income Tax
+5a Net gain or loss from disposition of property (see instructions) . . . . . . . 5a ${ganancia}
+b Net gain or loss from disposition of property that is not subject to
+net investment income tax (see instructions) . . . . . . . . . . . . . . . . . . 5b
+c Adjustment from disposition of partnership interest or S corporation
+stock (see instructions) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5c ${ajuste}
+d Combine lines 5a through 5c . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5d 85,400.
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("un ajuste grande sin nada que lo explique", () => {
+  const finding = checkNiitDispositionAdjustment(F8960(), [{ name: "return.pdf", fullText: F8960() }]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$4,180,900\.00/);
+  assert.match(finding.detail, /98% of the \$4,266,300\.00/);
+  // Lo que vale al 3.8%, que es de lo que se trata.
+  assert.match(finding.detail, /\$158,874\.20/);
+  assert.match(finding.authority, /1411\(c\)\(4\)/);
+});
+
+test("con el calculo en el paquete se calla", () => {
+  const files = [
+    { name: "return.pdf", fullText: F8960() },
+    { name: "schedule.pdf", fullText: "Section 1411 property deemed sale schedule for the disposition" },
+  ];
+  assert.strictEqual(checkNiitDispositionAdjustment(F8960(), files), null);
+});
+
+test("y tambien si el calculo esta en la propia declaracion", () => {
+  const conCedula = `${F8960()}\nSTATEMENT 9 - REG. 1.1411-7 DEEMED SALE COMPUTATION`;
+  assert.strictEqual(checkNiitDispositionAdjustment(conCedula, [{ name: "r.pdf", fullText: conCedula }]), null);
+});
+
+test("un ajuste chico no necesita una cedula", () => {
+  const chico = F8960({ ajuste: "-40,000." });
+  assert.strictEqual(checkNiitDispositionAdjustment(chico, [{ name: "r.pdf", fullText: chico }]), null);
+});
+
+test("sin Form 8960 no hay linea 5c de la cual hablar", () => {
+  const sin8960 = `U.S. Individual Income Tax Return 2025\n${"relleno. ".repeat(30)}`;
+  assert.strictEqual(checkNiitDispositionAdjustment(sin8960, [{ name: "r.pdf", fullText: sin8960 }]), null);
+});
+
+test("el Form 8308 dice \"deemed sale\" por otra cosa y no cuenta como evidencia", () => {
+  // Form 8308 titula sus columnas "Partnership-level deemed sale gain (loss)": eso es la
+  // cuenta del 751, otra disposicion. Con la frase suelta como evidencia, cualquier paquete
+  // que trajera un 8308 parecia traer una cedula del 1411 y el cruce se callaba justo en la
+  // declaracion que lo necesitaba.
+  const con8308 = [{
+    name: "Support.zip",
+    fullText: `--- ZIP ENTRY: Partnership K1.pdf ---
+Form 8308 Report of a Sale or Exchange of Certain Partnership Interests
+Part IV Partner's Share of Gain (Loss) Required by Sections 751(a) and 1(h)(5) and (6)
+(a) Partnership-level (b1) Percentage interest (c) Partner-level deemed
+deemed sale gain (loss) in the partnership sale gain (loss)
+1 Section 751(a) gain (loss) . . . . . . AB`,
+  }];
+  const finding = checkNiitDispositionAdjustment(F8960(), [{ name: "r.pdf", fullText: F8960() }, ...con8308]);
+  assert.ok(finding, "el 8308 se leyo como si fuera la cedula del 1411");
+});
+
+test("pero una cedula del 1411 de verdad si lo calla", () => {
+  const cedula = [{ name: "wp.pdf", fullText: "Reg. 1.1411-7 deemed sale computation for the disposition" }];
+  assert.strictEqual(checkNiitDispositionAdjustment(F8960(), [{ name: "r.pdf", fullText: F8960() }, ...cedula]), null);
 });
