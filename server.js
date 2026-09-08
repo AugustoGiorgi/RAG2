@@ -22,7 +22,7 @@ const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10575,6 +10575,13 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
+    // Lo que el modelo dedujo por su cuenta y ya esta computado de los formularios se dice una
+    // sola vez arriba. No se borra: baja a BAJO y dice a cual repite.
+    const repeated = foldFindingsRepeatedBy(normalized.issues, bridged);
+    if (repeated.folded) {
+      normalized.issues = repeated.issues;
+      console.log(`[Review] ${repeated.folded} model finding(s) repeat a deterministic one; lowered to LOW.`);
+    }
     const seen = new Set(normalized.issues.map((i) => String(i?.issueDescription || "").slice(0, 60).toLowerCase()));
     for (const finding of bridged) {
       if (seen.has(String(finding.detail).slice(0, 60).toLowerCase())) continue;

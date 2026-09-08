@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, verifySupportCoverage, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, verifySupportCoverage, foldFindingsRepeatedBy, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -654,4 +654,60 @@ test("solo cuenta el soporte legible", () => {
   for (let i = 1; i <= 38; i++) files[i].fullText = "";
   // Quedan 3 legibles: por debajo del minimo, no hay nada que concluir.
   assert.strictEqual(verifySupportCoverage({ issues: [hallazgoSobreSoporte()] }, files).corrected, 0);
+});
+
+/* --- El hallazgo del modelo que repite uno determinista ----------------- */
+
+// De un 1065 real. Arriba del informe se leia "Schedule L does not balance" dos veces, con
+// las mismas tres cifras, y "cambio el metodo contable sin Form 3115" dos veces. Dos ALTOS
+// diciendo una sola cosa hacen que un informe de veinte parezca descuidado, y el lector tiene
+// que darse cuenta solo de que son el mismo item. Montos ficticios.
+const DETERMINISTA = {
+  severity: "HIGH",
+  title: "Schedule L does not balance",
+  detail: "The balance sheet closes with $937,579.00 of assets against $1,209,181.00 of liabilities and capital, out by $271,602.00.",
+  dedupe: /schedule l (?:does not|doesn't) balance|balance sheet does not balance/i,
+};
+const REPETIDO = () => ({
+  priority: "HIGH",
+  formOrSchedule: "Balance Sheet — Form 1065 Schedule L",
+  issueDescription: "Schedule L does not balance: ending assets $937,579 but ending liabilities + capital $1,209,181, difference of $271,602.",
+  evidence: "Schedule L page 6 line 14 = $937,579; line 22 = $1,209,181.",
+});
+const OTRO = () => ({
+  priority: "HIGH",
+  formOrSchedule: "Other deductions",
+  issueDescription: "$27,467 of credit card payments expensed as an operating deduction.",
+  evidence: "Other deductions statement.",
+});
+
+test("el que repite baja a BAJO y dice a cual repite", () => {
+  const r = foldFindingsRepeatedBy([REPETIDO(), OTRO()], [DETERMINISTA]);
+  assert.strictEqual(r.folded, 1);
+  assert.strictEqual(r.issues[0].priority, "LOW");
+  assert.match(r.issues[0].riskAnalysis, /REPEATS AN AUTOMATED FINDING/);
+  assert.match(r.issues[0].riskAnalysis, /Schedule L does not balance/);
+  assert.strictEqual(r.issues[0].contradictedByGuard, true);
+  // Y el que no repite nada se queda donde estaba.
+  assert.strictEqual(r.issues[1].priority, "HIGH");
+});
+
+test("hace falta el tema Y una cifra compartida, nunca uno solo", () => {
+  // Mismo tema, cifras de otro cliente: no es el mismo hallazgo.
+  const otrasCifras = { ...REPETIDO(), issueDescription: "Schedule L does not balance: assets $50,000 vs $61,000.", evidence: "" };
+  assert.strictEqual(foldFindingsRepeatedBy([otrasCifras], [DETERMINISTA]).folded, 0);
+  // Misma cifra, otro tema: tampoco.
+  const otroTema = { ...OTRO(), issueDescription: "Depreciation of $271,602 was claimed twice." };
+  assert.strictEqual(foldFindingsRepeatedBy([otroTema], [DETERMINISTA]).folded, 0);
+});
+
+test("una cifra chica compartida es una coincidencia", () => {
+  const chico = { severity: "HIGH", title: "x", detail: "out by $240.00", dedupe: /schedule l/i };
+  const issue = { priority: "HIGH", issueDescription: "Schedule L shows $240 of rounding.", evidence: "" };
+  assert.strictEqual(foldFindingsRepeatedBy([issue], [chico]).folded, 0);
+});
+
+test("un determinista sin patron propio no pliega nada", () => {
+  const sinPatron = { ...DETERMINISTA, dedupe: undefined };
+  assert.strictEqual(foldFindingsRepeatedBy([REPETIDO()], [sinPatron]).folded, 0);
 });
