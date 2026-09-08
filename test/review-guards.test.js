@@ -530,3 +530,49 @@ test("nombrar un recibo no apaga el guard sobre otra cifra de la misma frase", (
   const mixto = "Receipts were provided for the meals. Separately, the return omits $9,400 of interest income reported in the books.";
   assert.deepStrictEqual(claimedAmounts(mixto), [9400]);
 });
+
+/* --- Una carpeta de soporte no es un libro de Excel --------------------- */
+
+// De una revision real de un 1040. El soporte del cliente llego como un ZIP con cuarenta
+// documentos, dos de ellos Excel. El texto agregado del ZIP traia entonces un "--- Sheet:",
+// con lo cual el bundle entero parecia un libro, y el guard se puso a leer letra chica de
+// formularios. "penalt(y|ies)" esta en el vocabulario de etiquetas -- con razon, "Add:
+// Penalties" es una fila de conciliacion -- y esta en el pie de casi cualquier declaracion.
+const ZIP_DE_SOPORTE = {
+  name: "Support-20260908.zip",
+  reviewRole: "supporting_document",
+  fullText: `--- Sheet: Expense Checklist ---
+Category,Amount
+Meals,1200
+--- Page 3 ---
+a negligence penalty or other sanction may be imposed on you if this income is taxable
+Under penalties of perjury, I declare that I have examined this return
+Book to Tax Reconciliation
+taxable income`,
+};
+
+test("la letra chica de un PDF adentro del ZIP no es un ajuste olvidado", () => {
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([ZIP_DE_SOPORTE]), []);
+  assert.strictEqual(checkUnusedReconcilingLines([ZIP_DE_SOPORTE]), null);
+});
+
+test("pero una fila de hoja con etiqueta y sin importe se sigue viendo", () => {
+  const libro = {
+    name: "workpaper.xlsx",
+    fullText: `--- Sheet: Book to Tax Reconciliation ---
+Book-to-Tax Reconciliation,,
+,Add: Meals 50%,,
+,Taxable Income,"74,808.61",`,
+  };
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([libro]), [{ label: "Add: Meals 50%", source: "workpaper.xlsx" }]);
+});
+
+test("una oracion no es una etiqueta, aunque contenga la palabra", () => {
+  const narrado = {
+    name: "wp.xlsx",
+    fullText: `--- Sheet: Reconciliation ---
+"Under penalties of perjury the taxpayer declares that meals were excluded",,
+`,
+  };
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([narrado]), []);
+});
