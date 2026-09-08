@@ -14,6 +14,7 @@ const {
   checkJurisdictionDropped, checkAccountingMethodChanged, checkCashMethodWithGrowingPayables, accountingMethod,
   checkScheduleM1TiesToBooks, checkClosingInventoryMissing,
   checkSpecifiedServiceQbi, qbiBusinesses, qbiCeiling,
+  checkUnrecapturedGainNotCarried, unrecapturedGainOnK1s,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -562,4 +563,71 @@ C BAYFRONT INDUSTRIAL CAPITAL LLC 20-3569075` });
 test("una fila cortada que dejo solo un identificador no es un negocio", () => {
   const cortada = F8995A({ negocios: "B 93-2752833 93-2752833" });
   assert.deepStrictEqual(qbiBusinesses(cortada), []);
+});
+
+/* --- 13. La ganancia al 25% que el K-1 reporta y la declaracion no ------ */
+
+// De la venta de una practica medica en un 1040 real. El K-1 traia "AD 97,475." en la casilla
+// 20 y la cifra no aparecia ni una vez en la declaracion: linea 19 en blanco, linea 20
+// contestada "si, las dos en cero", y toda la ganancia al 20%. Montos ficticios.
+const K1_CON_AD = (importe) => ({
+  name: "Support.zip",
+  reviewRole: "supporting_document",
+  fullText: `--- ZIP ENTRY: Partnership K1.pdf ---
+9a Net long-term capital gain (loss)
+20 Other information
+AD ${importe}
+Section 1 (h)(6) unrecaptured
+section 1250 gain . . . . . . . 742,300. 11.3122 ${importe} AD`,
+});
+
+const DECLARACION = ({ linea19 = "" } = {}) => `U.S. Individual Income Tax Return 2025
+SCHEDULE D Capital Gains and Losses
+15 Net long-term capital gain or (loss) . . . . . . . . . . . . . . . . . . 15 4,220,100.
+18 If you are required to complete the 28% Rate Gain Worksheet . . . . . . 18 0.
+19 If you are required to complete the Unrecaptured Section 1250 Gain Worksheet (see
+instructions), enter the amount, if any, from line 18 of that worksheet . . . . . . . . 19 ${linea19}
+20 Are lines 18 and 19 both zero or blank and you are not filing Form 4952?
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+test("el codigo AD del K-1 que no llego a la linea 19", () => {
+  const finding = checkUnrecapturedGainNotCarried(DECLARACION(), [K1_CON_AD("84,300.")]);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /\$84,300\.00/);
+  assert.match(finding.detail, /25%/);
+  assert.match(finding.authority, /code AD/);
+});
+
+test("si la linea 19 lo lleva, no hay nada que decir", () => {
+  assert.strictEqual(checkUnrecapturedGainNotCarried(DECLARACION({ linea19: "84,300." }), [K1_CON_AD("84,300.")]), null);
+});
+
+test("una linea 19 vacia imprime su propio numero de casilla", () => {
+  // Sin la guarda, el "19" del margen se leeria como diecinueve dolares en la linea.
+  const finding = checkUnrecapturedGainNotCarried(DECLARACION({ linea19: "" }), [K1_CON_AD("84,300.")]);
+  assert.ok(finding, "leyo el 19 de la casilla como un importe");
+});
+
+test("sin codigo AD en el paquete no se reclama nada", () => {
+  const sinAd = { name: "Support.zip", fullText: "--- ZIP ENTRY: K1.pdf ---\n20 Other information\nAJ 108,343." };
+  assert.strictEqual(checkUnrecapturedGainNotCarried(DECLARACION(), [sinAd]), null);
+});
+
+test("sin Schedule D no hay linea de la cual falte", () => {
+  const sinD = `U.S. Individual Income Tax Return 2025\n${"relleno. ".repeat(30)}`;
+  assert.strictEqual(checkUnrecapturedGainNotCarried(sinD, [K1_CON_AD("84,300.")]), null);
+});
+
+test("una cifra de redondeo no mueve la tasa lo suficiente", () => {
+  assert.strictEqual(checkUnrecapturedGainNotCarried(DECLARACION(), [K1_CON_AD("420.")]), null);
+});
+
+test("varios K-1 con codigo AD se suman", () => {
+  const finding = checkUnrecapturedGainNotCarried(DECLARACION(), [K1_CON_AD("84,300."), K1_CON_AD("15,700.")]);
+  assert.ok(finding);
+  assert.match(finding.detail, /\$100,000\.00/);
+  // Dos K-1, no cuatro: la fila del Form 8308 ("... 84,300. AD") no cuenta como codigo, solo
+  // la linea propia del codigo, asi que la misma cifra no se suma dos veces por documento.
+  assert.match(finding.detail, /across 2 K-1s/);
 });
