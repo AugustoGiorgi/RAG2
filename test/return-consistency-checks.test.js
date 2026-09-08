@@ -13,6 +13,7 @@ const {
   checkPaymentsWithNoFilingQuestion, checkDeferredRevenueOnAccrual,
   checkJurisdictionDropped, checkAccountingMethodChanged, checkCashMethodWithGrowingPayables, accountingMethod,
   checkScheduleM1TiesToBooks, checkClosingInventoryMissing,
+  checkSpecifiedServiceQbi, qbiBusinesses, qbiCeiling,
 } = require("../lib/return-consistency-checks");
 
 // Las respuestas Si/No llegan anotadas por pdfPageLines: la columna donde estaba la tilde.
@@ -489,4 +490,76 @@ test("un solo workpaper no necesita desempate", () => {
   const finding = checkScheduleM1TiesToBooks(GASTRO_1065(), [{ ...LIBRO_ACTUAL, name: "wp.xlsx" }], "2025");
   assert.ok(finding);
   assert.match(finding.detail, /-\$203,470\.55/);
+});
+
+/* --- 12. El negocio de servicio especificado que no esta marcado -------- */
+
+// De un 1040 real con $13,505,921 de ingreso gravable antes de QBI. La practica medica estaba
+// en el Part I con la casilla (b) en blanco y producia $393,278 de los $400,165 de deduccion,
+// y el Schedule A del 8995-A -- la cedula que existe justamente para los servicios
+// especificados -- no estaba en el paquete. Entidades y montos ficticios.
+const F8995A = ({ negocios = "", deduccion = "400,165.", gravable = "13,505,921." } = {}) => `
+Form 8995-A Qualified Business Income Deduction
+Part I Trade, Business, or Aggregation Information
+(b) Check if (c) Check if (d) Taxpayer (e) Check if
+1 (a) Trade, business, or aggregation name
+specified service aggregation identification number patron
+${negocios}
+Part II Determine Your Adjusted Qualified Business Income
+21 Threshold. Enter $197,300
+($394,600 if married filing
+jointly) . . . . . . . . . . . . . . . . . . . . 21
+23 Phase-in range. Enter $50,000
+($100,000 if married filing jointly) . 23
+33 Taxable income before qualified business income deduction . . . . . . . 33 ${gravable}
+39 Total qualified business income deduction. Add lines 37 and 38 . . . . . 39 ${deduccion}
+${"relleno para el largo minimo. ".repeat(20)}`;
+
+const CON_PRACTICA = F8995A({ negocios: `A NORTHRIDGE HOLDINGS LLC 86-1264790
+B SIERRA VISTA RETINA MEDICAL GROUP 95-3699305
+C SIERRA VISTA MSO LLC 39-5149730` });
+
+test("el techo se lee del propio formulario, no de una tabla en el codigo", () => {
+  assert.strictEqual(qbiCeiling(CON_PRACTICA), 494600);
+});
+
+test("una practica medica sin la casilla tildada, por encima del techo", () => {
+  const finding = checkSpecifiedServiceQbi(CON_PRACTICA);
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "HIGH");
+  assert.match(finding.detail, /SIERRA VISTA RETINA MEDICAL GROUP/);
+  assert.match(finding.detail, /\$400,165\.00/);
+  assert.match(finding.detail, /\$494,600\.00/);
+  assert.match(finding.authority, /Schedule A/);
+});
+
+test("un MSO esta armado justamente para no serlo, y no se marca", () => {
+  assert.doesNotMatch(checkSpecifiedServiceQbi(CON_PRACTICA).detail, /MSO/);
+});
+
+test("con la casilla tildada no hay nada que decir", () => {
+  const tildada = F8995A({ negocios: "B SIERRA VISTA RETINA MEDICAL GROUP X 95-3699305" });
+  assert.strictEqual(checkSpecifiedServiceQbi(tildada), null);
+});
+
+test("por debajo del techo la distincion no decide la deduccion", () => {
+  const bajo = F8995A({ negocios: "B SIERRA VISTA RETINA MEDICAL GROUP 95-3699305", gravable: "310,000." });
+  assert.strictEqual(checkSpecifiedServiceQbi(bajo), null);
+});
+
+test("sin deduccion no hay nada en juego", () => {
+  const sinDeduccion = F8995A({ negocios: "B SIERRA VISTA RETINA MEDICAL GROUP 95-3699305", deduccion: "" });
+  assert.strictEqual(checkSpecifiedServiceQbi(sinDeduccion), null);
+});
+
+test("los negocios que no nombran una profesion no se tocan", () => {
+  const inmuebles = F8995A({ negocios: `A NORTHRIDGE HOLDINGS LLC 86-1264790
+B CANYON INVESTMENT 501 LLC 39-3543163
+C BAYFRONT INDUSTRIAL CAPITAL LLC 20-3569075` });
+  assert.strictEqual(checkSpecifiedServiceQbi(inmuebles), null);
+});
+
+test("una fila cortada que dejo solo un identificador no es un negocio", () => {
+  const cortada = F8995A({ negocios: "B 93-2752833 93-2752833" });
+  assert.deepStrictEqual(qbiBusinesses(cortada), []);
 });
