@@ -522,3 +522,19 @@ test("el balance de un 1120-S se lee, aunque los totales esten en la linea 15", 
 test("y si el 1120-S cierra, se calla", () => {
   assert.strictEqual(checkBalanceSheetBalances(CORP_1120S()), null);
 });
+
+/* --- El numero de casilla no es un importe, tampoco en el 8825 ---------- */
+
+// La rama federal se guardo de esto cuando una IT-204 de Nueva York hizo leer "$18" de
+// depreciacion; la rama del Form 8825 quedo sin la misma guarda una linea mas arriba, y una
+// declaracion real reportaba $14 de depreciacion sobre un renglon vacio.
+const conLinea14 = (linea) => `Form 8825 Rental Real Estate Income\n${linea}\n${"relleno. ".repeat(20)}`;
+
+test("un renglon 14 vacio del 8825 no vale catorce dolares", () => {
+  assert.strictEqual(depreciationDeducted(conLinea14("14 Depreciation (see instructions). . . . . . . . 14")), null);
+});
+
+test("y los renglones con importes de verdad siguen sumando igual", () => {
+  assert.strictEqual(depreciationDeducted(conLinea14("14 Depreciation (see instructions). . . . . . . . 14                    3,058.  10,544.")), 13602);
+  assert.strictEqual(depreciationDeducted(conLinea14("14 Depreciation (see instructions). . . . . . . . 14   9,400.")), 9400);
+});
