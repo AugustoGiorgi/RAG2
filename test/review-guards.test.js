@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, verifySupportCoverage, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -575,4 +575,83 @@ test("una oracion no es una etiqueta, aunque contenga la palabra", () => {
 `,
   };
   assert.deepStrictEqual(reconcilingLinesWithoutAmounts([narrado]), []);
+});
+
+/* --- "El soporte no lo muestra", dicho tras abrir dos de cuarenta ------- */
+
+// De un 1040 real con cuarenta y un documentos de soporte. La revision produjo cuatro ALTOS
+// con la misma forma -- sueldos de $1,470,470 contra "W-3 total $247,200", una ganancia de
+// $9,561,242 con "no 1099-B support", Schedule E de $2,797,588 contra "K-1 total $9,691" --
+// y las tres diferencias estaban explicadas adentro del paquete, en los documentos que no
+// abrio. Montos y entidades ficticios.
+const soporteGrande = (cuantos) => {
+  const files = [{ name: "return.pdf", reviewRole: "primary_return", fullText: "y".repeat(500) }];
+  for (let i = 1; i <= cuantos; i++) files.push({ name: `Alpha${i} Bravo Charlie.pdf`, reviewRole: "supporting_document", fullText: "x".repeat(200) });
+  return files;
+};
+const hallazgoSobreSoporte = () => ({
+  priority: "HIGH",
+  issueDescription: "Schedule E Line 30 shows $2,797,588 but K-1 total is $9,691; difference of $2,787,897 is unexplained.",
+  evidence: "K-1 ordinary income: Koosed Capital $9,316.",
+  source: "",
+});
+const hallazgoSobreLaDeclaracion = () => ({
+  priority: "HIGH",
+  issueDescription: "Schedule L does not balance: assets $937,579 against liabilities and capital $1,209,181.",
+  evidence: "Schedule L page 6.",
+  source: "",
+});
+
+test("un hallazgo apoyado en soporte que no se abrio baja a BAJO", () => {
+  const r = verifySupportCoverage({ issues: [hallazgoSobreSoporte()] }, soporteGrande(41));
+  assert.strictEqual(r.corrected, 1);
+  assert.strictEqual(r.support, 41);
+  assert.strictEqual(r.named, 0);
+  assert.strictEqual(r.issues[0].priority, "LOW");
+  assert.match(r.issues[0].riskAnalysis, /names 0 of the 41/);
+  // Sobrevive al recorte de conciseness, como los demas guards.
+  assert.strictEqual(r.issues[0].contradictedByGuard, true);
+});
+
+test("un hallazgo sobre la declaracion misma no depende de cuanto soporte se leyo", () => {
+  const r = verifySupportCoverage({ issues: [hallazgoSobreLaDeclaracion()] }, soporteGrande(41));
+  assert.strictEqual(r.corrected, 0);
+  assert.strictEqual(r.issues[0].priority, "HIGH");
+});
+
+test("un paquete chico no tiene fraccion de la que hablar", () => {
+  const chico = [
+    { name: "return.pdf", reviewRole: "primary_return", fullText: "y".repeat(500) },
+    { name: "workpaper.xlsx", reviewRole: "supporting_document", fullText: "x".repeat(200) },
+  ];
+  assert.strictEqual(verifySupportCoverage({ issues: [hallazgoSobreSoporte()] }, chico).corrected, 0);
+});
+
+test("si la revision nombro la mayor parte del soporte, no se toca nada", () => {
+  const files = soporteGrande(8);
+  const review = {
+    issues: [hallazgoSobreSoporte()],
+    verifiedItems: Array.from({ length: 7 }, (_, i) => `Alpha${i + 1} Bravo Charlie shows $100.`),
+  };
+  const r = verifySupportCoverage(review, files);
+  assert.strictEqual(r.corrected, 0);
+  assert.strictEqual(r.issues[0].priority, "HIGH");
+});
+
+test("documentsRead no cuenta: es lo que el modelo dice que abrio", () => {
+  // Nombrar los archivos en documentsRead no es evidencia de haberlos leido; la revision
+  // tiene que citarlos en su propia prosa.
+  const files = soporteGrande(41);
+  const review = {
+    issues: [hallazgoSobreSoporte()],
+    documentsRead: files.map((f) => ({ filename: f.name })),
+  };
+  assert.strictEqual(verifySupportCoverage(review, files).corrected, 1);
+});
+
+test("solo cuenta el soporte legible", () => {
+  const files = soporteGrande(41);
+  for (let i = 1; i <= 38; i++) files[i].fullText = "";
+  // Quedan 3 legibles: por debajo del minimo, no hay nada que concluir.
+  assert.strictEqual(verifySupportCoverage({ issues: [hallazgoSobreSoporte()] }, files).corrected, 0);
 });

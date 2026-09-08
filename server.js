@@ -22,7 +22,7 @@ const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10527,6 +10527,15 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     console.log(`[Review] ${workpaper.corrected} finding(s) called a figure unexplained that the workpaper carries; lowered to LOW.`);
   }
 
+  // And the error that is not about one document but about how much of the package was opened:
+  // a finding that rests on the support not showing something, written by a review that names
+  // a handful of forty-one supporting documents, is a reading rather than a discrepancy.
+  const supportCoverage = verifySupportCoverage(normalized, payload?.files);
+  if (supportCoverage.corrected) {
+    normalized.issues = supportCoverage.issues;
+    console.log(`[Review] ${supportCoverage.corrected} finding(s) rest on absent support while the review names ${supportCoverage.named} of ${supportCoverage.support} supporting documents; lowered to LOW.`);
+  }
+
   // Reported into the review itself, findings or none — the same reason the cross-year inputs
   // are logged unconditionally further down. A guard that quietly does not run looks exactly
   // like a guard with nothing to correct, and telling the two apart cost a round-trip of
@@ -10535,13 +10544,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["contradicted by the return", absence.corrected],
     ["contradicted by the package", attachments.corrected],
     ["contradicted by the workpaper", workpaper.corrected],
+    ["resting on support the review did not open", supportCoverage.corrected],
   ];
   const guardTotal = guardCounts.reduce((sum, [, count]) => sum + count, 0);
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
     guardTotal
       ? `AUTOMATED GUARDS: ${guardTotal} finding(s) lowered to LOW after being checked against the documents — ${guardCounts.filter(([, n]) => n).map(([label, n]) => `${n} ${label}`).join(", ")}. Each one keeps its original text with the contradiction alongside it.`
-      : "AUTOMATED GUARDS: ran over every finding and none was contradicted by the return, the package or the workpaper.",
+      : "AUTOMATED GUARDS: ran over every finding and none was contradicted by the return, the package, the workpaper or the share of the support that was actually read.",
   );
 
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
