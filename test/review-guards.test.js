@@ -9,7 +9,7 @@
 // cifra de comidas en su propia evidencia.
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, verifySupportCoverage, foldFindingsRepeatedBy, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims, reconcilingLinesWithoutAmounts } = require("../lib/review-guards");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyContinuityClaims, checkUnusedReconcilingLines, verifySupportCoverage, foldFindingsRepeatedBy, reconcilingLinesWithoutAmounts, claimedAmounts, formAppearsInPackage, verifyWorkpaperClaims } = require("../lib/review-guards");
 
 const RETURN = {
   name: "Client 1065 2025.pdf",
@@ -710,4 +710,55 @@ test("una cifra chica compartida es una coincidencia", () => {
 test("un determinista sin patron propio no pliega nada", () => {
   const sinPatron = { ...DETERMINISTA, dedupe: undefined };
   assert.strictEqual(foldFindingsRepeatedBy([REPETIDO()], [sinPatron]).folded, 0);
+});
+
+/* --- Un ZIP son cuarenta documentos, no uno ---------------------------- */
+
+// La carpeta de soporte de un cliente se sube como un archivo y llega a la revision como un
+// solo file cuyo texto es cada documento uno detras del otro, separados por "--- ZIP ENTRY:".
+// Contando archivos habia uno donde habia cuarenta y uno: el guard de cobertura se quedo
+// afuera de la corrida misma para la que fue escrito, y el de renglones vacios pregunto "es
+// esto un puente libro-impuesto?" al archivo entero -- pasaba porque alguno de los cuarenta
+// mencionaba taxable income -- y termino leyendo una planilla de checklist de gastos.
+const zipCon = (entradas) => ({
+  name: "Support-20260908.zip",
+  reviewRole: "supporting_document",
+  fullText: entradas.map(([nombre, texto]) => `--- ZIP ENTRY: ${nombre} ---\n${texto}`).join("\n\n"),
+});
+
+test("una planilla de checklist adentro del ZIP no es una conciliacion", () => {
+  const zip = zipCon([
+    ["K1 Package.pdf", "Under penalties of perjury\ntaxable income reported on line 15"],
+    ["Expense Checklist.xls", '--- Sheet: Checklist ---\nCategory,Amount\n"VEHICLE, TRAVEL & MEALS",,\nOffice supplies,1200'],
+  ]);
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([zip]), []);
+});
+
+test("pero el puente libro-impuesto que si esta adentro se sigue viendo, con su propio nombre", () => {
+  const zip = zipCon([
+    ["1099 statement.pdf", "Under penalties of perjury\ntaxable income"],
+    ["Workpaper 2025.xlsx", '--- Sheet: Book to Tax Reconciliation ---\nBook-to-Tax Reconciliation,,\n,Add: Meals 50%,,\n,Taxable Income,"74,808.61",'],
+  ]);
+  assert.deepStrictEqual(reconcilingLinesWithoutAmounts([zip]), [{ label: "Add: Meals 50%", source: "Workpaper 2025.xlsx" }]);
+});
+
+test("la cobertura cuenta las entradas del ZIP, no el ZIP", () => {
+  const entradas = Array.from({ length: 40 }, (_, i) => [`K1 Package ${i + 1}.pdf`, "contenido suficiente para contar como documento legible"]);
+  const files = [{ name: "return.pdf", reviewRole: "primary_return", fullText: "x".repeat(600) }, zipCon(entradas)];
+  const review = { issues: [{ priority: "HIGH", issueDescription: "Schedule E shows $2,797,588 but K-1 total is $9,691; difference is unexplained.", evidence: "" }] };
+  const r = verifySupportCoverage(review, files);
+  assert.strictEqual(r.support, 40);
+  assert.strictEqual(r.corrected, 1);
+  assert.strictEqual(r.issues[0].priority, "LOW");
+  assert.match(r.issues[0].riskAnalysis, /names 0 of the 40/);
+});
+
+test("y si la revision nombro las entradas, no se toca nada", () => {
+  const entradas = Array.from({ length: 8 }, (_, i) => [`Alpha${i + 1} Bravo Charlie.pdf`, "contenido suficiente para contar como documento legible"]);
+  const files = [{ name: "return.pdf", reviewRole: "primary_return", fullText: "x".repeat(600) }, zipCon(entradas)];
+  const review = {
+    issues: [{ priority: "HIGH", issueDescription: "no supporting worksheets provided", evidence: "" }],
+    verifiedItems: Array.from({ length: 7 }, (_, i) => `Alpha${i + 1} Bravo Charlie shows $100.`),
+  };
+  assert.strictEqual(verifySupportCoverage(review, files).corrected, 0);
 });
