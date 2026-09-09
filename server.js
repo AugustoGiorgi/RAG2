@@ -23,7 +23,7 @@ const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
-const { selectPages, removalNotice } = require("./lib/package-trim");
+const { selectPages, removalNotice, sizes } = require("./lib/package-trim");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
@@ -114,29 +114,36 @@ const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKEN
 // experimento que se descarto, la misma corrida se comio 48.000 enteros y se corto.
 // El maximo de salida de Sonnet 5 son 128.000, asi que 64.000 sigue estando dentro.
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
-// El presupuesto de documentos, medido dos veces porque la primera me equivoque en los dos
-// factores que lo determinan.
+// El presupuesto de documentos, que es LA perilla de costo de la pestaña.
 //
-// La ventana de Sonnet 5 son 1.000.000 de tokens de entrada, no 200.000 — consultado a
-// GET /v1/models, no supuesto. Y el texto de una declaracion tokeniza a 2,38 caracteres por
-// token, no a 4: son casi todos numeros y cada numero cuesta varios tokens. Ese 2,38 sale de
-// dividir los 602.574 caracteres que se le mandaron a una corrida real de Dayani por los
-// 253.546 tokens que cobro la API.
+// Con el razonamiento apagado la salida son ~13.400 tokens y trece centavos: el 92% de lo que
+// cuesta una revision es la entrada. Asi que este numero, y no ningun otro, decide el precio.
 //
-// Con los dos numeros bien: descontando 48.000 tokens de salida y los ~133.000 caracteres del
-// prompt fijo, entran 2.132.760 caracteres de documentos. El paquete mas grande del corpus
-// pesa 1.526.839 tras sacarle lo administrativo — el 75% de la ventana. Entra entero, con las
-// doce declaraciones estatales adentro, en UNA sola pasada.
+// La ventana de Sonnet 5 son 1.000.000 de tokens — consultado a GET /v1/models — y el texto de
+// una declaracion tokeniza a 2,38 caracteres por token, no a 4: son casi todos numeros. Ese
+// 2,38 sale de una corrida real, dividiendo 602.574 caracteres por los 253.546 tokens cobrados.
+// Con eso la ventana no es la restriccion: la restriccion es la plata.
 //
-// 1.800.000 deja 15% de margen sobre la capacidad real. Cuesta mas que los 500.000 anteriores
-// —mas tokens de entrada— pero es una revision y no dos, y la alternativa era que el informe
-// dijera "no me dieron las estatales" sobre estatales que si estaban en el paquete.
+// 800.000 sale de medir que compra cada dolar sobre los paquetes reales, con el reparto que
+// asegura el nucleo federal antes de gastar un caracter en declaraciones estatales:
 //
-// El tope por archivo, 1.000.000, cubre el documento mas grande del corpus (803.944) con
-// holgura y sigue impidiendo que un archivo desmedido se coma el presupuesto de los demas.
+//   presupuesto   federal   estatales   costo (el paquete mas caro del corpus)
+//     0,6M          77%         4%        $0,75
+//     0,8M         100%         8%        $0,92     <- aca
+//     1,0M         100%        33%        $1,08
+//     1,8M         100%       100%        $1,53
+//
+// 0,8M es el punto donde el federal entra COMPLETO en los siete paquetes. Debajo de eso se
+// empiezan a perder paginas del 1040, que es lo unico que no se puede negociar. Arriba, cada
+// 200.000 caracteres son 16 centavos mas y compran declaraciones estatales.
+//
+// Y es un techo, no un piso: JJ&CJ cuesta $0,44 y Atlas $0,75 con este mismo numero, porque se
+// paga por lo que se manda. Subirlo solo encarece los paquetes que efectivamente son grandes.
+// CLAUDE_REVIEW_MAX_TOTAL_CHARS lo cambia sin deploy si el estudio decide pagar por lo estatal.
+//
 // La reintentada por timeout sigue compactando a 80k.
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 1800000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 1000000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 800000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 500000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
 const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
@@ -9883,9 +9890,23 @@ async function handleReview(req, res) {
     if (firmContext) systemBlocks.push(withReviewCache({ type: "text", text: firmContext }));
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
       max_tokens: REVIEW_MAX_TOKENS,
+      // El razonamiento va APAGADO, y esto no es una preferencia de estilo.
+      //
+      // Sonnet 5 razona por su cuenta si no se le dice lo contrario, y esos bloques se cobran
+      // contra el MISMO max_tokens que el informe. Con el paquete Dayani completo — 1,5 millones
+      // de caracteres desde que entra entero — el modelo gasto los 64.000 tokens pensando y
+      // devolvio [{"type":"thinking"}] y NADA de texto: cero hallazgos, cero tie-out, cero
+      // casillas, $2,13 cobrados y el informe con el cartel de "automatic structuring failed".
+      // Cuanto mas grande el paquete, mas razona, y mas seguro es que no llegue a escribir.
+      //
+      // "disabled" lo acepta cualquier modelo y no se lleva mal con temperature — verificado
+      // contra la API con Sonnet 5 y con Sonnet 4.5. Con el razonamiento apagado los 64.000
+      // tokens son del informe, que es para lo que estan.
+      thinking: { type: "disabled" },
       // Determinism: the review runs without extended thinking, so temperature 0 is
       // allowed and makes the same package produce the same findings run to run. The API
       // default of 1.0 was why two identical runs returned entirely different issues.
+      // (Los modelos de la familia 5 ya no aceptan el parametro; ver supportsTemperature.)
       temperature: 0,
       system: systemBlocks,
       messages: [{ role: "user", content: reviewRequest.userContent }],
@@ -9907,6 +9928,7 @@ async function handleReview(req, res) {
       if (firmContext) retrySystemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
       result = await callAnthropicDirectWithFallbacks(apiKey, {
         max_tokens: REVIEW_MAX_TOKENS,
+        thinking: { type: "disabled" },
         temperature: 0,
         system: retrySystemBlocks,
         messages: [{ role: "user", content: reviewRequest.userContent }],
@@ -10071,43 +10093,49 @@ function compactReviewDocuments(documents = [], limits = {}) {
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || documents.length;
   const minBudget = Math.max(2000, minCharsPerFile);
 
-  // Cuanto pide cada documento, ya sin lo administrativo. El reparto por peso solo tiene
-  // sentido cuando el presupuesto APRIETA: repartiendolo siempre, el paquete Dayani mandaba
-  // 1.325.028 caracteres de un presupuesto de 1.800.000 y recortaba igual 200.000 del año
-  // anterior, porque su peso de 1,5 sobre 4,5 le daba 600.000 y punto. Se dejaban 475.000
-  // caracteres sin usar y se perdian paginas que entraban de sobra.
-  const needs = documents.map((file) => {
+  // El presupuesto de entrada es el 92% del costo de una revision — la salida, con el
+  // razonamiento apagado, son 13.360 tokens y trece centavos. Asi que como se reparte esta
+  // plata es LA decision economica de la pestaña, y el orden correcto es: primero el nucleo
+  // federal de TODOS los documentos, despues lo estatal de cualquiera.
+  //
+  // El reparto por peso de rol no hacia eso. Con presupuesto ajustado le daba al año corriente
+  // el triple que al anterior, de modo que el corriente gastaba en declaraciones estatales
+  // mientras al anterior le faltaban paginas de su propio 1040 — y las continuidades
+  // interanuales se comparan justamente contra esas paginas. Sobre Dayani con 800.000 de
+  // presupuesto eso daba 86% del federal; garantizando el nucleo primero da 100% por el mismo
+  // dinero.
+  const need = documents.map((file) => {
     const text = String(file.extractedText || "");
-    if (!text) return 0;
-    const cleaned = selectPages(text, Infinity);
-    return Math.min(maxCharsPerFile, cleaned.pageCount ? cleaned.text.length : text.length);
+    if (!text) return { core: 0, full: 0 };
+    const measured = sizes(text);
+    return { core: Math.min(maxCharsPerFile, measured.core), full: Math.min(maxCharsPerFile, measured.full) };
   });
-  const totalNeed = needs.reduce((sum, n) => sum + n, 0);
-  const fitsWhole = totalNeed <= maxTotalChars;
+  const totalFull = need.reduce((sum, n) => sum + n.full, 0);
+  const totalCore = need.reduce((sum, n) => sum + n.core, 0);
+  const fitsWhole = totalFull <= maxTotalChars;
+  // Lo que sobra despues de asegurar el nucleo, y cuanto mas pediria cada documento.
+  const afterCore = Math.max(0, maxTotalChars - totalCore);
+  const extraWanted = need.reduce((sum, n) => sum + Math.max(0, n.full - n.core), 0);
 
   return documents.map((file, index) => {
     const originalText = String(file.extractedText || "");
     if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
-    // Si el paquete entero entra, cada documento se lleva lo que pide y no se recorta nada
-    // por reparto. Solo cuando no entra se vuelve al peso por rol, y ahi el sobrante de los
-    // documentos que piden menos de lo que les toca se reparte entre los que piden mas.
     let budget;
     if (fitsWhole) {
-      budget = Math.min(maxCharsPerFile, Math.max(minBudget, needs[index]));
-    } else {
-      const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
-      const spare = documents.reduce((sum, _f, i) => {
-        const share = Math.floor(maxTotalChars * (weights[i] / totalWeight));
-        return sum + Math.max(0, share - needs[i]);
-      }, 0);
-      const hungryWeight = documents.reduce((sum, _f, i) => {
-        const share = Math.floor(maxTotalChars * (weights[i] / totalWeight));
-        return sum + (needs[i] > share ? weights[i] : 0);
-      }, 0);
-      const bonus = needs[index] > weightedBudget && hungryWeight > 0
-        ? Math.floor(spare * (weights[index] / hungryWeight))
+      // Entra todo: nadie recorta nada.
+      budget = Math.min(maxCharsPerFile, Math.max(minBudget, need[index].full));
+    } else if (totalCore <= maxTotalChars) {
+      // No entra todo, pero si el nucleo federal de todos. Se asegura, y lo que sobra se
+      // reparte en proporcion a lo que cada documento todavia querria.
+      const share = extraWanted > 0
+        ? Math.floor(afterCore * (Math.max(0, need[index].full - need[index].core) / extraWanted))
         : 0;
-      budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget + bonus));
+      budget = Math.max(minBudget, Math.min(maxCharsPerFile, need[index].core + share));
+    } else {
+      // Ni siquiera el nucleo entra: ahi si manda el peso por rol, porque hay que elegir
+      // que declaracion se lee mejor y la del año en revision pesa mas.
+      const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
+      budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget));
     }
 
     // Recortar por PAGINA y por prioridad, no por posicion. El recorte por el medio conservaba
@@ -10415,9 +10443,13 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
 
   for (const model of candidates) {
     const body = { ...requestBody, model };
-    if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
+    // Apagar el razonamiento es distinto de pedirlo: lo acepta cualquier modelo, no se lleva
+    // mal con temperature, y hay que dejarlo pasar tal cual. Medido contra la API con los dos
+    // modelos de la lista de revision.
+    const thinkingOff = body.thinking && body.thinking.type === "disabled";
+    if (body.thinking && !thinkingOff && !supportsClaudeThinking(model)) delete body.thinking;
     // The API rejects an explicit temperature together with extended thinking.
-    if (body.thinking) delete body.temperature;
+    if (body.thinking && !thinkingOff) delete body.temperature;
     // Y a partir de Opus 4.7 la rechaza siempre: `temperature` is deprecated for this model,
     // HTTP 400. Mandarla igual convertia a esos modelos en inelegibles sin que se notara —
     // el 400 caia en shouldTryNextModel y la corrida bajaba de modelo en silencio.
@@ -10540,11 +10572,21 @@ async function structureDirectReviewJson(apiKey, textBlocks, reviewRequest) {
   // The tax analysis was done in the first call; here we only restructure existing text
   // into the schema, so Haiku handles it identically at ~1/3 the cost. Sonnet stays as a
   // fallback so reliability is unchanged if Haiku ever fails to produce valid JSON.
+  // Los dos limites de aca abajo estaban calibrados para un informe que ya no es el que se
+  // escribe. Una revision de un paquete grande son ~45.000 tokens de salida y ~150.000
+  // caracteres de texto: con un techo de 16.000 y una ventana de entrada de 50.000 este
+  // rescate no podia funcionar nunca — tenia que reproducir el informe entero viendo un tercio
+  // y con la mitad del lugar. Cuando hizo falta de verdad, no rescato nada y el usuario recibio
+  // un documento de 479 caracteres que decia "automatic structuring failed".
+  //
+  // Ahora acompaña al techo de la revision, y el texto a convertir entra completo. Se paga por
+  // token generado, no por el limite, asi que un techo alto solo compra que el rescate exista.
   return callAnthropicDirectWithFallbacks(apiKey, {
-    max_tokens: 16000,
+    max_tokens: REVIEW_MAX_TOKENS,
+    thinking: { type: "disabled" },
     temperature: 0, // mechanical reformat — no reason for sampling variance
-    system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences.",
-    messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "").slice(0, 50000)}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
+    system: "You convert a tax review into strict JSON. Output ONLY the JSON object matching the schema the user provides. No prose, no fences. Preserve every finding, row and value from the input — this is a reformat, never a summary.",
+    messages: [{ role: "user", content: `SCHEMA:\n${reviewJsonSchemaText()}\n\nREVIEW TO CONVERT:\n${String(textBlocks || "")}\n\nDOCUMENTS READ:\n${reviewRequest.documentsRead.map((doc) => `${doc.name} - ${doc.role}`).join("\n")}` }],
   }, structureModelCandidates());
 }
 
