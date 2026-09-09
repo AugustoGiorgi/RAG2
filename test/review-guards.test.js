@@ -707,9 +707,29 @@ test("una cifra chica compartida es una coincidencia", () => {
   assert.strictEqual(foldFindingsRepeatedBy([issue], [chico]).folded, 0);
 });
 
-test("un determinista sin patron propio no pliega nada", () => {
+// Antes, plegar un duplicado exigia que el cruce determinista trajera su propio patron de
+// texto, y solo 2 de los 39 lo tenian. Resultado en produccion: el hallazgo del Schedule M-1
+// salio dos veces en el mismo informe, una como HIGH computada de los formularios y otra como
+// MEDIUM escrita por el modelo, con las tres mismas cifras. Ahora, sin patron, mandan las
+// cifras compartidas.
+test("un determinista sin patron propio pliega igual si comparte dos cifras materiales", () => {
   const sinPatron = { ...DETERMINISTA, dedupe: undefined };
-  assert.strictEqual(foldFindingsRepeatedBy([REPETIDO()], [sinPatron]).folded, 0);
+  const out = foldFindingsRepeatedBy([REPETIDO()], [sinPatron]);
+  assert.strictEqual(out.folded, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+});
+
+test("pero una sola cifra compartida no alcanza sin patron", () => {
+  const sinPatron = { ...DETERMINISTA, dedupe: undefined };
+  // Menciona $271,602 y nada mas del hallazgo determinista: un tema distinto que arrastra una
+  // cifra en comun, que es lo que pasa seguido en una misma declaracion.
+  const unaSola = { priority: "HIGH", formOrSchedule: "Other deductions", issueDescription: "Depreciation of $271,602 was claimed twice.", evidence: "" };
+  assert.strictEqual(foldFindingsRepeatedBy([unaSola], [sinPatron]).folded, 0);
+});
+
+test("un hallazgo determinista no se pliega a si mismo", () => {
+  const propio = { ...REPETIDO(), source: "Automated cross-year check" };
+  assert.strictEqual(foldFindingsRepeatedBy([propio], [DETERMINISTA]).folded, 0);
 });
 
 /* --- Un ZIP son cuarenta documentos, no uno ---------------------------- */

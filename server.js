@@ -24,7 +24,9 @@ const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks"
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
 const { selectPages, removalNotice, sizes } = require("./lib/package-trim");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
+const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -114,36 +116,37 @@ const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKEN
 // experimento que se descarto, la misma corrida se comio 48.000 enteros y se corto.
 // El maximo de salida de Sonnet 5 son 128.000, asi que 64.000 sigue estando dentro.
 const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
-// El presupuesto de documentos, que es LA perilla de costo de la pestaña.
+// El techo de gasto por revision, en dolares. Es una garantia dura, no una estimacion: antes
+// de mandar el pedido se cuentan sus tokens con /v1/messages/count_tokens —exacto y gratis— y
+// si la cuenta se pasa, se recorta el presupuesto de entrada y se vuelve a medir. Lo que se
+// recorta lo elige lib/package-trim.js, que saca declaraciones estatales antes que formularios
+// federales: el techo se paga con lo menos importante primero.
 //
-// Con el razonamiento apagado la salida son ~13.400 tokens y trece centavos: el 92% de lo que
-// cuesta una revision es la entrada. Asi que este numero, y no ningun otro, decide el precio.
+// Se calcula contra el modelo MAS CARO de la lista de candidatos y no contra el primero,
+// porque si el primario falla la corrida cae a otro y el techo tiene que seguir valiendo.
+// Hoy eso va de Sonnet 5 ($2/$10) a Sonnet 4.5 ($3/$15).
 //
-// La ventana de Sonnet 5 son 1.000.000 de tokens — consultado a GET /v1/models — y el texto de
-// una declaracion tokeniza a 2,38 caracteres por token, no a 4: son casi todos numeros. Ese
-// 2,38 sale de una corrida real, dividiendo 602.574 caracteres por los 253.546 tokens cobrados.
-// Con eso la ventana no es la restriccion: la restriccion es la plata.
+// En 0 se apaga la garantia y manda solo CLAUDE_REVIEW_MAX_TOTAL_CHARS.
+const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.54);
+// El presupuesto de documentos: cuanto del paquete se le manda al modelo.
 //
-// 800.000 sale de medir que compra cada dolar sobre los paquetes reales, con el reparto que
-// asegura el nucleo federal antes de gastar un caracter en declaraciones estatales:
+// Es alto a proposito. Quien limita el gasto ya no es este numero sino REVIEW_MAX_USD, que
+// cuenta los tokens del pedido antes de mandarlo y recorta si hace falta. Este numero dice
+// cuanto se QUIERE mandar; el techo dice cuanto se PUEDE pagar. Con los dos, un paquete chico
+// entra entero y barato, y uno grande entra hasta donde el techo alcance, resignando primero
+// declaraciones estatales y nunca formularios federales.
 //
-//   presupuesto   federal   estatales   costo (el paquete mas caro del corpus)
-//     0,6M          77%         4%        $0,75
-//     0,8M         100%         8%        $0,92     <- aca
-//     1,0M         100%        33%        $1,08
-//     1,8M         100%       100%        $1,53
+// 1.800.000 cubre el paquete mas grande del corpus (1.526.839 caracteres tras sacarle lo
+// administrativo), asi que sobre esos archivos el techo es lo unico que recorta.
 //
-// 0,8M es el punto donde el federal entra COMPLETO en los siete paquetes. Debajo de eso se
-// empiezan a perder paginas del 1040, que es lo unico que no se puede negociar. Arriba, cada
-// 200.000 caracteres son 16 centavos mas y compran declaraciones estatales.
-//
-// Y es un techo, no un piso: JJ&CJ cuesta $0,44 y Atlas $0,75 con este mismo numero, porque se
-// paga por lo que se manda. Subirlo solo encarece los paquetes que efectivamente son grandes.
-// CLAUDE_REVIEW_MAX_TOTAL_CHARS lo cambia sin deploy si el estudio decide pagar por lo estatal.
+// Sobre la ventana: son 1.000.000 de tokens en Sonnet 5, consultado a GET /v1/models. El texto
+// de una declaracion tokeniza a 2,19 caracteres por token — medido con /v1/messages/count_tokens
+// sobre 700.000 caracteres reales, no estimado — asi que 1.800.000 caracteres son unos 822.000
+// tokens y entran. La ventana no es la restriccion; la plata si.
 //
 // La reintentada por timeout sigue compactando a 80k.
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 800000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 500000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 1800000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 1000000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
 const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
@@ -9875,6 +9878,7 @@ async function handleReview(req, res) {
     payload.files = annotateReviewFileRoles(payload.files || [], payload);
     let reviewRequest = buildDirectReviewRequest(payload, req);
     const startedAt = Date.now();
+    let reviewMaxTokens = REVIEW_MAX_TOKENS;
     // Keep the proxy connection alive during the long model call to avoid a 504.
     startHeartbeatResponse(res);
     // Firm context (master prompt form rules, Knowledge Base, Review Examples, historical
@@ -9886,10 +9890,49 @@ async function handleReview(req, res) {
     const firmContext = await buildReviewFirmContextBlock(payload);
     // Both system blocks are static across runs — each carries a cache breakpoint so the
     // master prompt is cached even when the firm context is empty.
-    const systemBlocks = [withReviewCache({ type: "text", text: reviewRequest.systemPrompt })];
+    let systemBlocks = [withReviewCache({ type: "text", text: reviewRequest.systemPrompt })];
     if (firmContext) systemBlocks.push(withReviewCache({ type: "text", text: firmContext }));
+
+    // El techo de gasto, antes de pagar nada. Se cuentan los tokens del pedido con la API y,
+    // si la cuenta se pasa, se rearma con menos documentos — package-trim saca declaraciones
+    // estatales antes que formularios federales, asi que lo primero que se resigna es lo menos
+    // importante. La salida se ajusta con lo que quede, nunca por debajo de un informe entero.
+    const candidates = reviewModelCandidates();
+    const ceilingRates = primaryRates(candidates, costRatesForModel);
+    const fitted = await fitToCeiling({
+      ceilingUsd: REVIEW_MAX_USD,
+      rates: ceilingRates,
+      maxOutputTokens: REVIEW_MAX_TOKENS,
+      totalChars: REVIEW_MAX_TOTAL_CHARS,
+      perFileChars: REVIEW_MAX_CHARS_PER_FILE,
+      build: async (totalChars, perFileChars) => {
+        const request = buildDirectReviewRequest(payload, req, { maxTotalChars: totalChars, maxCharsPerFile: perFileChars });
+        const blocks = [withReviewCache({ type: "text", text: request.systemPrompt })];
+        if (firmContext) blocks.push(withReviewCache({ type: "text", text: firmContext }));
+        return {
+          request,
+          systemBlocks: blocks,
+          messages: [{ role: "user", content: request.userContent }],
+          documentChars: request.documents.reduce((sum, doc) => sum + String(doc.extractedText || "").length, 0),
+          overheadChars: request.systemPrompt.length + (firmContext ? firmContext.length : 0),
+        };
+      },
+      count: (blocks, messages) => countPromptTokens(apiKey, candidates[0], blocks, messages),
+    });
+    reviewRequest = fitted.built.request;
+    systemBlocks = fitted.built.systemBlocks;
+    reviewMaxTokens = fitted.maxTokens;
+    console.log(
+      "[Review] presupuesto: " + fitted.inputTokens.toLocaleString("en-US") + " tokens de entrada"
+      + " (" + (fitted.counted ? "contados por la API" : "estimados, count_tokens no respondio") + ")"
+      + ", techo de salida " + reviewMaxTokens.toLocaleString("en-US")
+      + ", costo maximo $" + Number(fitted.estimatedUsd || 0).toFixed(2)
+      + " contra un techo de $" + REVIEW_MAX_USD.toFixed(2)
+      + (fitted.clamped ? " — se recorto la entrada a " + fitted.totalChars.toLocaleString("en-US") + " caracteres en " + fitted.passes + " pasada(s)" : "") + "."
+    );
+
     let result = await callAnthropicDirectWithFallbacks(apiKey, {
-      max_tokens: REVIEW_MAX_TOKENS,
+      max_tokens: reviewMaxTokens,
       // El razonamiento va APAGADO, y esto no es una preferencia de estilo.
       //
       // Sonnet 5 razona por su cuenta si no se le dice lo contrario, y esos bloques se cobran
@@ -9927,7 +9970,7 @@ async function handleReview(req, res) {
       }];
       if (firmContext) retrySystemBlocks.push({ type: "text", text: firmContext, cache_control: { type: "ephemeral" } });
       result = await callAnthropicDirectWithFallbacks(apiKey, {
-        max_tokens: REVIEW_MAX_TOKENS,
+        max_tokens: reviewMaxTokens,
         thinking: { type: "disabled" },
         temperature: 0,
         system: retrySystemBlocks,
@@ -10501,6 +10544,27 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
   return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
 }
 
+/**
+ * Los tokens que ocupa un pedido, contados por la API y no estimados. Gratis y sin efectos.
+ * Devuelve null si no se pudo contar; el que llama decide que hacer con eso.
+ */
+async function countPromptTokens(apiKey, model, system, messages) {
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
+      method: "POST",
+      headers: { "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
+      body: JSON.stringify({ model, system, messages }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const tokens = Number(data && data.input_tokens);
+    return Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function isReviewTimeoutError(result) {
   return Number(result?.status) === 504 || /timed out|abort/i.test(String(result?.error || ""));
 }
@@ -10760,7 +10824,22 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // veces, la declaracion de otro cliente) eso invalida todo lo interanual que sigue, de modo
   // que tiene que leerse antes que cualquier otra cosa.
   const identityChecks = runIdentityChecks(payload?.files, payload?.metadata || {});
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), ...identityChecks].filter(Boolean);
+  // La depreciacion de propiedad listada es aritmetica de tabla, no criterio: se recalcula.
+  const currentReturnText = (() => {
+    const files = Array.isArray(payload?.files) ? payload.files : [];
+    const current = files.find((f) => String(f?.reviewRole || f?.role || "").toLowerCase().includes("current_return"));
+    return String((current && (current.originalText || current.fullText || current.text || current.extractedText)) || "");
+  })();
+  const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
+  const depreciationOk = verifiedDepreciation(currentReturnText, payload?.metadata || {});
+  if (depreciationOk.length) {
+    const depr = verifyDepreciationClaims(normalized, depreciationOk);
+    if (depr.corrected) {
+      normalized.issues = depr.issues;
+      console.log(`[Review] ${depr.corrected} finding(s) called a depreciation figure wrong that the MACRS table says is right; lowered to LOW.`);
+    }
+  }
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -10803,6 +10882,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["stated positions", consistencyChecks.length],
     ["corporate", corporateChecks.length],
     ["package identity", identityChecks.length],
+    ["depreciation", depreciationCheck ? 1 : 0],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
