@@ -22,6 +22,8 @@ const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
+const { runIdentityChecks } = require("./lib/identity-consistency");
+const { selectPages, removalNotice } = require("./lib/package-trim");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
@@ -80,20 +82,41 @@ const ANTHROPIC_STREAM_IDLE_TIMEOUT_MS = Number(process.env.ANTHROPIC_STREAM_IDL
 // between chunks instead of total duration, and a request still producing tokens is never
 // killed for taking its time.
 const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKENS || 8000);
-// 20000, not 16000. The run that finally showed its own numbers used 14,378 output tokens of
-// a 16,000 cap - 90% - and the review now has to enumerate what it finds inside each scanned
-// attachment before it starts writing issues. Extended thinking is off here (temperature 0
-// requires it), so the model has no scratchpad: anything it "works out" has to be written
-// down. Asking it to read nine scanned pages without room to record what they say is asking
-// it to skip them, which is exactly what it did. The 10-minute timeout absorbs the extra
-// couple of minutes.
-const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 20000);
-// 420k chars ≈ 110k tokens: a full 1040 package (current + prior return + consolidated
-// 1099s + K-1s + estimate vouchers) fits without middle-truncation. The old 140k budget
-// cut the middle of the current return, so forms like 8960/Sch D/8949 vanished and the
-// reviewer flagged them as missing. The timeout-retry path still compacts to 80k.
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 420000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 160000);
+// 40000, y el techo importa mucho mas de lo que parece: cuando la generacion lo toca, el JSON
+// queda cortado y la revision no sale degradada, sale VACIA — cero hallazgos, cero tie-out,
+// cero casillas, y la corrida se cobra igual.
+//
+// Medido sobre JJ&CJ, que es el paquete MAS CHICO del corpus: tres corridas de Sonnet 4.5
+// usaron 11.894, 14.023 y 16.313 tokens de salida contra un techo de 20.000 — la ultima al
+// 82%. Con el recorte por pagina mandandole al modelo tres veces mas documento en los paquetes
+// grandes, ese margen no alcanzaba. Dos corridas de Sonnet 5 con el techo de 20.000 salieron
+// las dos vacias, tocando exactamente 20.000; con 48.000 completo en 31.928.
+//
+// El techo no se cobra: se paga por token generado, no por el limite. Subirlo solo compra
+// margen. 48.000 porque Sonnet 5, que es el primario, razona por su cuenta — sus bloques de
+// thinking cuentan contra este mismo presupuesto — y sus dos corridas completas usaron 31.928
+// y 33.133 tokens sobre el paquete MAS CHICO del corpus. 40.000 dejaba un 20% de margen para
+// paquetes que le mandan tres veces mas documento; 48.000 deja 45%.
+const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 48000);
+// El presupuesto de documentos, medido y no elegido a ojo.
+//
+// La ventana de Sonnet 4.5 son 200k tokens. Lo fijo del prompt — prompt de sistema, master
+// prompt del estudio, knowledge base y review examples — pesa hoy unos 133k caracteres (~33k
+// tokens), y hay que reservar 20k tokens para la respuesta: quedan ~147k tokens, o sea unos
+// 587.000 caracteres, para los documentos. 500k deja 87k de margen para que el estudio pueda
+// crecer su knowledge base sin que una revision se caiga por exceso de contexto.
+//
+// El tope por archivo importa menos de lo que parece desde que el recorte es por pagina y por
+// prioridad (lib/package-trim.js): con 160k por archivo y corte por el medio, el nucleo federal
+// que llegaba al modelo sobre los siete paquetes de prueba era el 45%; con 300k y corte por
+// pagina es el 82%. La diferencia grande no la hizo el numero sino QUE se conserva.
+//
+// Un paquete 1040 multiestado grande sigue sin entrar entero: solo el nucleo federal de las dos
+// declaraciones son ~746k caracteres, mas que la ventana. Eso ya no es un problema de
+// presupuesto sino de modelo. El manifiesto le dice al modelo exactamente que paginas no vio.
+// La reintentada por timeout sigue compactando a 80k.
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 500000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 300000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
 const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
@@ -10032,11 +10055,27 @@ function compactReviewDocuments(documents = [], limits = {}) {
     if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
     const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
     const budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget));
-    const compactedText = truncateMiddle(originalText, budget);
+
+    // Recortar por PAGINA y por prioridad, no por posicion. El recorte por el medio conservaba
+    // el principio y el final de la declaracion, que en un 1040 de este estudio son la carta al
+    // cliente y los vouchers de estimados del año siguiente: sobre el paquete mas grande el
+    // modelo recibia el 4% del nucleo federal — ni el 1040, ni un Schedule, ni un K-1. Medido
+    // sobre los siete paquetes de prueba, el nucleo federal que llega pasa del 45% al 82%.
+    // Ver lib/package-trim.js.
+    const selection = selectPages(originalText, budget);
+    let compactedText;
+    let note;
+    if (selection.pageCount) {
+      compactedText = selection.text;
+      note = removalNotice(selection.removed, selection.pageCount);
+    } else {
+      // Sin estructura de paginas no hay nada que priorizar y queda el comportamiento anterior.
+      compactedText = truncateMiddle(originalText, budget);
+      note = compactedText.length < originalText.length
+        ? `\n\n[SERVER NOTE: This document was compacted from ${originalText.length.toLocaleString("en-US")} to approximately ${compactedText.length.toLocaleString("en-US")} characters so the review can complete. The beginning and ending sections were preserved. Anything you were asked to check that is not present may have been in the removed section — say the page was not provided rather than inferring what it contained.]`
+        : "";
+    }
     const compacted = compactedText.length < originalText.length;
-    const note = compacted
-      ? `\n\n[SERVER NOTE: This document was compacted from ${originalText.length.toLocaleString("en-US")} to approximately ${compactedText.length.toLocaleString("en-US")} characters so the review can complete. The beginning and ending sections were preserved.]`
-      : "";
     return {
       ...file,
       extractedText: compactedText + note,
@@ -10319,6 +10358,13 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
     if (body.thinking && !supportsClaudeThinking(model)) delete body.thinking;
     // The API rejects an explicit temperature together with extended thinking.
     if (body.thinking) delete body.temperature;
+    // Y a partir de Opus 4.7 la rechaza siempre: `temperature` is deprecated for this model,
+    // HTTP 400. Mandarla igual convertia a esos modelos en inelegibles sin que se notara —
+    // el 400 caia en shouldTryNextModel y la corrida bajaba de modelo en silencio.
+    if (body.temperature !== undefined && !supportsTemperature(model)) {
+      delete body.temperature;
+      console.log(`[Model] ${model} no acepta temperature; se envia sin ella. La corrida deja de ser reproducible bit a bit.`);
+    }
 
     let triedNextModel = false;
     for (let attempt = 1; attempt <= MAX_429_RETRIES + 1; attempt++) {
@@ -10349,6 +10395,11 @@ async function callAnthropicDirectWithFallbacks(apiKey, requestBody, models = MO
         attempts.push(lastError);
         return { ok: false, status: lastStatus, error: `${lastError} Tried: ${candidates.join(", ")}. Details: ${attempts.join(" | ")}` };
       }
+      // Bajar de modelo no puede ser silencioso. Un A/B entero se corrio contra el modelo
+      // equivocado porque el primario devolvia 400 y la corrida caia al siguiente sin escribir
+      // una linea: el informe salia bien, el modelo era otro, y nada lo decia.
+      const next = candidates[candidates.indexOf(model) + 1];
+      console.warn(`[Model] ${model} fallo (${lastStatus}): ${String(result.error || "").slice(0, 160)} — se cae a ${next || "(no queda otro)"} para feature=${feature}.`);
       triedNextModel = true;
       break;
     }
@@ -10371,12 +10422,43 @@ function reviewModelCandidates() {
   const reviewSafeFallbacks = MODEL_FALLBACKS.filter((model) =>
     !/^claude-opus/i.test(model) && !/^claude-sonnet-4-6$/i.test(model) && !isHaiku(model)
   );
+  // El primario es Sonnet 5, en periodo de prueba. Medido sobre JJ&CJ contra Sonnet 4.5, dos
+  // corridas de cada uno: encuentra menos y mejor — descarto los tres falsos que 4.5 producia
+  // (un balance que cierra reportado como HIGH, sesenta y un centavos de redondeo en HIGH, una
+  // linea que ata reportada igual) y encontro dos que 4.5 no vio en ninguna corrida: la casilla
+  // 11 del Schedule B respondida "No" con ingresos y activos ambos bajo $250.000, y el Form
+  // 7203 de un accionista con la casilla D en blanco mientras el del otro la tiene marcada.
+  // Cuesta 1,8 veces mas por revision ($0,53 contra $0,29) y resume las casillas limpias en vez
+  // de listarlas una por una.
+  //
+  // VOLVER ATRAS NO NECESITA DEPLOY: CLAUDE_REVIEW_MODEL=claude-sonnet-4-5-20250929 en el
+  // entorno del VPS y la variable manda sobre esta lista. Esa es toda la maniobra.
+  const preferred = String(process.env.CLAUDE_REVIEW_MODEL || "").trim();
   return Array.from(new Set([
+    preferred,
+    "claude-sonnet-5",
     "claude-sonnet-4-5-20250929",
     ...reviewSafeFallbacks,
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ].filter(Boolean)));
+}
+
+/**
+ * Si el modelo acepta el parametro `temperature`.
+ *
+ * Medido contra la API con la key de esta cuenta, no deducido: Sonnet 4.5, Sonnet 4.6, Opus
+ * 4.5, Opus 4.6 y Haiku 4.5 la aceptan; Opus 4.7, Opus 4.8 y toda la familia 5 (Sonnet 5,
+ * Opus 5, Fable 5 y 5.1) responden 400 "`temperature` is deprecated for this model".
+ *
+ * Importa mas de lo que parece: la revision manda temperature 0 para que el mismo paquete
+ * produzca el mismo informe dos veces. En un modelo que no la acepta esa garantia no existe,
+ * y quien decida cambiar de modelo tiene que saberlo — por eso se avisa por log en vez de
+ * quitarla en silencio.
+ */
+const TEMPERATURE_DEPRECATED = /^claude-(?:fable-5|opus-5|sonnet-5|opus-4-(?:7|8))/i;
+function supportsTemperature(model) {
+  return !TEMPERATURE_DEPRECATED.test(String(model || ""));
 }
 
 function supportsClaudeThinking(model) {
@@ -10571,7 +10653,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // form prints, so a package without that form produces nothing.
   const consistencyChecks = runReturnConsistencyChecks(payload?.files, payload?.metadata || {});
   const corporateChecks = runCorporateReturnChecks(payload?.files, payload?.metadata || {});
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files)].filter(Boolean);
+  // Va ultimo a proposito. Los hallazgos se insertan con unshift, asi que el ultimo de esta
+  // lista queda primero en el informe — y si el paquete esta mal armado (el mismo año dos
+  // veces, la declaracion de otro cliente) eso invalida todo lo interanual que sigue, de modo
+  // que tiene que leerse antes que cualquier otra cosa.
+  const identityChecks = runIdentityChecks(payload?.files, payload?.metadata || {});
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -10613,6 +10700,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["entity", entityChecks.length],
     ["stated positions", consistencyChecks.length],
     ["corporate", corporateChecks.length],
+    ["package identity", identityChecks.length],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
