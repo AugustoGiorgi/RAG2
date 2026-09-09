@@ -22,7 +22,7 @@ const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
-const { runIdentityChecks } = require("./lib/identity-consistency");
+const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
 const { selectPages, removalNotice } = require("./lib/package-trim");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
@@ -33,12 +33,26 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-// Prompt-cache TTL for the Review request. A 5-minute write costs 1.25x base and only pays
-// off if a second run lands inside the window; a 1-hour write costs 2x and needs three.
-// Kept configurable because the answer is an empirical question about how the firm actually
-// works, and the logged cache_read on every review is the evidence. Set REVIEW_CACHE_TTL to
-// "1h" once the log shows reads, or "off" to stop paying the write premium for nothing.
-const REVIEW_CACHE_TTL = String(process.env.REVIEW_CACHE_TTL || "5m").trim().toLowerCase();
+// Prompt-cache TTL para la revision. La pregunta era empirica y ya hay datos, asi que el
+// default cambia de "5m" a "off".
+//
+// El breakpoint esta sobre el paquete de documentos, no sobre el prompt fijo, de modo que solo
+// hay acierto si se vuelve a correr EL MISMO paquete dentro de la ventana. Sobre cinco corridas
+// de paquetes distintos el log dijo siempre "read 0": se pagaba el recargo de escritura y no se
+// leia nunca. En la corrida de Dayani eso fueron 252.964 tokens escritos — el 60% del costo de
+// la revision — a cambio de nada.
+//
+// La aritmetica, con los precios de Sonnet 5 ($2 por millon de entrada):
+//   sin cache          252.964 x $2,00/M  = $0,506 por corrida
+//   5m, sin acierto    252.964 x $2,50/M  = $0,632   (25% de recargo tirado)
+//   5m, con acierto    $0,632 + $0,051    = $0,683 las dos corridas juntas, contra $1,012
+//
+// O sea: sin acierto se paga 25% de mas, con acierto se ahorra 33%. Como el acierto solo llega
+// re-corriendo el mismo paquete en menos de cinco minutos, el default deja de cobrarlo. Si el
+// estudio adopta el habito de re-correr un paquete con instrucciones ajustadas, REVIEW_CACHE_TTL
+// = "1h" pasa a convenir; el log de cada corrida sigue diciendo cuanto se escribio y cuanto se
+// leyo, que es la evidencia para decidirlo.
+const REVIEW_CACHE_TTL = String(process.env.REVIEW_CACHE_TTL || "off").trim().toLowerCase();
 const REVIEW_CACHE_CONTROL = REVIEW_CACHE_TTL === "off"
   ? null
   : REVIEW_CACHE_TTL === "1h"
@@ -93,30 +107,36 @@ const STREAM_ABOVE_MAX_TOKENS = Number(process.env.CLAUDE_STREAM_ABOVE_MAX_TOKEN
 // las dos vacias, tocando exactamente 20.000; con 48.000 completo en 31.928.
 //
 // El techo no se cobra: se paga por token generado, no por el limite. Subirlo solo compra
-// margen. 48.000 porque Sonnet 5, que es el primario, razona por su cuenta — sus bloques de
-// thinking cuentan contra este mismo presupuesto — y sus dos corridas completas usaron 31.928
-// y 33.133 tokens sobre el paquete MAS CHICO del corpus. 40.000 dejaba un 20% de margen para
-// paquetes que le mandan tres veces mas documento; 48.000 deja 45%.
-const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 48000);
-// El presupuesto de documentos, medido y no elegido a ojo.
+// margen. 64.000 porque Sonnet 5, que es el primario, razona por su cuenta y sus bloques de
+// thinking cuentan contra este mismo presupuesto. Medido: 41.498 tokens en el paquete Dayani
+// completo y 44.623 en JJ&CJ — el 93% de un techo de 48.000, que es demasiado poco margen para
+// algo cuyo modo de falla es devolver el informe VACIO. Con la lista completa de casillas, un
+// experimento que se descarto, la misma corrida se comio 48.000 enteros y se corto.
+// El maximo de salida de Sonnet 5 son 128.000, asi que 64.000 sigue estando dentro.
+const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
+// El presupuesto de documentos, medido dos veces porque la primera me equivoque en los dos
+// factores que lo determinan.
 //
-// La ventana de Sonnet 4.5 son 200k tokens. Lo fijo del prompt — prompt de sistema, master
-// prompt del estudio, knowledge base y review examples — pesa hoy unos 133k caracteres (~33k
-// tokens), y hay que reservar 20k tokens para la respuesta: quedan ~147k tokens, o sea unos
-// 587.000 caracteres, para los documentos. 500k deja 87k de margen para que el estudio pueda
-// crecer su knowledge base sin que una revision se caiga por exceso de contexto.
+// La ventana de Sonnet 5 son 1.000.000 de tokens de entrada, no 200.000 — consultado a
+// GET /v1/models, no supuesto. Y el texto de una declaracion tokeniza a 2,38 caracteres por
+// token, no a 4: son casi todos numeros y cada numero cuesta varios tokens. Ese 2,38 sale de
+// dividir los 602.574 caracteres que se le mandaron a una corrida real de Dayani por los
+// 253.546 tokens que cobro la API.
 //
-// El tope por archivo importa menos de lo que parece desde que el recorte es por pagina y por
-// prioridad (lib/package-trim.js): con 160k por archivo y corte por el medio, el nucleo federal
-// que llegaba al modelo sobre los siete paquetes de prueba era el 45%; con 300k y corte por
-// pagina es el 82%. La diferencia grande no la hizo el numero sino QUE se conserva.
+// Con los dos numeros bien: descontando 48.000 tokens de salida y los ~133.000 caracteres del
+// prompt fijo, entran 2.132.760 caracteres de documentos. El paquete mas grande del corpus
+// pesa 1.526.839 tras sacarle lo administrativo — el 75% de la ventana. Entra entero, con las
+// doce declaraciones estatales adentro, en UNA sola pasada.
 //
-// Un paquete 1040 multiestado grande sigue sin entrar entero: solo el nucleo federal de las dos
-// declaraciones son ~746k caracteres, mas que la ventana. Eso ya no es un problema de
-// presupuesto sino de modelo. El manifiesto le dice al modelo exactamente que paginas no vio.
+// 1.800.000 deja 15% de margen sobre la capacidad real. Cuesta mas que los 500.000 anteriores
+// —mas tokens de entrada— pero es una revision y no dos, y la alternativa era que el informe
+// dijera "no me dieron las estatales" sobre estatales que si estaban en el paquete.
+//
+// El tope por archivo, 1.000.000, cubre el documento mas grande del corpus (803.944) con
+// holgura y sigue impidiendo que un archivo desmedido se coma el presupuesto de los demas.
 // La reintentada por timeout sigue compactando a 80k.
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 500000);
-const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 300000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 1800000);
+const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 1000000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
 const REVIEW_RETRY_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_CHARS_PER_FILE || 30000);
@@ -9373,7 +9393,7 @@ async function handleRequestGenerateEmail(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -9951,7 +9971,7 @@ async function handleReview(req, res) {
       model: finalResult.data.model || finalResult.model,
       usage: finalResult.data.usage || null,
       tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
-      costEstimate: estimateClaudeCost(finalResult.data.usage || null),
+      costEstimate: estimateClaudeCost(finalResult.data.usage || null, finalResult.data.model || finalResult.model),
       savedReviewHistory,
     });
   } catch (error) {
@@ -10050,11 +10070,45 @@ function compactReviewDocuments(documents = [], limits = {}) {
   const weights = documents.map((file) => reviewDocumentWeight(file.role));
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || documents.length;
   const minBudget = Math.max(2000, minCharsPerFile);
+
+  // Cuanto pide cada documento, ya sin lo administrativo. El reparto por peso solo tiene
+  // sentido cuando el presupuesto APRIETA: repartiendolo siempre, el paquete Dayani mandaba
+  // 1.325.028 caracteres de un presupuesto de 1.800.000 y recortaba igual 200.000 del año
+  // anterior, porque su peso de 1,5 sobre 4,5 le daba 600.000 y punto. Se dejaban 475.000
+  // caracteres sin usar y se perdian paginas que entraban de sobra.
+  const needs = documents.map((file) => {
+    const text = String(file.extractedText || "");
+    if (!text) return 0;
+    const cleaned = selectPages(text, Infinity);
+    return Math.min(maxCharsPerFile, cleaned.pageCount ? cleaned.text.length : text.length);
+  });
+  const totalNeed = needs.reduce((sum, n) => sum + n, 0);
+  const fitsWhole = totalNeed <= maxTotalChars;
+
   return documents.map((file, index) => {
     const originalText = String(file.extractedText || "");
     if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
-    const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
-    const budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget));
+    // Si el paquete entero entra, cada documento se lleva lo que pide y no se recorta nada
+    // por reparto. Solo cuando no entra se vuelve al peso por rol, y ahi el sobrante de los
+    // documentos que piden menos de lo que les toca se reparte entre los que piden mas.
+    let budget;
+    if (fitsWhole) {
+      budget = Math.min(maxCharsPerFile, Math.max(minBudget, needs[index]));
+    } else {
+      const weightedBudget = Math.floor(maxTotalChars * (weights[index] / totalWeight));
+      const spare = documents.reduce((sum, _f, i) => {
+        const share = Math.floor(maxTotalChars * (weights[i] / totalWeight));
+        return sum + Math.max(0, share - needs[i]);
+      }, 0);
+      const hungryWeight = documents.reduce((sum, _f, i) => {
+        const share = Math.floor(maxTotalChars * (weights[i] / totalWeight));
+        return sum + (needs[i] > share ? weights[i] : 0);
+      }, 0);
+      const bonus = needs[index] > weightedBudget && hungryWeight > 0
+        ? Math.floor(spare * (weights[index] / hungryWeight))
+        : 0;
+      budget = Math.max(minBudget, Math.min(maxCharsPerFile, weightedBudget + bonus));
+    }
 
     // Recortar por PAGINA y por prioridad, no por posicion. El recorte por el medio conservaba
     // el principio y el final de la declaracion, que en un 1040 de este estudio son la carta al
@@ -10151,9 +10205,15 @@ ENTITY-TYPE GUARD: only compare identifiers that apply to the entity in question
 
 CONCISENESS (ABSOLUTE): issueDescription is 1-2 sentences maximum stating what disagrees, the two amounts, and which documents: "W-2 Box 1 shows $81,824.69 but the return Line 1a shows $91,825; verify the entry." evidence lists only the line references and amounts. riskAnalysis is one sentence maximum and empty for LOW items. proposedSolution is one sentence. No essays, no repetition of the same numbers across fields, no speculative chains.
 
-CHECKBOX CHECKLIST (REQUIRED): Examine EVERY checkbox and election on the current-year return against the prior-year return, then report in checkboxReview ONLY the ones that are wrong, doubtful, or a real elective choice the reviewer should confirm. Do NOT list boxes that are plainly correct — a page of rows reading "Correct" hides the one row that matters, and every such row is a claim that can itself be wrong. Add ONE final row with box "Boxes verified as correct", currentState = the count you checked and found correct, shouldBe = "No action", explanation = a short list of the areas covered, so the reviewer can see the scope of the check. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
+CHECKBOX CHECKLIST (REQUIRED): Examine EVERY checkbox and election on the current-year return against the prior-year return. Report in checkboxReview ONLY the ones that are wrong, doubtful, changed since last year, or a real elective choice the reviewer must confirm. Do NOT write a row for a box that is plainly correct — a page of rows reading "Correct" hides the one row that matters, and every such row is an assertion that can itself be wrong. Name each box the way the form prints it, with its form and line (e.g. "Form 1120-S Page 2 Schedule B Line 4b - 20%+ interest in a partnership").
 
-INFORMATIONAL DATA CHECK (REQUIRED): Verify every informational item across ALL documents — taxpayer/entity name, SSN/EIN, address, tax year dates, filing status, ownership and K-1 percentages, bank account info. Report in infoConsistency: (a) every MISMATCH, with the exact values compared; (b) every item named under CLIENT FACTS TO VERIFY, matched or not; (c) one final row with item "Identifiers verified as matching", status MATCH, and note = the count and a short list of what was checked. Do not spend a row per identifier that matches — the reviewer needs the exceptions and the scope, not a transcript.${checklistBlock}
+THE SCOPE ROW IS MANDATORY AND MUST BE EXACT. Add ONE final row: box = "Boxes verified as correct", currentState = the EXACT number of boxes you examined and found correct — a whole number you actually counted, never "approximately", never a range, never a guess — shouldBe = "No action", explanation = the list of forms and schedules whose boxes you examined, named one by one (e.g. "Form 1120-S page 1 header and Schedule B; Form 7203 for both shareholders; Form 4562 Part V; Arizona Form 120S page 1"). The reviewer signs the return on the strength of that number and that list, so if you did not examine a form, it must not appear in the list. currentState = what the current return shows (e.g. "Checked" or "No"), shouldBe = ONLY the expected value itself (e.g. "Checked" or "No") with no leading label and no restated question, explanation = one short sentence giving the reason. shouldBe and explanation must never contradict each other.
+
+INFORMATIONAL DATA CHECK (REQUIRED): Verify every informational item across ALL documents — address, tax year dates, filing status, ownership and K-1 percentages, bank account info, preparer details. Report in infoConsistency: (a) every MISMATCH, with the exact values compared on both sides; (b) every item named under CLIENT FACTS TO VERIFY, matched or not; (c) ONE final scope row, item = "Identifiers verified as matching", status = MATCH, note = the EXACT number of items you examined and found matching — a whole number you actually counted, never "approximately" — followed by the list of what they were, named one by one. Do not spend a row on each identifier that matches; the reviewer needs the exceptions and an honest, specific scope.
+
+FOUR ITEMS ARE NOT YOURS TO REPORT: the app computes the taxpayer/entity name, the taxpayer identifying number (SSN/EIN), the tax year on the return, and whether the prior-year return is the immediately preceding year. It compares them character by character across the filed returns and inserts those rows itself, so they always appear in the report whether or not you finish. Do NOT write an infoConsistency row for any of those four and do NOT count them in your scope row — yours would be replaced.
+
+Every row you write is an assertion you are responsible for: write "MATCH" only for an item whose two values you actually located and compared. If you could not find one side, say so in the note and mark the row MISMATCH rather than assuming they agree.${checklistBlock}
 
 For each error, provide risk analysis and a specific proposed solution within the length limits above.
 
@@ -10751,8 +10811,46 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   enforceReviewConciseness(normalized);
   enforceInfoConsistencyStatus(normalized);
+  mergeComputedIdentityRows(normalized, payload);
   enforceFilingReadinessConsistency(normalized);
   return normalized;
+}
+
+/**
+ * Las filas de identificadores las escribe el CODIGO, no el modelo.
+ *
+ * El estudio quiere ver la tabla completa y no solo las excepciones — es razonable: querer ver
+ * que se verifico no es lo mismo que querer que alguien lo afirme sin mirar. Pero una fila que
+ * dice "MATCH" escrita por el modelo es una afirmacion que puede estar mal, y en una corrida
+ * documentada dos de ellas lo estaban. Asi que la tabla vuelve completa y la parte comparable
+ * con una comparacion de texto — nombre, numero de identificacion, año fiscal, distancia al año
+ * anterior — la calcula el codigo y no puede mentir.
+ *
+ * Van primero y desplazan a la fila del modelo que hable del mismo item, para que no queden dos
+ * afirmaciones sobre lo mismo con distinto respaldo.
+ */
+function mergeComputedIdentityRows(normalized, payload) {
+  const computed = identityRows(payload?.files, payload?.metadata || {});
+  if (!computed.length) return;
+  const owned = new Set(COMPUTED_ITEMS.map((item) => item.toLowerCase()));
+  const isOwned = (row) => {
+    const item = String(row?.item || "").toLowerCase();
+    if (owned.has(item)) return true;
+    // El modelo las nombra a su manera ("EIN", "Entity name", "Tax year"), asi que la
+    // coincidencia es por tema y no por texto exacto.
+    if (/^(ein|ssn|tin|taxpayer id|identifying number)\b/.test(item)) return true;
+    if (/^(entity|taxpayer|business|company) name\b/.test(item)) return true;
+    if (/^tax year\b/.test(item)) return true;
+    return false;
+  };
+  const fromModel = (Array.isArray(normalized.infoConsistency) ? normalized.infoConsistency : [])
+    .filter((row) => !isOwned(row));
+  normalized.infoConsistency = [
+    ...computed.map((row) => ({ ...row, source: `${row.source} — ${COMPUTED_SOURCE}` })),
+    ...fromModel,
+  ];
+  const mismatches = computed.filter((row) => row.status === "MISMATCH").length;
+  console.log(`[Review] ${computed.length} identity row(s) computed in code (${mismatches} mismatch), replacing the model's own.`);
 }
 
 // The model has repeatedly written a MISMATCH explanation in the note field ("Client fact
@@ -11062,7 +11160,7 @@ async function handleReviewResponse(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -11116,7 +11214,7 @@ async function handlePresentationsGenerate(req, res) {
     slideCount: spec.slides.length,
     slideOutline: spec.slides.map((slide) => ({ slideNumber: slide.slideNumber, title: slide.title, type: slide.type })),
     tokensUsed: result.data.usage || null,
-    cost: estimateClaudeCost(result.data.usage || null),
+    cost: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -11176,7 +11274,7 @@ async function handleCalculationsRun(req, res) {
     executiveSummary: String(parsed.executiveSummary || ""),
     flagCount: countCalculationFlags(parsed),
     tokensUsed: result.data.usage || null,
-    cost: estimateClaudeCost(result.data.usage || null),
+    cost: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12029,7 +12127,7 @@ async function handlePrepareWorkpaper(req, res) {
       raw,
       model: result.data.model || result.model,
       usage: result.data.usage || null,
-      costEstimate: estimateClaudeCost(result.data.usage || null),
+      costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
     });
   } catch (error) {
     endHeartbeatResponse(res, {
@@ -12462,7 +12560,7 @@ async function handlePreparationDataEntryGuide(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12599,7 +12697,7 @@ Extract all 1040 taxpayer data and return the JSON object.`;
   return _dispatchUiLoad(res, uiPayload, companionUrl, companionToken, taxYear, {
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12656,7 +12754,7 @@ async function handleNotices(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12697,7 +12795,7 @@ async function handleDiagnostics(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12731,7 +12829,7 @@ async function handleOrganizer(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12765,7 +12863,7 @@ async function handleDeliverable(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12799,7 +12897,7 @@ async function handleDeliverableEmailDraft(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -12847,7 +12945,7 @@ async function handleDeliverableGenerateDraft(req, res) {
     raw,
     model: result.data.model || result.model,
     usage: result.data.usage || null,
-    costEstimate: estimateClaudeCost(result.data.usage || null),
+    costEstimate: estimateClaudeCost(result.data.usage || null, result.data.model || result.model),
   });
 }
 
@@ -16086,16 +16184,30 @@ function extractText(data) {
   return data.content.filter((b) => b.type === "text" && b.text).map((b) => b.text).join("\n\n").trim() || "Claude returned no review text.";
 }
 
-function estimateClaudeCost(usage) {
+/**
+ * El costo de una corrida, A LOS PRECIOS DEL MODELO QUE REALMENTE CORRIO.
+ *
+ * Antes ignoraba el modelo y usaba dos constantes fijas de $3/$15, que son las de Sonnet 4.5.
+ * Con Sonnet 5 ($2/$10) eso inflaba el numero que ve el usuario un 50%: una revision real de
+ * $1,05 se reportaba como $1,57. El panel de administrador nunca tuvo el problema porque
+ * calculateCost() si mira el modelo; el que estaba mal era el costo por revision que vuelve al
+ * navegador. Las constantes quedan como respaldo para cuando no se sabe que modelo respondio.
+ */
+function estimateClaudeCost(usage, model) {
   if (!usage) return null;
+  const rates = model ? costRatesForModel(model) : null;
+  const inputPerMTok = rates ? rates.inputPerMTok : CLAUDE_INPUT_COST_PER_MTOK;
+  const outputPerMTok = rates ? rates.outputPerMTok : CLAUDE_OUTPUT_COST_PER_MTOK;
+  const cacheWritePerMTok = rates ? rates.cacheWritePerMTok : CLAUDE_INPUT_COST_PER_MTOK * 1.25;
+  const cacheReadPerMTok = rates ? rates.cacheReadPerMTok : CLAUDE_INPUT_COST_PER_MTOK * 0.1;
   const inputTokens = Number(usage.input_tokens || 0);
   const outputTokens = Number(usage.output_tokens || 0);
   const cacheCreationInputTokens = Number(usage.cache_creation_input_tokens || 0);
   const cacheReadInputTokens = Number(usage.cache_read_input_tokens || 0);
-  const inputUsd = (inputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK;
-  const cacheWriteUsd = (cacheCreationInputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK * 1.25;
-  const cacheReadUsd = (cacheReadInputTokens / 1_000_000) * CLAUDE_INPUT_COST_PER_MTOK * 0.1;
-  const outputUsd = (outputTokens / 1_000_000) * CLAUDE_OUTPUT_COST_PER_MTOK;
+  const inputUsd = (inputTokens / 1_000_000) * inputPerMTok;
+  const cacheWriteUsd = (cacheCreationInputTokens / 1_000_000) * cacheWritePerMTok;
+  const cacheReadUsd = (cacheReadInputTokens / 1_000_000) * cacheReadPerMTok;
+  const outputUsd = (outputTokens / 1_000_000) * outputPerMTok;
   const totalUsd = inputUsd + cacheWriteUsd + cacheReadUsd + outputUsd;
   return {
     currency: "USD",
@@ -16108,8 +16220,9 @@ function estimateClaudeCost(usage) {
     cacheReadUsd,
     outputUsd,
     totalUsd,
-    inputCostPerMillionTokens: CLAUDE_INPUT_COST_PER_MTOK,
-    outputCostPerMillionTokens: CLAUDE_OUTPUT_COST_PER_MTOK,
+    model: model || null,
+    inputCostPerMillionTokens: inputPerMTok,
+    outputCostPerMillionTokens: outputPerMTok,
   };
 }
 
