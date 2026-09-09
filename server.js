@@ -27,6 +27,7 @@ const { selectPages, removalNotice, sizes } = require("./lib/package-trim");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
+const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10837,6 +10838,10 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     const current = files.find((f) => String(f?.reviewRole || f?.role || "").toLowerCase().includes("current_return"));
     return String((current && (current.originalText || current.fullText || current.text || current.extractedText)) || "");
   })();
+  // Las estatales se cruzan en codigo porque el codigo las lee TODAS: sobre un paquete de doce
+  // estados el modelo alcanza a leer cuatro con el techo de gasto vigente, y estos cruces leen
+  // el texto completo sin pasar por ese presupuesto.
+  const stateChecks = runStateReturnChecks(payload?.files, payload?.metadata || {});
   const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
   const depreciationOk = verifiedDepreciation(currentReturnText, payload?.metadata || {});
   if (depreciationOk.length) {
@@ -10846,7 +10851,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       console.log(`[Review] ${depr.corrected} finding(s) called a depreciation figure wrong that the MACRS table says is right; lowered to LOW.`);
     }
   }
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -10890,6 +10895,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["corporate", corporateChecks.length],
     ["package identity", identityChecks.length],
     ["depreciation", depreciationCheck ? 1 : 0],
+    ["state returns", stateChecks.length],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
