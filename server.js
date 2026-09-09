@@ -28,6 +28,7 @@ const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-cei
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
+const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -10842,6 +10843,10 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // estados el modelo alcanza a leer cuatro con el techo de gasto vigente, y estos cruces leen
   // el texto completo sin pasar por ese presupuesto.
   const stateChecks = runStateReturnChecks(payload?.files, payload?.metadata || {});
+  // Una casilla cuya respuesta correcta se deduce de cifras impresas en la misma declaracion
+  // no necesita criterio: necesita una resta. El extractor resuelve el tilde y escribe
+  // [ANSWER: Yes/No], asi que la resta se puede hacer aca.
+  const answerChecks = runAnswerArithmeticChecks(payload?.files, payload?.metadata || {});
   const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
   const depreciationOk = verifiedDepreciation(currentReturnText, payload?.metadata || {});
   if (depreciationOk.length) {
@@ -10851,7 +10856,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       console.log(`[Review] ${depr.corrected} finding(s) called a depreciation figure wrong that the MACRS table says is right; lowered to LOW.`);
     }
   }
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -10896,6 +10901,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["package identity", identityChecks.length],
     ["depreciation", depreciationCheck ? 1 : 0],
     ["state returns", stateChecks.length],
+    ["answered conditions", answerChecks.length],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
