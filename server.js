@@ -29,6 +29,7 @@ const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, veri
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
+const { mergeReviews } = require("./lib/review-merge");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -56,7 +57,12 @@ const ANTHROPIC_VERSION = "2023-06-01";
 // estudio adopta el habito de re-correr un paquete con instrucciones ajustadas, REVIEW_CACHE_TTL
 // = "1h" pasa a convenir; el log de cada corrida sigue diciendo cuanto se escribio y cuanto se
 // leyo, que es la evidencia para decidirlo.
-const REVIEW_CACHE_TTL = String(process.env.REVIEW_CACHE_TTL || "off").trim().toLowerCase();
+// El default depende de si hay mas de una pasada: con una sola el recargo de escritura no se
+// recupera nunca (medido: "read 0" en cinco corridas de paquetes distintos), con dos la segunda
+// lee la entrada al 10% y el recargo se paga solo.
+const REVIEW_CACHE_TTL = String(
+  process.env.REVIEW_CACHE_TTL || (Number(process.env.CLAUDE_REVIEW_PASSES || 2) > 1 ? "5m" : "off")
+).trim().toLowerCase();
 const REVIEW_CACHE_CONTROL = REVIEW_CACHE_TTL === "off"
   ? null
   : REVIEW_CACHE_TTL === "1h"
@@ -124,19 +130,49 @@ const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
 // recorta lo elige lib/package-trim.js, que saca declaraciones estatales antes que formularios
 // federales: el techo se paga con lo menos importante primero.
 //
-// Se calcula contra el modelo MAS CARO de la lista de candidatos y no contra el primero,
-// porque si el primario falla la corrida cae a otro y el techo tiene que seguir valiendo.
-// Hoy eso va de Sonnet 5 ($2/$10) a Sonnet 4.5 ($3/$15).
+// Se calcula contra el modelo que efectivamente va a correr; ver primaryRates en
+// lib/cost-ceiling.js, que explica por que no contra el mas caro de la lista.
 //
-// 1,20 sale de mirar que compro cada dolar en una revision real. Sobre Harvest, con techo de
-// 1,54 la corrida salio $1,37 y de los doce hallazgos OCHO fueron cruces deterministas —
-// incluidos los siete HIGH— que leen el texto completo y no gastan un centavo de este techo.
-// Los cuatro del modelo no necesitaron una sola pagina estatal: las de Nueva York llegaron, se
-// contaron entre las 56 casillas revisadas, y no produjeron ningun hallazgo. A $1,20 el nucleo
-// federal de todo el corpus sigue entrando entero y llega alrededor de la mitad de lo estatal.
+// El techo cubre la REVISION COMPLETA, sus dos pasadas incluidas — es lo que se factura, no lo
+// que cuesta una llamada. Y eso obliga a una eleccion que conviene tener escrita, porque el
+// mismo dinero compra o cobertura de documento o una segunda opinion, no las dos. Sobre Dayani:
+//
+//   config                    entra        federal  estatal   costo
+//   $1,80, 1 pasada       1.526.839         100%     100%     $1,65
+//   $1,80, 2 pasadas        937.664         100%      26%     $1,58
+//   $3,00, 2 pasadas      1.526.839         100%     100%     $2,31
+//
+// Se eligio la segunda fila. El aporte de la segunda pasada esta medido y se repitio en las
+// tres corridas; el de las paginas estatales para el modelo no aparecio en ningun informe
+// todavia — sobre Harvest las de Nueva York llegaron, se contaron entre las 56 casillas
+// revisadas, y no produjeron un solo hallazgo. Los cruces estatales deterministas leen los doce
+// estados igual, gratis, en cualquiera de las tres configuraciones.
 //
 // En 0 se apaga la garantia y manda solo CLAUDE_REVIEW_MAX_TOTAL_CHARS.
-const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.20);
+const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.80);
+// Cuantas veces se corre el MISMO paquete antes de armar el informe.
+//
+// El modelo no encuentra lo mismo dos veces. Tres corridas de dos pasadas sobre el mismo
+// paquete JJ&CJ, con la configuracion actual:
+//
+//   pasada 1 = 10  ->  union 11   (+10%)
+//   pasada 1 =  9  ->  union 14   (+56%)
+//   pasada 1 = 10  ->  union 13   (+30%)
+//
+// Promedio ~+32%, con mucha varianza. La estimacion inicial era +100%, sacada de unir cinco
+// corridas viejas — pero esas no eran comparables entre si: unas con razonamiento encendido,
+// otras con el prompt anterior. Apagar el razonamiento de Sonnet 5, que hubo que hacer para que
+// el informe no saliera vacio, le saco de paso buena parte de la variabilidad que hacia valiosa
+// la segunda pasada.
+//
+// Aun asi conviene, por lo que cuesta: la segunda pega en el cache de prompt y paga la entrada
+// al 10%. Sobre JJ&CJ son ~$0,12 contra ~$0,64 de la primera. Un tercio mas de cobertura por
+// doce centavos. Con pasadas de dos minutos la segunda entra comoda en la ventana de cinco del
+// cache, asi que alcanza el TTL corto y su recargo de escritura chico.
+//
+// La union esta en lib/review-merge.js. Con CLAUDE_REVIEW_PASSES=1 el camino es identico al de
+// una sola pasada, reintento por timeout y rescate de JSON incluidos.
+const REVIEW_PASSES = Math.max(1, Math.min(4, Number(process.env.CLAUDE_REVIEW_PASSES || 2)));
 // El presupuesto de documentos: cuanto del paquete se le manda al modelo.
 //
 // Es alto a proposito. Quien limita el gasto ya no es este numero sino REVIEW_MAX_USD, que
@@ -9914,6 +9950,7 @@ async function handleReview(req, res) {
       maxOutputTokens: REVIEW_MAX_TOKENS,
       totalChars: REVIEW_MAX_TOTAL_CHARS,
       perFileChars: REVIEW_MAX_CHARS_PER_FILE,
+      passes: REVIEW_PASSES,
       build: async (totalChars, perFileChars) => {
         const request = buildDirectReviewRequest(payload, req, { maxTotalChars: totalChars, maxCharsPerFile: perFileChars });
         const blocks = [withReviewCache({ type: "text", text: request.systemPrompt })];
@@ -10025,11 +10062,51 @@ async function handleReview(req, res) {
       }
     }
 
+    // Las pasadas extra: el MISMO pedido, otra vez. La cobertura de una sola corrida es del
+    // 28% de lo que el modelo encuentra en el paquete (medido sobre cinco corridas de JJ&CJ),
+    // asi que la segunda no repite trabajo sino que agrega lo que la primera no vio. Se corren
+    // despues del rescate de JSON para que la primera este resuelta antes de gastar en la
+    // segunda, y son best-effort: una que falle cuesta cobertura, nunca la revision.
+    const extraReviews = [];
+    // El uso de cada pasada se suma: el costo que vuelve al navegador es el de la REVISION,
+    // no el de su primera llamada. Sin esto una revision de dos pasadas se reportaba barata.
+    const extraUsage = [];
+    if (review && REVIEW_PASSES > 1) {
+      for (let pass = 2; pass <= REVIEW_PASSES; pass += 1) {
+        const passStartedAt = Date.now();
+        const again = await callAnthropicDirectWithFallbacks(apiKey, {
+          max_tokens: reviewMaxTokens,
+          thinking: { type: "disabled" },
+          temperature: 0,
+          system: systemBlocks,
+          messages: [{ role: "user", content: reviewRequest.userContent }],
+        }, candidates);
+        if (!again.ok) {
+          console.warn(`[Review] pasada ${pass} de ${REVIEW_PASSES} no completo (${String(again.error || "").slice(0, 120)}); se sigue con las que si.`);
+          continue;
+        }
+        logClaudeCost(req, again, "review", "review_pass_" + pass, payload, passStartedAt);
+        const passUsage = again?.data?.usage || {};
+        console.log(`[Review] pasada ${pass}: ${Number(passUsage.output_tokens || 0).toLocaleString("en-US")} tokens de salida, cache leido ${Number(passUsage.cache_read_input_tokens || 0).toLocaleString("en-US")}.`);
+        extraUsage.push(again.data.usage || {});
+        const passReview = normalizeDirectReview(parseClaudeJson(extractTextBlocksOnly(again.data)), reviewRequest);
+        if (hasDirectReviewContent(passReview)) extraReviews.push(passReview);
+      }
+    }
+    if (extraReviews.length) {
+      const united = mergeReviews([review, ...extraReviews]);
+      const before = Array.isArray(review.issues) ? review.issues.length : 0;
+      review = united.review;
+      const after = Array.isArray(review.issues) ? review.issues.length : 0;
+      console.log(`[Review] ${united.passes} pasadas unidas: ${before} hallazgos en la primera, ${after} en total, ${united.merged} reconocidos como repetidos.`);
+    }
+
     if (!hasDirectReviewContent(review)) {
       rawFallback = textBlocks || "(no text returned by model)";
       review = null;
     }
 
+    const reviewUsage = totalReviewUsage([finalResult.data.usage, ...extraUsage]);
     const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
 
     endHeartbeatResponse(res, {
@@ -10043,9 +10120,10 @@ async function handleReview(req, res) {
       feedbackApplied: reviewRequest.feedbackApplied,
       retriedWithCompactPackage,
       model: finalResult.data.model || finalResult.model,
-      usage: finalResult.data.usage || null,
-      tokensUsed: Number(finalResult.data.usage?.input_tokens || 0) + Number(finalResult.data.usage?.output_tokens || 0),
-      costEstimate: estimateClaudeCost(finalResult.data.usage || null, finalResult.data.model || finalResult.model),
+      usage: reviewUsage,
+      passes: 1 + extraUsage.length,
+      tokensUsed: Number(reviewUsage?.input_tokens || 0) + Number(reviewUsage?.output_tokens || 0),
+      costEstimate: estimateClaudeCost(reviewUsage, finalResult.data.model || finalResult.model),
       savedReviewHistory,
     });
   } catch (error) {
@@ -10572,6 +10650,25 @@ async function countPromptTokens(apiKey, model, system, messages) {
   } catch (_) {
     return null;
   }
+}
+
+/**
+ * Suma el uso de todas las pasadas de una revision.
+ *
+ * Cada pasada trae su propio bloque de usage y el costo de la revision es la suma. La primera
+ * escribe el cache y las siguientes lo leen, asi que los tres contadores de entrada tienen que
+ * sumarse por separado para que el precio salga bien.
+ */
+function totalReviewUsage(blocks) {
+  const list = (Array.isArray(blocks) ? blocks : []).filter(Boolean);
+  if (!list.length) return null;
+  const add = (field) => list.reduce((sum, u) => sum + Number(u[field] || 0), 0);
+  return {
+    input_tokens: add("input_tokens"),
+    output_tokens: add("output_tokens"),
+    cache_creation_input_tokens: add("cache_creation_input_tokens"),
+    cache_read_input_tokens: add("cache_read_input_tokens"),
+  };
 }
 
 function isReviewTimeoutError(result) {
