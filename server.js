@@ -126,8 +126,15 @@ const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
 // porque si el primario falla la corrida cae a otro y el techo tiene que seguir valiendo.
 // Hoy eso va de Sonnet 5 ($2/$10) a Sonnet 4.5 ($3/$15).
 //
+// 1,20 sale de mirar que compro cada dolar en una revision real. Sobre Harvest, con techo de
+// 1,54 la corrida salio $1,37 y de los doce hallazgos OCHO fueron cruces deterministas —
+// incluidos los siete HIGH— que leen el texto completo y no gastan un centavo de este techo.
+// Los cuatro del modelo no necesitaron una sola pagina estatal: las de Nueva York llegaron, se
+// contaron entre las 56 casillas revisadas, y no produjeron ningun hallazgo. A $1,20 el nucleo
+// federal de todo el corpus sigue entrando entero y llega alrededor de la mitad de lo estatal.
+//
 // En 0 se apaga la garantia y manda solo CLAUDE_REVIEW_MAX_TOTAL_CHARS.
-const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.54);
+const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.20);
 // El presupuesto de documentos: cuanto del paquete se le manda al modelo.
 //
 // Es alto a proposito. Quien limita el gasto ya no es este numero sino REVIEW_MAX_USD, que
