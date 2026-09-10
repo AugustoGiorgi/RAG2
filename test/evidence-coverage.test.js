@@ -90,7 +90,11 @@ test("auditDerivations: tambien audita filas OUT_OF_BALANCE", () => {
   const out = auditDerivations(rows);
   assert.strictEqual(out.flagged, 1);
   assert.strictEqual(out.rows[0].status, "NOT VERIFIED");
-  assert.match(out.rows[0].note, /derives 107210\.75 but the support column shows 119259/);
+  // El mensaje cambio y apunta mejor. Antes decia que la cadena no daba lo de la columna de
+  // soporte; ahora reconoce que el total esta escrito ANTES del detalle ("is $119,258.83
+  // (88,400 + ...)") y nombra el defecto que de verdad tiene la nota: sus propios sumandos no
+  // llegan a su propio total. La columna no era el problema.
+  assert.match(out.rows[0].note, /add to 107210\.75, not 119258\.83/);
 });
 
 test("auditDerivations: el redondeo a dolar entero no dispara falsos positivos", () => {

@@ -3,7 +3,7 @@
 // observadas entre dos corridas del MISMO paquete (importes ficticios donde aplica).
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { enforceNumericVerdicts, enforceTieOutVerdicts, enforceBalanceSheetVerdict, parseAmount } = require("../lib/tie-out");
+const { enforceNumericVerdicts, enforceTieOutVerdicts, enforceBalanceSheetVerdict, parseAmount, auditDerivations, parseDerivations } = require("../lib/tie-out");
 
 test("parseAmount: formatos que llegan del modelo", () => {
   assert.strictEqual(parseAmount(81825), 81825);
@@ -247,4 +247,71 @@ test("NOT VERIFIED bloquea la conclusion READY", () => {
   const r = { issues: [], tieOutResults: [{ status: "TIE" }, { status: "NOT VERIFIED" }], openQuestions: [] };
   enforce(r);
   assert.strictEqual(r.filingReadiness, "NOT READY");
+});
+/* --- La aritmetica que muestra una nota ---------------------------------- */
+//
+// Una nota de tie-out no es una cuenta: es prosa con varias cuentas adentro. Reconocer CUAL
+// de ellas afirma el total de la fila es todo el problema, y equivocarse marca como
+// sospechosa una linea que estaba bien — que le hace al preparador el mismo daño que dejar
+// pasar una que estaba mal. Montos ficticios; la forma de las notas es la real.
+
+const fila = (note, wp) => auditDerivations([{
+  lineItem: "Form 1040 Line 3b — Ordinary dividends",
+  status: "TIE", returnAmount: wp, workpaperAmount: wp, difference: 0, note,
+}]).rows[0];
+const marco = (row) => String(row.status).toUpperCase() === "NOT VERIFIED";
+
+test("una nota cuyo total declarado no llega con sus propias partes se marca", () => {
+  // El caso que motivo el chequeo: el total contaba un W-2 dos veces.
+  const r = fila("sum of W-2 Box 1 is $377,814.01 ($351,200 + $2,517.85 + $12,048.08)", 377814.01);
+  assert.ok(marco(r), "las tres partes dan 365.765,93, no 377.814,01");
+  assert.match(r.note, /add to 365765\.93, not 377814\.01/);
+});
+
+test("un total declarado que no es el de la columna se marca", () => {
+  const r = fila("Sum of the three K-1s = $100,000 + $50,000 + $25,000 = $175,000.", 200000);
+  assert.ok(marco(r));
+  assert.match(r.note, /states a total of 175000\.00/);
+});
+
+test("una cadena sana que ata con la columna no se toca", () => {
+  assert.ok(!marco(fila("Adds up: $100,000 + $50,000 + $25,000 = $175,000.", 175000)));
+});
+
+test("un subtotal suelto en el medio de la prosa no decide la fila", () => {
+  // El caso real: en los dividendos ordinarios la nota arranca listando cuatro fondos
+  // Franklin de $3 y $4, y la version anterior tomaba esa PRIMERA cadena — $14 — y la
+  // comparaba contra los $16.888 de la columna. La fila ataba exacto y salio no verificada.
+  const nota = "Schedule B Line 6 totals $16,888 (Charles Schwab $104 + Franklin Rising x4 $3+3+4+4 "
+    + "+ Morgan Stanley $243 + MS Capital Mgmt x4 $1,290+189+2,773+78 + Vanguard $1,274 + Wells Fargo $10,637).";
+  const r = fila(nota, 16888);
+  assert.ok(!marco(r), "una cadena sin total escrito no afirma nada sobre la fila");
+});
+
+test("de varios totales declarados alcanza con que uno sea el de la columna", () => {
+  // Tambien real: la nota de sueldos declara el subtotal de los W-2 del paquete ($247.200)
+  // y despues el total de la linea ($1.470.470). Los dos son correctos.
+  const nota = "W-3 Box 1 total of $247,200 (Pouya, two W-2s: $241,200 + $6,000) plus the "
+    + "spouse W-2 $2,358. Adding $1,220,912 + $249,558 = $1,470,470, which ties exactly to Line 1a.";
+  assert.ok(!marco(fila(nota, 1470470)));
+});
+
+test("una referencia de linea no es un importe", () => {
+  // "2b" es la linea 2b, no dos dolares. La cadena anterior se derramaba pasando el parentesis
+  // de cierre y leia "(Line 1a $1,470,470) + 2b" como 1.470.472.
+  const nota = "Ties: (Line 1a $1,470,470) + 2b interest $41,721 + 3b dividends $16,888.";
+  assert.strictEqual(parseDerivations(nota).length, 0, "ahi no hay ninguna suma");
+  assert.ok(!marco(fila(nota, 13836722)));
+});
+
+test("un importe negativo entre parentesis si es un termino", () => {
+  const chains = parseDerivations("Net: $100,000 + (25,000) = $75,000.");
+  assert.strictEqual(chains.length, 1);
+  assert.strictEqual(chains[0].sum, 75000);
+  assert.strictEqual(chains[0].stated, 75000);
+});
+
+test("una fila ya no verificada no se vuelve a tocar", () => {
+  const row = { status: "NOT VERIFIED", workpaperAmount: 100, note: "$1 + $2 = $3" };
+  assert.strictEqual(auditDerivations([row]).rows[0], row);
 });
