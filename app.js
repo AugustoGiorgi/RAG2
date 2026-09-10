@@ -10135,40 +10135,20 @@ function renderStringList(title, items) {
 }
 
 /**
- * Lo que costo la revision, en la pantalla y no en el log del servidor.
+ * NO MOSTRAR NADA ACA. Devuelve "" a proposito, y tiene que seguir devolviendo "".
  *
- * El servidor venia mandando costEstimate en cada respuesta y nadie lo leia: se calculaba,
- * viajaba al navegador y se tiraba. La unica forma de saber cuanto salio una revision era
- * entrar al VPS por SSH y buscar la linea del log, que es una forma de decir que no se sabia.
+ * Esta pantalla la ve el CLIENTE. Lo que costa una revision es el costo del estudio, y
+ * ponerlo al lado del veredicto le muestra al cliente cuanto sale producir lo que le estamos
+ * cobrando. Se publico una version que mostraba "$2,69 de $3,00" con los tokens y el modelo,
+ * y estuvo a la vista en produccion hasta que se noto.
  *
- * Se muestra contra el techo porque el techo es escalonado — cada paquete recibe el suyo — y
- * "$2,70 de $3,00" dice algo que "$2,70" solo no dice: si quedo holgado o si hubo que recortar
- * documentos para entrar. Cuando se recorto, se avisa, porque eso significa que el modelo no
- * vio todo el paquete.
- *
- * No va al Word a proposito: el informe es el entregable del cliente y esto es informacion
- * operativa del estudio.
+ * El dato existe igual — el servidor manda costEstimate, ceilingUsd y ceilingClamped en la
+ * respuesta de /api/review, y sale por el log del servidor en la linea "[Review] presupuesto:".
+ * Ese es el lugar. Si alguna vez hace falta verlo en pantalla, va en una vista de
+ * administracion detras del rol de admin, nunca en el informe.
  */
 function renderCostSummary(payload) {
-  const cost = payload?.costEstimate;
-  if (!cost || !(Number(cost.totalUsd) > 0)) return "";
-  const usd = (n) => "$" + Number(n || 0).toFixed(2);
-  const tok = (n) => Number(n || 0).toLocaleString("en-US");
-  const ceiling = Number(payload.ceilingUsd) > 0 ? Number(payload.ceilingUsd) : null;
-  const passes = Number(payload.passes) > 1 ? Number(payload.passes) : 0;
-  // El tamaño del PAQUETE, no los tokens facturados. Con dos pasadas la primera escribe el
-  // cache y la segunda lo lee, asi que sumar las tres cifras da el doble y se leeria como un
-  // paquete que no entra en la ventana. Lo que se manda es lo que se escribio una vez.
-  const paquete = Number(cost.inputTokens || 0) + Number(cost.cacheCreationInputTokens || 0);
-  const chips = [
-    `<span class="metric-chip"><strong>${usd(cost.totalUsd)}</strong>${ceiling ? ` de ${usd(ceiling)}` : ""}</span>`,
-    `<span class="metric-chip">${tok(paquete)} tokens de paquete</span>`,
-    `<span class="metric-chip">${tok(cost.outputTokens)} de salida</span>`,
-    passes ? `<span class="metric-chip">${passes} pasadas</span>` : "",
-    cost.model ? `<span class="metric-chip">${escapeHtml(String(cost.model))}</span>` : "",
-    payload.ceilingClamped ? `<span class="metric-chip risk-medium">se recorto el paquete para entrar en el techo</span>` : "",
-  ];
-  return `<div class="review-verdict-metrics" style="margin-top:.5rem">${chips.filter(Boolean).join("")}</div>`;
+  return "";
 }
 
 function renderMessage(type, title, message) {
