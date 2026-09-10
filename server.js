@@ -10145,6 +10145,11 @@ async function handleReview(req, res) {
       passes: 1 + extraUsage.length,
       tokensUsed: Number(reviewUsage?.input_tokens || 0) + Number(reviewUsage?.output_tokens || 0),
       costEstimate: estimateClaudeCost(reviewUsage, finalResult.data.model || finalResult.model),
+      // Que el techo que se le asigno a ESTE paquete se pueda ver sin entrar al servidor.
+      // Es escalonado: cada paquete recibe el suyo, y "gasto $2,70 de $3,00" dice algo que
+      // "gasto $2,70" solo no dice — si quedo holgado o si se recorto para entrar.
+      ceilingUsd: fitted.ceilingUsd,
+      ceilingClamped: fitted.clamped,
       savedReviewHistory,
     });
   } catch (error) {
