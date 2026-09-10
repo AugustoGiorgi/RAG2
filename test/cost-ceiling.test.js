@@ -9,7 +9,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 const {
-  fitToCeiling, primaryRates, fallbackExposure, inputTokenAllowance, priceOf,
+  fitToCeiling, ceilingForPackage, primaryRates, fallbackExposure, inputTokenAllowance, priceOf,
   PESSIMISTIC_CHARS_PER_TOKEN, MIN_OUTPUT_TOKENS,
 } = require("../lib/cost-ceiling");
 
@@ -132,4 +132,80 @@ test("el precio se compone de entrada y salida", () => {
   assert.strictEqual(priceOf({ inputTokens: 1e6, outputTokens: 0, rates: SONNET5 }), 2);
   assert.strictEqual(priceOf({ inputTokens: 0, outputTokens: 1e6, rates: SONNET5 }), 10);
   assert.strictEqual(priceOf({ inputTokens: 0, outputTokens: 0, rates: null }), null);
+});
+/* --- El techo escalonado ------------------------------------------------- */
+//
+// Un techo unico tiene que elegir cual de los dos errores cometer: si es bajo, el paquete
+// grande se recorta; si es alto, el paquete chico queda autorizado a gastar plata que no
+// necesita. El escalonado le da a cada paquete el techo que su propio tamaño pide.
+
+test("un paquete chico recibe un techo chico y uno grande, uno grande", () => {
+  const chico = ceilingForPackage({ inputTokens: 139875, rates: SONNET5, passes: 2, floorUsd: 0.80, capUsd: 3.00 });
+  const grande = ceilingForPackage({ inputTokens: 563209, rates: SONNET5, passes: 2, floorUsd: 0.80, capUsd: 3.00 });
+  assert.ok(chico < grande, "el techo tiene que seguir al tamaño");
+  assert.ok(chico < 1.20, `un 1120-S de un estado no necesita mas de un dolar, dio ${chico.toFixed(2)}`);
+  assert.ok(grande > 2.00, `un 1040 de doce estados necesita mas de dos, dio ${grande.toFixed(2)}`);
+});
+
+test("el piso protege al paquete chico de su propia estimacion", () => {
+  const minimo = ceilingForPackage({ inputTokens: 1000, rates: SONNET5, passes: 2, floorUsd: 0.80, capUsd: 3.00 });
+  assert.strictEqual(minimo, 0.80);
+});
+
+test("el tope es el limite de gasto del estudio y no se pasa", () => {
+  const enorme = ceilingForPackage({ inputTokens: 5000000, rates: SONNET5, passes: 2, floorUsd: 0.80, capUsd: 3.00 });
+  assert.strictEqual(enorme, 3.00);
+});
+
+test("el techo cubre las dos pasadas, no una", () => {
+  const una = ceilingForPackage({ inputTokens: 563209, rates: SONNET5, passes: 1, floorUsd: 0, capUsd: Infinity });
+  const dos = ceilingForPackage({ inputTokens: 563209, rates: SONNET5, passes: 2, floorUsd: 0, capUsd: Infinity });
+  assert.ok(dos > una, "dos pasadas no pueden entrar en el techo de una");
+  // Pero por el cache la segunda pasada no cuesta el doble: entre $2,00 y $2,70 por millon.
+  assert.ok(dos < una * 1.6, `la segunda pasada no puede costar como la primera (${una.toFixed(2)} -> ${dos.toFixed(2)})`);
+});
+
+test("un paquete que entra no se recorta, y el techo que se le fija es el suyo", async () => {
+  const h = harness({ chars: 300000 });
+  const r = await fitToCeiling({
+    floorUsd: 0.80, capUsd: 3.00, rates: SONNET5, maxOutputTokens: 64000,
+    totalChars: 1800000, perFileChars: 1000000, passes: 2, build: h.build, count: h.count,
+  });
+  assert.strictEqual(r.clamped, false, "un paquete que entra no se toca");
+  assert.ok(r.ceilingUsd < 3.00, `no tiene por que recibir el tope entero, recibio ${r.ceilingUsd.toFixed(2)}`);
+  assert.ok(r.estimatedUsd <= r.ceilingUsd + 1e-9, "el costo no puede pasar el techo que se fijo");
+});
+
+test("el techo se calcula una sola vez: un recorte no baja el techo que pide otro recorte", async () => {
+  // Si el techo se recalculara en cada vuelta, cada recorte bajaria el techo, el techo mas bajo
+  // pediria otro recorte, y el paquete se comeria a si mismo hasta el minimo.
+  const h = harness({ chars: 9000000 });
+  const r = await fitToCeiling({
+    floorUsd: 0.80, capUsd: 3.00, rates: SONNET5, maxOutputTokens: 64000,
+    totalChars: 9000000, perFileChars: 9000000, passes: 2, build: h.build, count: h.count,
+  });
+  assert.strictEqual(r.ceilingUsd, 3.00, "un paquete enorme recibe el tope y lo conserva");
+  assert.ok(r.clamped, "y si, hubo que recortarlo");
+  assert.ok(r.totalChars > 1000000, `no puede desmoronarse hasta el minimo, quedo en ${r.totalChars}`);
+});
+
+test("el techo fijo sigue funcionando", async () => {
+  // Es el camino de siempre y las pruebas de arriba lo usan: pasar ceilingUsd tiene que
+  // seguir dando exactamente el mismo comportamiento que antes del escalonado.
+  const h = harness({ chars: 9000000 });
+  const r = await fitToCeiling({
+    ceilingUsd: 1.20, rates: SONNET5, maxOutputTokens: 64000,
+    totalChars: 9000000, perFileChars: 9000000, passes: 2, build: h.build, count: h.count,
+  });
+  assert.strictEqual(r.ceilingUsd, 1.20);
+  assert.ok(r.clamped);
+});
+
+test("sin techo de ninguna clase no se recorta nada", async () => {
+  const h = harness({ chars: 9000000 });
+  const r = await fitToCeiling({
+    rates: SONNET5, maxOutputTokens: 64000,
+    totalChars: 9000000, perFileChars: 9000000, passes: 2, build: h.build, count: h.count,
+  });
+  assert.strictEqual(r.clamped, false);
 });

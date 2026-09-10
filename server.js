@@ -23,7 +23,7 @@ const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
-const { selectPages, removalNotice, sizes } = require("./lib/package-trim");
+const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
@@ -134,22 +134,35 @@ const REVIEW_MAX_TOKENS = Number(process.env.CLAUDE_REVIEW_MAX_TOKENS || 64000);
 // lib/cost-ceiling.js, que explica por que no contra el mas caro de la lista.
 //
 // El techo cubre la REVISION COMPLETA, sus dos pasadas incluidas — es lo que se factura, no lo
-// que cuesta una llamada. Y eso obliga a una eleccion que conviene tener escrita, porque el
-// mismo dinero compra o cobertura de documento o una segunda opinion, no las dos. Sobre Dayani:
+// que cuesta una llamada.
 //
-//   config                    entra        federal  estatal   costo
-//   $1,80, 1 pasada       1.526.839         100%     100%     $1,65
-//   $1,80, 2 pasadas        937.664         100%      26%     $1,58
-//   $3,00, 2 pasadas      1.526.839         100%     100%     $2,31
+// Y no es un numero fijo: es escalonado. Cada paquete recibe el techo que su propio tamaño
+// pide, entre un piso y un tope. Un techo unico tenia que elegir cual de los dos errores
+// cometer — con $1,80 el paquete de doce estados con adjuntos se recortaba, y con $3,00 fijo
+// una declaracion de treinta paginas quedaba autorizada a gastar $3,00 si algo salia mal.
+// Ver ceilingForPackage en lib/cost-ceiling.js. Sobre los paquetes reales del estudio:
 //
-// Se eligio la segunda fila. El aporte de la segunda pasada esta medido y se repitio en las
-// tres corridas; el de las paginas estatales para el modelo no aparecio en ningun informe
-// todavia — sobre Harvest las de Nueva York llegaron, se contaron entre las 56 casillas
-// revisadas, y no produjeron un solo hallazgo. Los cruces estatales deterministas leen los doce
-// estados igual, gratis, en cualquiera de las tres configuraciones.
+//   paquete                              tokens    techo    costo real
+//   1120-S de un estado                 139.875    $0,99      $0,64
+//   1120 con anexos                     301.941    $1,49      $1,08
+//   1065 de Nueva York                  523.353    $2,18      $1,67
+//   1040 de doce estados                563.209    $2,30      $1,78
+//   1040 de doce estados + 48 adjuntos  899.653    $3,00      $2,69
+//
+// Los cinco entran enteros y con dos pasadas. Lo que lo hizo posible no fue subir el tope sino
+// dejar de mandar relleno: ver collapseLeaders y dedupePages en lib/package-trim.js, que sacan
+// el 33% del paquete sin perder un solo dato.
+//
+// Que el techo NO garantiza: que el paquete entre. Arriba de ~1.900.000 caracteres el que corta
+// es la ventana del modelo y no hay dinero que lo arregle. Quien avisa de eso es el manifiesto
+// de package-trim.
 //
 // En 0 se apaga la garantia y manda solo CLAUDE_REVIEW_MAX_TOTAL_CHARS.
-const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 1.80);
+const REVIEW_MAX_USD = Number(process.env.CLAUDE_REVIEW_MAX_USD || 3.00);
+// El piso del escalonado. Existe para que un paquete chico no se recorte por un error de
+// estimacion: si count_tokens no responde se estima pesimista, y sobre un paquete de 40.000
+// tokens ese pesimismo son centavos que no tienen por que costar paginas.
+const REVIEW_MIN_USD = Number(process.env.CLAUDE_REVIEW_MIN_USD || 0.80);
 // Cuantas veces se corre el MISMO paquete antes de armar el informe.
 //
 // El modelo no encuentra lo mismo dos veces. Tres corridas de dos pasadas sobre el mismo
@@ -181,16 +194,21 @@ const REVIEW_PASSES = Math.max(1, Math.min(4, Number(process.env.CLAUDE_REVIEW_P
 // entra entero y barato, y uno grande entra hasta donde el techo alcance, resignando primero
 // declaraciones estatales y nunca formularios federales.
 //
-// 1.800.000 cubre el paquete mas grande del corpus (1.526.839 caracteres tras sacarle lo
-// administrativo), asi que sobre esos archivos el techo es lo unico que recorta.
+// El numero es la VENTANA del modelo, que es el unico limite que no se puede comprar.
 //
-// Sobre la ventana: son 1.000.000 de tokens en Sonnet 5, consultado a GET /v1/models. El texto
-// de una declaracion tokeniza a 2,19 caracteres por token — medido con /v1/messages/count_tokens
-// sobre 700.000 caracteres reales, no estimado — asi que 1.800.000 caracteres son unos 822.000
-// tokens y entran. La ventana no es la restriccion; la plata si.
+// Son 1.000.000 de tokens en Sonnet 5, consultado a GET /v1/models. Restando los 64.000 de
+// salida quedan 936.000 de entrada; a 2,19 caracteres por token — medido con count_tokens sobre
+// 700.000 caracteres reales, no estimado — y descontando los ~133.000 caracteres de prompt fijo,
+// el maximo absoluto de documento son 1.916.840 caracteres. 1.900.000 deja un margen chico.
+//
+// Estaba en 1.800.000, y despues de la limpieza eso empezo a ser LO QUE RECORTABA: el paquete
+// mas grande del estudio queda en 1.837.241 caracteres, de modo que el rail de caracteres le
+// sacaba 80 paginas que el techo de plata ya habia pagado. Los dos limites tienen que decir
+// cosas distintas — este dice que entra en la ventana, el otro cuanto se puede gastar — y
+// cuando el mas tonto de los dos es el que manda, se paga por paginas que no se mandan.
 //
 // La reintentada por timeout sigue compactando a 80k.
-const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 1800000);
+const REVIEW_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_MAX_TOTAL_CHARS || 1900000);
 const REVIEW_MAX_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MAX_CHARS_PER_FILE || 1000000);
 const REVIEW_MIN_CHARS_PER_FILE = Number(process.env.CLAUDE_REVIEW_MIN_CHARS_PER_FILE || 6000);
 const REVIEW_RETRY_MAX_TOTAL_CHARS = Number(process.env.CLAUDE_REVIEW_RETRY_MAX_TOTAL_CHARS || 80000);
@@ -9945,7 +9963,9 @@ async function handleReview(req, res) {
     const candidates = reviewModelCandidates();
     const ceilingRates = primaryRates(candidates, costRatesForModel);
     const fitted = await fitToCeiling({
-      ceilingUsd: REVIEW_MAX_USD,
+      // Escalonado: el techo sale del tamaño medido de ESTE paquete, entre el piso y el tope.
+      floorUsd: REVIEW_MIN_USD,
+      capUsd: REVIEW_MAX_USD,
       rates: ceilingRates,
       maxOutputTokens: REVIEW_MAX_TOKENS,
       totalChars: REVIEW_MAX_TOTAL_CHARS,
@@ -9973,7 +9993,8 @@ async function handleReview(req, res) {
       + " (" + (fitted.counted ? "contados por la API" : "estimados, count_tokens no respondio") + ")"
       + ", techo de salida " + reviewMaxTokens.toLocaleString("en-US")
       + ", costo maximo $" + Number(fitted.estimatedUsd || 0).toFixed(2)
-      + " contra un techo de $" + REVIEW_MAX_USD.toFixed(2)
+      + " contra un techo de $" + Number(fitted.ceilingUsd || 0).toFixed(2)
+      + " (escalonado entre $" + REVIEW_MIN_USD.toFixed(2) + " y $" + REVIEW_MAX_USD.toFixed(2) + ")"
       + (fitted.clamped ? " — se recorto la entrada a " + fitted.totalChars.toLocaleString("en-US") + " caracteres en " + fitted.passes + " pasada(s)" : "") + "."
     );
 
@@ -10223,6 +10244,37 @@ function compactReviewDocuments(documents = [], limits = {}) {
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || documents.length;
   const minBudget = Math.max(2000, minCharsPerFile);
 
+  // Antes de repartir un solo caracter de presupuesto: sacar lo que no es informacion.
+  //
+  // Dos cosas, las dos medidas sobre el paquete mas grande del estudio (dos declaraciones de
+  // 610 paginas mas 48 archivos de soporte de 500):
+  //
+  //   guias de puntos de los formularios ....  551.000 chars   21%
+  //   paginas identicas repetidas en el ZIP .  225.000 chars   12%
+  //   -------------------------------------------------------------
+  //   2.752.039 -> 1.837.241 chars                             -33%
+  //
+  // Ese 33% es la diferencia entre un paquete que NO entra en la ventana del modelo y uno que
+  // entra entero con dos pasadas por $2,69. Ninguno de los dos pasos pierde un dato: los 53.214
+  // importes del paquete sobreviven identicos y ninguno de los 4.620 valores distintos
+  // desaparece. Ver collapseLeaders y dedupePages en lib/package-trim.js.
+  //
+  // Se limpia SOLO lo que va al modelo. originalText, que es lo que leen los cruces en codigo,
+  // queda crudo: varios de esos cruces limpian las guias por su cuenta y con su propio criterio,
+  // y no hay ninguna razon para hacerles cambiar el texto debajo de los pies.
+  const cleaned = dedupePages(documents.map((file) => ({
+    name: String(file.name || ""),
+    text: collapseLeaders(String(file.extractedText || "")),
+  })));
+  const modelText = cleaned.documents.map((doc) => doc.text);
+  const duplicateNotes = cleaned.documents.map((doc) => duplicateNotice(doc.duplicates));
+  if (cleaned.removedPages) {
+    console.log(
+      `[Review] limpieza: ${cleaned.removedPages} pagina(s) identicas a otras del mismo paquete`
+      + ` (${cleaned.removedChars.toLocaleString("en-US")} caracteres) se mandan una sola vez.`
+    );
+  }
+
   // El presupuesto de entrada es el 92% del costo de una revision — la salida, con el
   // razonamiento apagado, son 13.360 tokens y trece centavos. Asi que como se reparte esta
   // plata es LA decision economica de la pestaña, y el orden correcto es: primero el nucleo
@@ -10234,8 +10286,10 @@ function compactReviewDocuments(documents = [], limits = {}) {
   // interanuales se comparan justamente contra esas paginas. Sobre Dayani con 800.000 de
   // presupuesto eso daba 86% del federal; garantizando el nucleo primero da 100% por el mismo
   // dinero.
-  const need = documents.map((file) => {
-    const text = String(file.extractedText || "");
+  // Se mide sobre el texto YA limpio, porque el presupuesto existe para acotar lo que el modelo
+  // recibe y el modelo recibe el limpio. Medir sobre el crudo pediria presupuesto para guias de
+  // puntos y recortaria paginas para pagarlas.
+  const need = modelText.map((text) => {
     if (!text) return { core: 0, full: 0 };
     const measured = sizes(text);
     return { core: Math.min(maxCharsPerFile, measured.core), full: Math.min(maxCharsPerFile, measured.full) };
@@ -10250,6 +10304,13 @@ function compactReviewDocuments(documents = [], limits = {}) {
   return documents.map((file, index) => {
     const originalText = String(file.extractedText || "");
     if (!originalText) return { ...file, originalTextLength: 0, compacted: false };
+    // Lo que se recorta y se manda es el texto limpio; originalText queda para los cruces.
+    //
+    // El ?? no es cosmetico. Un archivo subido dos veces queda con el texto VACIO despues del
+    // deduplicado, y con || ese vacio caia de nuevo en originalText — o sea que el archivo
+    // repetido se mandaba entero y crudo, justo lo que el deduplicado venia a evitar. Vacio es
+    // una respuesta valida aca: lo que va en su lugar es el aviso de duplicados.
+    const sourceText = modelText[index] ?? originalText;
     let budget;
     if (fitsWhole) {
       // Entra todo: nadie recorta nada.
@@ -10274,7 +10335,7 @@ function compactReviewDocuments(documents = [], limits = {}) {
     // modelo recibia el 4% del nucleo federal — ni el 1040, ni un Schedule, ni un K-1. Medido
     // sobre los siete paquetes de prueba, el nucleo federal que llega pasa del 45% al 82%.
     // Ver lib/package-trim.js.
-    const selection = selectPages(originalText, budget);
+    const selection = selectPages(sourceText, budget);
     let compactedText;
     let note;
     if (selection.pageCount) {
@@ -10282,15 +10343,19 @@ function compactReviewDocuments(documents = [], limits = {}) {
       note = removalNotice(selection.removed, selection.pageCount);
     } else {
       // Sin estructura de paginas no hay nada que priorizar y queda el comportamiento anterior.
-      compactedText = truncateMiddle(originalText, budget);
-      note = compactedText.length < originalText.length
-        ? `\n\n[SERVER NOTE: This document was compacted from ${originalText.length.toLocaleString("en-US")} to approximately ${compactedText.length.toLocaleString("en-US")} characters so the review can complete. The beginning and ending sections were preserved. Anything you were asked to check that is not present may have been in the removed section — say the page was not provided rather than inferring what it contained.]`
+      compactedText = truncateMiddle(sourceText, budget);
+      note = compactedText.length < sourceText.length
+        ? `\n\n[SERVER NOTE: This document was compacted from ${sourceText.length.toLocaleString("en-US")} to approximately ${compactedText.length.toLocaleString("en-US")} characters so the review can complete. The beginning and ending sections were preserved. Anything you were asked to check that is not present may have been in the removed section — say the page was not provided rather than inferring what it contained.]`
         : "";
     }
-    const compacted = compactedText.length < originalText.length;
+    // Se compara contra el texto limpio, no contra el crudo: si se comparara contra el crudo,
+    // la limpieza sola marcaria como "recortado" a un documento que llego entero, y el cartel
+    // de paginas faltantes es lo unico que separa "no vi el Schedule E" de "el Schedule E
+    // estaba bien".
+    const compacted = compactedText.length < sourceText.length;
     return {
       ...file,
-      extractedText: compactedText + note,
+      extractedText: compactedText + note + duplicateNotes[index],
       // Kept alongside the compacted copy for checks that run in CODE. Only the prompt has
       // a token budget; a regex does not, and feeding it the truncated middle of a return
       // is how the cross-year checks came back empty on a package whose prior-year Form

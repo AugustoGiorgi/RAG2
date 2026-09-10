@@ -12,6 +12,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   selectPages, splitPages, classifyPage, removalNotice, pageLabel, TIER,
+  collapseLeaders, dedupePages, duplicateNotice,
 } = require("../lib/package-trim");
 
 const page = (n, body) => `--- Page ${n} ---\n${body}\n`;
@@ -145,4 +146,113 @@ test("el texto conservado nunca supera el presupuesto por mas de una pagina", ()
     if (!r.pageCount) continue;
     assert.ok(r.text.length <= budget, `con presupuesto ${budget} devolvio ${r.text.length}`);
   }
+});
+/* --- Sacar lo que no es informacion ------------------------------------- */
+//
+// Dos pasos que existen por una razon economica concreta: sobre el paquete mas grande del
+// estudio sacan el 33% de lo que se manda, y ese 33% es la diferencia entre un paquete que no
+// entra en la ventana del modelo y uno que entra entero con dos pasadas.
+//
+// Lo unico que estas pruebas tienen que garantizar es que no se pierda un dato. Un ahorro que
+// se come un importe no es un ahorro, es un error que ademas es barato.
+
+const LEADER_LINE = "Check here if this is a publicly traded partnership . . . . . . . . . . . . . . . . . . >  X  [ANSWER: No]";
+
+test("la guia de puntos se va y la casilla queda", () => {
+  const out = collapseLeaders(LEADER_LINE);
+  assert.doesNotMatch(out, /(?:[ \t]*\.){4,}/, "no puede quedar una guia de puntos");
+  assert.ok(out.length < LEADER_LINE.length - 30, "tiene que achicar de verdad");
+  assert.match(out, /publicly traded partnership/);
+  assert.match(out, /\[ANSWER: No\]/, "la marca de casilla es justamente lo que no se puede perder");
+  assert.match(out, /X/, "y la tilde tampoco");
+});
+
+test("no toca los importes ni los decimales", () => {
+  const linea = "Ordinary business income . . . . . . . . . . . . . 1,234,567.89   2.5   0.075";
+  const out = collapseLeaders(linea);
+  for (const importe of ["1,234,567.89", "2.5", "0.075"]) {
+    assert.ok(out.includes(importe), `desaparecio ${importe}`);
+  }
+});
+
+test("tres puntos seguidos son puntos suspensivos, no una guia", () => {
+  assert.strictEqual(collapseLeaders("pendiente... continua"), "pendiente... continua");
+});
+
+test("una columna de decimales no se confunde con una guia", () => {
+  const linea = "1.5 2.5 3.5 4.5 5.5 6.5";
+  assert.strictEqual(collapseLeaders(linea), linea);
+});
+
+/* --- Paginas repetidas --------------------------------------------------- */
+
+const K1_PAGE = page(3, "Schedule K-1 (Form 1065) 2025\nPartner: CCD HOLDINGS LLC\nOrdinary business income 412,880\n" + filler(30));
+const OTRO_K1 = page(3, "Schedule K-1 (Form 1065) 2025\nPartner: CCD HOLDINGS LLC\nOrdinary business income 517,004\n" + filler(30));
+const INSTRUCCIONES = page(4, "Partner's Instructions for Schedule K-1\nThis list identifies the codes used on Schedule K-1\n" + filler(30));
+// Ocho paginas es el minimo que splitPages considera estructura, asi que el armador tiene que
+// llegar a ocho aunque no se le pase ninguna pagina extra.
+const paquete = (...paginas) => [page(1, "Cover" + filler(20)), page(2, "Index" + filler(20)), ...paginas,
+  page(5, "Tail A" + filler(20)), page(6, "Tail B" + filler(20)), page(7, "Tail C" + filler(20)),
+  page(8, "Tail D" + filler(20)), page(9, "Tail E" + filler(20)), page(10, "Tail F" + filler(20))].join("");
+
+test("el mismo K-1 mandado dos veces se manda una", () => {
+  const r = dedupePages([
+    { name: "K1 suelto.pdf", text: paquete(K1_PAGE, INSTRUCCIONES) },
+    { name: "carpeta/K1 suelto.pdf", text: paquete(K1_PAGE, INSTRUCCIONES) },
+  ]);
+  assert.strictEqual(r.removedPages, 10, "el segundo archivo es identico entero");
+  assert.strictEqual(r.documents[0].text.length, paquete(K1_PAGE, INSTRUCCIONES).length, "el primero queda intacto");
+  assert.strictEqual(r.documents[1].text, "", "del segundo no queda nada");
+});
+
+test("dos K-1 con las mismas etiquetas y distintos importes NO se funden", () => {
+  // Es el error que hay que no cometer: normalizar sacando los digitos hacia que estos dos
+  // hashearan igual, y el segundo K-1 desaparecia con su importe adentro.
+  const r = dedupePages([
+    { name: "a.pdf", text: paquete(K1_PAGE) },
+    { name: "b.pdf", text: paquete(OTRO_K1) },
+  ]);
+  assert.ok(r.documents[1].text.includes("517,004"), "el importe del segundo tiene que sobrevivir");
+});
+
+test("una pagina corta no se compara con nada", () => {
+  // Dos paginas de un PDF escaneado que solo traen el numero de lote del escaner. Son cortas,
+  // se parecen, y son lo unico que ese documento aporta.
+  const corta = (n, id) => page(n, "010815 MS9COA01 " + id);
+  const doc = [page(1, "A" + filler(20)), page(2, "B" + filler(20)), corta(3, "054074"), corta(4, "054075"),
+    page(5, "C" + filler(20)), page(6, "D" + filler(20)), page(7, "E" + filler(20)), page(8, "F" + filler(20))].join("");
+  const r = dedupePages([{ name: "escaneado.pdf", text: doc }]);
+  assert.strictEqual(r.removedPages, 0);
+  assert.ok(r.documents[0].text.includes("054074") && r.documents[0].text.includes("054075"));
+});
+
+test("ninguna cifra del paquete desaparece al deduplicar", () => {
+  const docs = [
+    { name: "a.pdf", text: paquete(K1_PAGE, INSTRUCCIONES) },
+    { name: "b.pdf", text: paquete(OTRO_K1, INSTRUCCIONES) },
+    { name: "c.pdf", text: paquete(K1_PAGE, INSTRUCCIONES) },
+  ];
+  const cifras = (t) => new Set(String(t).match(/\d{1,3}(?:,\d{3})+(?:\.\d+)?|\b\d{2,}\b/g) || []);
+  const antes = cifras(docs.map((d) => d.text).join("\n"));
+  const r = dedupePages(docs.map((d) => ({ ...d, text: collapseLeaders(d.text) })));
+  const despues = cifras(r.documents.map((d) => d.text).join("\n"));
+  const perdidas = [...antes].filter((x) => !despues.has(x));
+  assert.deepStrictEqual(perdidas, [], "la limpieza no puede perder un valor");
+});
+
+test("un documento sin estructura de paginas pasa sin tocarse", () => {
+  const suelto = "una nota corta sin marcas de pagina";
+  const r = dedupePages([{ name: "nota.txt", text: suelto }]);
+  assert.strictEqual(r.documents[0].text, suelto);
+  assert.strictEqual(r.removedPages, 0);
+});
+
+test("el aviso de duplicados dice que el modelo SI vio el contenido", () => {
+  // Es lo contrario de removalNotice, y confundirlos tiene consecuencias: si al modelo se le
+  // dice que no vio un K-1 que tiene delante, deja de cruzarlo.
+  const aviso = duplicateNotice([{ page: 7, label: "Schedule K-1 (Form 1065)", sameAs: { name: "a.pdf", page: 3 } }]);
+  assert.match(aviso, /You HAVE seen this content/);
+  assert.doesNotMatch(aviso, /have NOT seen/);
+  assert.match(aviso, /pages 7/);
+  assert.strictEqual(duplicateNotice([]), "", "sin duplicados no se agrega ruido al prompt");
 });
