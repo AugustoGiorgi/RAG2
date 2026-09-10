@@ -130,3 +130,53 @@ test("sin revisiones no rompe", () => {
 test("subjectKey normaliza el tema entre redacciones distintas", () => {
   assert.strictEqual(subjectKey({ formOrSchedule: "Form 1065 Schedule L" }), subjectKey({ formOrSchedule: "Schedule L (Form 1065)" }));
 });
+
+/* --- Filas duplicadas entre pasadas ------------------------------------- */
+
+// Las ocho filas de casillas que salieron en un informe real de un 1040, donde las dos pasadas
+// nombraron tres veces la misma casilla de forma distinta y la fila de alcance quedo en el
+// medio de la tabla.
+const CASILLAS_P1 = [
+  { box: "Form 1040 Digital Assets question" },
+  { box: "Form 1040 Filing Status - Married Filing Jointly" },
+  { box: "Schedule B Part III Line 7a Foreign account question" },
+  { box: "Schedule D Line (Qualified Opportunity Fund disposition)" },
+  { box: "Boxes verified as correct" },
+];
+const CASILLAS_P2 = [
+  { box: "Form 1040 Page 1 - Digital Assets question" },
+  { box: "Schedule B Part III Line 7a - Foreign account" },
+  { box: "Schedule D - Qualified opportunity fund disposition" },
+];
+
+test("la misma casilla nombrada distinto en cada pasada sale una vez", () => {
+  const { review } = mergeReviews([revision({ checkboxReview: CASILLAS_P1 }), revision({ checkboxReview: CASILLAS_P2 })]);
+  assert.strictEqual(review.checkboxReview.length, 5, "ocho filas con tres repetidas");
+});
+
+test("la fila de alcance va al final de la tabla, no en el medio", () => {
+  const { review } = mergeReviews([revision({ checkboxReview: CASILLAS_P1 }), revision({ checkboxReview: CASILLAS_P2 })]);
+  assert.match(review.checkboxReview[review.checkboxReview.length - 1].box, /Boxes verified as correct/);
+});
+
+test("dos casillas realmente distintas no se funden", () => {
+  const a = revision({ checkboxReview: [{ box: "Form 1040 Item G(1) - Initial return" }] });
+  const b = revision({ checkboxReview: [{ box: "Form 1040 Item G(5) - Amended return" }] });
+  assert.strictEqual(mergeReviews([a, b]).review.checkboxReview.length, 2);
+});
+
+test("dos claves cortas no se funden por casualidad", () => {
+  // "Item A" y "Item B" quedan en una letra cada una despues de sacar ubicacion y numeros:
+  // por debajo del minimo no se compara por contencion.
+  const a = revision({ checkboxReview: [{ box: "Line 1 Item A" }] });
+  const b = revision({ checkboxReview: [{ box: "Line 2 Item B" }] });
+  assert.strictEqual(mergeReviews([a, b]).review.checkboxReview.length, 2);
+});
+
+test("lo mismo aplica a la tabla de identificadores", () => {
+  const a = revision({ infoConsistency: [{ item: "Taxpayer address" }, { item: "Identifiers verified as matching" }] });
+  const b = revision({ infoConsistency: [{ item: "Taxpayer address - Form 1040 vs. CA Form 540" }] });
+  const { review } = mergeReviews([a, b]);
+  assert.strictEqual(review.infoConsistency.length, 2);
+  assert.match(review.infoConsistency[review.infoConsistency.length - 1].item, /verified as matching/);
+});
