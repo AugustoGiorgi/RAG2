@@ -24,6 +24,7 @@ const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks"
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
+const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
@@ -10127,8 +10128,20 @@ async function handleReview(req, res) {
       review = null;
     }
 
+    // Lo ultimo antes de que el informe salga: se ve en pantalla, se exporta a Word y se guarda
+    // en el historial, asi que va sin identificadores completos, sin pedidos que nadie hizo y
+    // sin formularios de firma reportados como faltantes. Ver lib/report-delivery.js.
+    if (review) {
+      const delivered = prepareReviewForDelivery(review, { userNotes: payload?.metadata?.userNotes });
+      review = delivered.review;
+      if (delivered.dropped) console.log(`[Review] ${delivered.dropped} linea(s) sacadas antes de entregar: pedidos no hechos o formularios de firma reportados como faltantes.`);
+    }
+    // El texto crudo del modelo tambien sale: se guarda en el historial y, si el armado fallo,
+    // se muestra tal cual. Lleva la misma mascara que el informe.
+    if (rawFallback) rawFallback = maskSensitiveText(rawFallback);
+
     const reviewUsage = totalReviewUsage([finalResult.data.usage, ...extraUsage]);
-    const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, rawFallback || textBlocks) : null;
+    const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, maskSensitiveText(rawFallback || textBlocks)) : null;
 
     endHeartbeatResponse(res, {
       ok: true,
@@ -10413,7 +10426,7 @@ REVIEW THE CURRENT YEAR RETURN FOR, at minimum:
 
 CLIENT FACTS ARE MANDATORY TO CHECK (ABSOLUTE): every line under CLIENT FACTS TO VERIFY must be actively compared against the uploaded documents. If a client fact does not match what the documents show, you MUST report it — as an issues[] entry (priority per the rubric below) AND as an infoConsistency row with status MISMATCH. Never mark a client fact as MATCH without actually checking every digit/word against the documents, and never silently drop a client fact that does not match.
 
-USER REVIEW INSTRUCTIONS ARE MANDATORY TASKS (ABSOLUTE): every request under USER REVIEW INSTRUCTIONS must be explicitly fulfilled in your JSON output, not just acknowledged. If the user asks for a list, summary, or specific extra output (e.g. "list every EIN and SSN found in the return"), produce that exact list as its own set of entries in verifiedItems (prefixed "REQUESTED: ") so it is impossible to miss. Do not skip a requested task because it does not fit neatly into another section.
+USER REVIEW INSTRUCTIONS ARE MANDATORY TASKS (ABSOLUTE): every request under USER REVIEW INSTRUCTIONS must be explicitly fulfilled in your JSON output, not just acknowledged. If the user asks for a list, summary, or specific extra output (for example, a list of every Schedule K-1 received), produce that exact list as its own set of entries in verifiedItems (prefixed "REQUESTED: ") so it is impossible to miss. Do not skip a requested task because it does not fit neatly into another section. A "REQUESTED: " entry exists ONLY to answer a request that is actually written under a USER REVIEW INSTRUCTIONS heading in this message. If there is no such heading, write no "REQUESTED: " entry at all — not a list, and not a note saying nothing was requested. Never write a full Social Security number, ITIN or bank account number anywhere in the review; use only the last four digits.
 
 
 ATTACHED STATEMENTS ARE IN THE PACKAGE (ABSOLUTE): a form line that reads "SEE STATEMENT 2", "SEE ST 6" or "STATEMENT 7" is a cross-reference, not a missing document. Every one of those statements is printed in the same return, after the forms, under its own heading ("STATEMENT 2 / FORM 1120, LINE 26 / OTHER DEDUCTIONS") with the detail below it. Go and read it before you write anything about it. NEVER report a statement or a schedule as "not provided", "not attached" or "not in the package" unless you have searched the return text for its heading and it genuinely is not there — on one real package this single mistake produced five findings in a row about statements printed a few pages further on, and each one sends a preparer looking for a document already in front of them. The same applies to any form named in the return's own list of forms ("FEDERAL: 1120, SCH G, 3800, 6765"): that list tells you what the package contains.

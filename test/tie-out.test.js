@@ -3,7 +3,7 @@
 // observadas entre dos corridas del MISMO paquete (importes ficticios donde aplica).
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { enforceNumericVerdicts, enforceTieOutVerdicts, enforceBalanceSheetVerdict, parseAmount, auditDerivations, parseDerivations } = require("../lib/tie-out");
+const { enforceNumericVerdicts, enforceTieOutVerdicts, enforceBalanceSheetVerdict, parseAmount, auditDerivations, parseDerivations, scannedReadings } = require("../lib/tie-out");
 
 test("parseAmount: formatos que llegan del modelo", () => {
   assert.strictEqual(parseAmount(81825), 81825);
@@ -314,4 +314,64 @@ test("un importe negativo entre parentesis si es un termino", () => {
 test("una fila ya no verificada no se vuelve a tocar", () => {
   const row = { status: "NOT VERIFIED", workpaperAmount: 100, note: "$1 + $2 = $3" };
   assert.strictEqual(auditDerivations([row]).rows[0], row);
+});
+/* --- Negativos con signo ------------------------------------------------- */
+//
+// Al balancear los parentesis de un termino se perdio el signo menos, y las cadenas con
+// negativos escritos "-18,438 + -2,515" dejaron de auditarse sin que nada lo notara.
+
+test("una suma con negativos con signo se lee", () => {
+  const chains = parseDerivations("Sum of Box 1: -18,438 + -2,515 + -4,023 = -24,976");
+  assert.strictEqual(chains.length, 1);
+  assert.deepStrictEqual(chains[0].parts, [-18438, -2515, -4023]);
+  assert.strictEqual(chains[0].stated, -24976);
+});
+
+test("el signo vale antes o despues del signo de pesos", () => {
+  for (const note of ["Net: $100,000 + -25,000 = $75,000", "Net: $100,000 + $-25,000 = $75,000", "Net: $100,000 + -$25,000 = $75,000"]) {
+    const chains = parseDerivations(note);
+    assert.deepStrictEqual(chains[0].parts, [100000, -25000], note);
+  }
+});
+
+test("una suma negativa que no llega a su total se sigue marcando", () => {
+  const r = fila("Sum of Box 1: -18,438 + -2,515 = -20,000", -20000);
+  assert.ok(marco(r), "los dos terminos dan -20.953");
+});
+
+test("el guion de un formulario no es un signo", () => {
+  assert.strictEqual(parseDerivations("Per W-2 + 1099 totals").length, 0, "en W-2 el 2 es parte del nombre");
+  assert.strictEqual(parseDerivations("Form 8995A + 3 more").length, 0);
+});
+
+/* --- Lo leido de un escaneado cuenta como evidencia --------------------- */
+//
+// En un 1040 real la retencion del W-2 escaneado salio "not found in any supporting document"
+// mientras el mismo informe transcribia ese W-2 con la cifra en el box 2.
+
+const PAQUETE = [
+  { name: "Client 2025 return.pdf", reviewRole: "current_return", text: "Form 1040 ".repeat(40) },
+  { name: "Client W2.pdf", reviewRole: "supporting_document", text: "" },
+  { name: "1098 Lender.pdf", reviewRole: "supporting_document", text: "Mortgage interest received 7,700.94 ".repeat(5) },
+];
+const LECTURA = ["SCANNED: Client W2.pdf — p1 W-2 from Example Corp: Box 1 wages $68,340.94, Box 2 federal tax withheld $8,911.00"];
+const filaW2 = (lineItem, monto, note) => ({ lineItem, returnAmount: monto, workpaperAmount: monto, difference: 0, status: "TIE", note });
+
+test("una cifra que esta en un escaneado no se marca, pero dice de donde salio", () => {
+  const review = { tieOutResults: [filaW2("Form 1040 Line 25d - Total withholding", 8911, "Box 2 of the W-2 (Client W2.pdf).")], verifiedItems: LECTURA };
+  const row = enforceNumericVerdicts(review, "1040", PAQUETE).review.tieOutResults.find((r) => /25d/.test(r.lineItem));
+  assert.strictEqual(row.status, "TIE");
+  assert.match(row.note, /read from a scanned document \(Client W2\.pdf\)/);
+});
+
+test("una cifra que no esta en ningun lado se sigue marcando", () => {
+  const review = { tieOutResults: [filaW2("Form 1040 Line 1a - Wages", 70000, "Per the W-2 (Client W2.pdf).")], verifiedItems: LECTURA };
+  const row = enforceNumericVerdicts(review, "1040", PAQUETE).review.tieOutResults.find((r) => /1a/.test(r.lineItem));
+  assert.strictEqual(row.status, "NOT VERIFIED");
+});
+
+test("la lectura se atribuye al archivo que nombra", () => {
+  const [lectura] = scannedReadings(LECTURA);
+  assert.strictEqual(lectura.name, "Client W2.pdf");
+  assert.deepStrictEqual(scannedReadings(["Form 1040 line 11 ties."]), [], "solo cuentan las lineas SCANNED");
 });

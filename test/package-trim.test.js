@@ -256,3 +256,33 @@ test("el aviso de duplicados dice que el modelo SI vio el contenido", () => {
   assert.match(aviso, /pages 7/);
   assert.strictEqual(duplicateNotice([]), "", "sin duplicados no se agrega ruido al prompt");
 });
+/* --- Lo que se saca a proposito no es un faltante ----------------------- */
+//
+// Un 1065 y un 1040 seguidos listaron el 8879 como "documento faltante — page not provided",
+// con el formulario en la pagina 11 de uno y en la 21 del otro. El aviso decia lo mismo para lo
+// que se saca por ser tramite que para lo que no entra en el presupuesto.
+
+test("lo que se saca por ser tramite se marca como intencional", () => {
+  const r = selectPages(PACKAGE, Infinity);
+  const efile = r.removed.find((i) => i.page === 6);
+  assert.strictEqual(efile.intentional, true);
+});
+
+test("el aviso de lo intencional dice que existe y que no se reporta como faltante", () => {
+  const r = selectPages(PACKAGE, Infinity);
+  const aviso = removalNotice(r.removed, r.pageCount);
+  assert.match(aviso, /LEFT OUT ON PURPOSE/);
+  assert.match(aviso, /These pages EXIST in the return/);
+  assert.match(aviso, /Do NOT list them in missingDocuments/);
+  assert.doesNotMatch(aviso, /You have NOT seen the pages listed above/, "sin recorte por presupuesto no hay aviso de hueco");
+});
+
+test("lo que no entra en el presupuesto conserva el aviso de siempre", () => {
+  const r = selectPages(PACKAGE, 6000);
+  const aviso = removalNotice(r.removed, r.pageCount);
+  assert.match(aviso, /LEFT OUT ON PURPOSE/, "los tramites van en su propio bloque");
+  assert.match(aviso, /PAGES NOT INCLUDED/);
+  assert.match(aviso, /You have NOT seen the pages listed above/);
+  const huecos = aviso.slice(aviso.indexOf("PAGES NOT INCLUDED"));
+  assert.doesNotMatch(huecos, /autorizacion de e-file/, "el 8879 no figura entre los huecos");
+});
