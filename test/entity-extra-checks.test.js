@@ -344,6 +344,33 @@ test("1120: el impuesto del Schedule J es el 21%", () => {
   assert.match(f.detail, /\$42,000; Schedule J shows \$40,000/);
 });
 
+test("1120: la perdida de capital del año pasado pasa a la linea 6 del Schedule D", () => {
+  const schedD = (st, lt, carry = "") => [
+    "SCHEDULE D Capital Gains and Losses",
+    "(Form 1120) Attach to Form 1120, 1120-C, 1120-F",
+    `6 Unused capital loss carryover (attach computation) . . . . . . 6 ${carry}`,
+    `7 Net short-term capital gain or (loss). Combine lines 1a through 6 in column h . . . 7 ${st}`,
+    `14 Net long-term capital gain or (loss). Combine lines 8a through 13 in column h . . . 14 ${lt}`,
+  ];
+  const prior = f1120({ year: 2024, before: "100,000.", taxable: "100,000." }) + "\n" + schedD("(2,000.)", "(8,000.)").join("\n");
+  const current = f1120({ before: "100,000.", taxable: "100,000." }) + "\n" + schedD("", "5,000.").join("\n");
+  const [f] = run(pkg(current, prior), ee.checkCorporateCapitalLoss, { taxYear: "2025" });
+  assert.match(f.detail, /net capital loss of \$10,000/);
+  const brought = f1120({ before: "100,000.", taxable: "100,000." }) + "\n" + schedD("(10,000.)", "5,000.", "(10,000.)").join("\n");
+  assert.deepStrictEqual(run(pkg(brought, prior), ee.checkCorporateCapitalLoss, { taxYear: "2025" }), []);
+});
+
+test("1120: dividendos de la pagina 1 contra el Schedule C", () => {
+  const text = f1120({ before: "100,000.", taxable: "100,000." })
+    + "\n4 Dividends and inclusions (Schedule C, line 23) . . . . . . 4 12,000."
+    + "\n23 Total dividends and inclusions. Add column (a), lines 9 through 20. Enter here and on page 1, line 4 . . . 23 10,000.";
+  const ctx = ee.context(pkg(text), { taxYear: "2025" });
+  // El renglon 4 va en la pagina 1; el ficticio lo trae al final, asi que se fija a mano.
+  ctx.lines.dividendsPage1 = 12000;
+  const [f] = ee.checkDividendsSchedule(ctx);
+  assert.match(f.detail, /\$12,000 .* \$10,000/);
+});
+
 /* --- Papel de trabajo ------------------------------------------------------ */
 
 const receivedK1 = ({ income = "(1,500)" } = {}) => ({

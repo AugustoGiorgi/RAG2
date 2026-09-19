@@ -288,6 +288,28 @@ test("mas de $1,500 de intereses sin Schedule B", () => {
   assert.ok(found.some((f) => /Schedule B — required/.test(f.title)));
 });
 
+test("la direccion pasa a otro estado de un año al otro", () => {
+  const prior = prior1040().replace("SPRINGFIELD, IL 62701", "LAKEVIEW, MI 49001");
+  const [f] = run(pkg(f1040(), prior), ic.checkStateMove);
+  assert.match(f.detail, /gave a MI address \(LAKEVIEW\); this year's gives IL \(SPRINGFIELD\)/);
+  assert.deepStrictEqual(run(pkg(f1040(), prior1040()), ic.checkStateMove), []);
+});
+
+test("los 1099 del paquete suman mas intereses y dividendos que la declaracion", () => {
+  const broker = doc("broker.pdf", "Form 1099-INT 2025 Interest Income\n1. INTEREST INCOME $3,500.00\nForm 1099-DIV 2025 Dividends and Distributions\n1a. TOTAL ORDINARY DIVIDENDS $2,000.00");
+  const copy = doc("broker copy.pdf", broker.text);
+  const bank = doc("bank.pdf", "Form 1099-INT 2025\n1 Interest Income . . . . . . . . . 1,200.00 10 Market Discount . . . 0.00");
+  const found = run(pkg(f1040({ l2b: "3,500.", l3b: "2,000." }), null, [broker, copy, bank]), ic.documentAmountChecks);
+  assert.strictEqual(found.length, 1, "la copia repetida no se cuenta dos veces; los dividendos cierran");
+  assert.match(found[0].detail, /add to at least \$4,700 \(broker\.pdf; bank\.pdf\), and line 2b \(taxable interest\) reports \$3,500/);
+  assert.deepStrictEqual(run(pkg(f1040({ l2b: "4,700.", l3b: "2,000." }), null, [broker, bank]), ic.documentAmountChecks), []);
+});
+
+test("si la declaracion reporta mas que los documentos no se dice nada", () => {
+  const broker = doc("broker.pdf", "Form 1099-INT 2025 Interest Income\n1. INTEREST INCOME $3,500.00");
+  assert.deepStrictEqual(run(pkg(f1040({ l2b: "9,000." }), null, [broker]), ic.documentAmountChecks), []);
+});
+
 test("un 1040 limpio contra un año anterior limpio no dice nada", () => {
   assert.deepStrictEqual(ic.runIndividualChecks(pkg(f1040(), prior1040()), META), []);
 });
