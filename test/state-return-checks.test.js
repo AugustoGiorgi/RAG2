@@ -225,4 +225,6 @@ test("con sociedades y S corps mezcladas no se puede atribuir la cifra federal",
   const mezcla = conNuevaJersey("465,181.", "462564") + "\nB OTHER EXAMPLE LP P 11-1111111 X";
   assert.strictEqual(checkStateBusinessIncome(mezcla), null);
   assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("465,181.", "462564", "P")), null, "la linea 22 es de S corps, no de sociedades");
+  // El renglon 32 vacio imprime solo su numero: leerlo como $32 daria una diferencia falsa.
+  assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("", "462564")), null);
 });
