@@ -15,7 +15,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   runStateReturnChecks, checkStateFederalStartingFigure, checkStateIdentifiersAgainstFederal,
-  checkApportionmentOutOfRange, lastAmount, checkStateBalanceSheets,
+  checkApportionmentOutOfRange, lastAmount, checkStateBalanceSheets, checkStateBusinessIncome,
 } = require("../lib/state-return-checks");
 
 const FEDERAL_1040 = `
@@ -200,4 +200,29 @@ test("el federal no se mira aca, y un estatal que cuadra no dice nada", () => {
   assert.strictEqual(checkStateBalanceSheets(soloFederal), null, "el federal lo cubre entity-return-checks");
   const estatalBien = [balance("1,000,000.", "1,040,000.", "Form 1065 (2025) Page 5"), balance("1,000,000.", "1,000,000.", "Form 568 2025 Page 6")].join("\n");
   assert.strictEqual(checkStateBalanceSheets(estatalBien), null);
+});
+
+
+/* --- Una categoria de ingreso del federal contra la misma en la estatal ------ */
+
+const conNuevaJersey = (federal, estatal, tipo = "S", linea = "22. Net pro rata share of S Corporation Income (Schedule NJ-BUS-1, Part III, line 4)") => [
+  "28 (a) Name (b) Enter P for partnership; S for S corporation (d) Employer identification number",
+  `A EXAMPLE HOLDINGS LLC ${tipo} 98-7654321 X`,
+  `32 Total partnership and S corporation income or (loss). Combine lines 30 and 31 . . . . 32 ${federal}`,
+  "NEW JERSEY: NJ-1040, SCH NJ-HCC, NJ-BUS-1",
+  `${linea} 22. ${estatal} .`,
+].join("\n");
+
+test("la misma categoria de ingreso, distinta en el federal y en Nueva Jersey", () => {
+  const f = checkStateBusinessIncome(conNuevaJersey("465,181.", "462564"));
+  assert.match(f.detail, /New Jersey line 22 \(net pro rata share of S corporation income\) reports \$462,564, against \$465,181 on federal Schedule E line 32/);
+  assert.match(f.detail, /difference of \$2,617/);
+  assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("465,181.", "465181")), null, "la misma cifra no dice nada");
+  assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("465,181.", "465100")), null, "una diferencia de redondeo tampoco");
+});
+
+test("con sociedades y S corps mezcladas no se puede atribuir la cifra federal", () => {
+  const mezcla = conNuevaJersey("465,181.", "462564") + "\nB OTHER EXAMPLE LP P 11-1111111 X";
+  assert.strictEqual(checkStateBusinessIncome(mezcla), null);
+  assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("465,181.", "462564", "P")), null, "la linea 22 es de S corps, no de sociedades");
 });

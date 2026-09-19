@@ -288,6 +288,33 @@ test("mas de $1,500 de intereses sin Schedule B", () => {
   assert.ok(found.some((f) => /Schedule B — required/.test(f.title)));
 });
 
+const form8995A = ({ qbi = "465,181.", wages = "50,000." } = {}) => [
+  "Part I Trade, Business, or Aggregation Information",
+  "A EXAMPLE SERVICES LLC 98-7654321",
+  "Part II Determine Your Adjusted Qualified Business Income",
+  "2 Qualified business income from the trade, business, or",
+  `aggregation. See instructions . . . . . . . . . . . . 2 ${qbi}`,
+  "4 Allocable share of W-2 wages from the trade, business, or",
+  `aggregation . . . . . . . . . . . . . . . . . . . 4 ${wages}`,
+];
+const scheduleEPartII = (type = "S") => [
+  "28 (a) Name (b) Enter P for partnership; S for S corporation (d) Employer identification number",
+  `A EXAMPLE SERVICES LLC ${type} 98-7654321 X`,
+  "32 Total partnership and S corporation income or (loss). Combine lines 30 and 31 . . . . 32 465,181.",
+];
+
+test("una S corp que pasa ingreso alto con pocos sueldos W-2 se pregunta desde el 1040", () => {
+  const [f] = run(pkg(f1040({ extra: [...form8995A(), ...scheduleEPartII()] })), ic.checkReasonableCompensationFromK1);
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /\$465,181 of qualified business income from it and \$50,000 allocable W-2 wages \(11% of the income\)/);
+  const paid = pkg(f1040({ extra: [...form8995A({ wages: "200,000." }), ...scheduleEPartII()] }));
+  assert.deepStrictEqual(run(paid, ic.checkReasonableCompensationFromK1), [], "con sueldos altos no hay nada que preguntar");
+  const partnership = pkg(f1040({ extra: [...form8995A(), ...scheduleEPartII("P")] }));
+  assert.deepStrictEqual(run(partnership, ic.checkReasonableCompensationFromK1), [], "una sociedad no paga sueldo a sus socios");
+  const sinLinea4 = pkg(f1040({ extra: [...form8995A().filter((l) => !/W-2 wages|^aggregation \. /.test(l)), ...scheduleEPartII()] }));
+  assert.deepStrictEqual(run(sinLinea4, ic.checkReasonableCompensationFromK1), [], "si el formulario saltea la linea 4 no se sabe");
+});
+
 test("la direccion pasa a otro estado de un año al otro", () => {
   const prior = prior1040().replace("SPRINGFIELD, IL 62701", "LAKEVIEW, MI 49001");
   const [f] = run(pkg(f1040(), prior), ic.checkStateMove);
