@@ -93,7 +93,7 @@ test("el 1040 ficticio se lee: renglones, encabezado y casillas", () => {
   assert.strictEqual(h.filingStatus, "mfj");
   assert.strictEqual(h.spouse.ssn, "000-11-2222");
   assert.deepStrictEqual(h.dependents, ["000-33-4444"]);
-  assert.deepStrictEqual(rf.checkboxes1040(text), { anyX: true, over65: 1, blind: 0, dependentOfAnother: false });
+  assert.deepStrictEqual(rf.checkboxes1040(text), { anyX: true, over65: 1, blind: 0, dependentOfAnother: false, noStandard: false });
 });
 
 /* --- Identidad y arrastres (modulo anterior) -------------------------------- */
