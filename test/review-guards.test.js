@@ -701,6 +701,24 @@ test("hace falta el tema Y una cifra compartida, nunca uno solo", () => {
   assert.strictEqual(foldFindingsRepeatedBy([otroTema], [DETERMINISTA]).folded, 0);
 });
 
+test("el hallazgo que el propio modelo rotula como automatico se pliega por tema", () => {
+  // Desde que los cruces llegan al prompt como hechos, el modelo los devuelve rotulados
+  // "Automated check: ..." con otras palabras y sin repetir las cifras: el rotulo alcanza.
+  const eco = {
+    priority: "MEDIUM", source: "Automated check", formOrSchedule: "Schedule L",
+    issueDescription: "Automated check: the balance sheet ending assets and ending liabilities plus capital do not agree.",
+    evidence: "Schedule L.",
+  };
+  const r = foldFindingsRepeatedBy([eco, OTRO()], [DETERMINISTA]);
+  assert.strictEqual(r.folded, 1);
+  assert.strictEqual(r.issues[0].priority, "LOW");
+  assert.match(r.issues[0].riskAnalysis, /labelled this one of the automated checks/);
+  assert.strictEqual(r.issues[1].priority, "HIGH", "el hallazgo propio no se toca");
+  // Un tema que no se parece a ningun cruce no se pliega aunque venga mal rotulado.
+  const otroTema = { ...eco, formOrSchedule: "Form 8283", issueDescription: "Automated check: the charitable appraisal is not attached." };
+  assert.strictEqual(foldFindingsRepeatedBy([otroTema], [DETERMINISTA]).folded, 0);
+});
+
 test("una cifra chica compartida es una coincidencia", () => {
   const chico = { severity: "HIGH", title: "x", detail: "out by $240.00", dedupe: /schedule l/i };
   const issue = { priority: "HIGH", issueDescription: "Schedule L shows $240 of rounding.", evidence: "" };

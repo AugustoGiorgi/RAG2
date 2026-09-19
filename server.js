@@ -10934,7 +10934,8 @@ function automatedFactsBlock(payload) {
   return [
     `AUTOMATED CHECKS ALREADY RUN ON THIS PACKAGE — ${found.length} finding(s) computed by code directly from the documents. Each one is added to the report automatically:`,
     ...found.map((f, n) => `${n + 1}. [${f.severity}] ${f.title} — ${String(f.detail || "").replace(/\s+/g, " ").slice(0, 260)}`),
-    "Do not report these again, reworded or not. Treat them as established facts: follow their consequences (what else in this return, the other returns in the package or the workpaper changes because of them) and spend the review on everything they do not cover.",
+    "These are already written into the report you are producing. Restating one — in your own words, under another form number, or labelled as an automated check — is a defect: the reviewer reads the same finding twice and trusts the report less. If you have nothing to add to one of them, leave it out of your issues entirely.",
+    "What they are for: they are established facts you do not have to verify. Use them. Chase what follows from them (what else in this return, in the other returns of the package or in the workpaper has to change because of them), and spend the whole review on everything they do not cover. If you do have something to add to one, report only the addition and say which finding it adds to.",
     "",
   ].join("\n");
 }
