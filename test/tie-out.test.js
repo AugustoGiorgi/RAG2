@@ -131,6 +131,10 @@ test("deteccion del tipo de return desde el documento (selector vacio)", () => {
   assert.strictEqual(detectReturnTypeFromText("U.S. Return of Partnership Income"), "1065");
   assert.strictEqual(detectReturnTypeFromText("U.S. Corporation Income Tax Return"), "1120");
   assert.strictEqual(detectReturnTypeFromText("solo un W-2 sin identidad de return"), "");
+  // la estatal copia el titulo sin el "U.S." y puede venir antes: gana el federal
+  const estatalPrimero = "Form 120S Arizona S Corporation Income Tax Return ... U.S. Income Tax Return for an S Corporation";
+  assert.strictEqual(detectReturnTypeFromText(estatalPrimero), "1120-S");
+  assert.strictEqual(detectReturnTypeFromText("Michigan Individual Income Tax Return ... U.S. Individual Income Tax Return"), "1040");
 
   // el K-1 adjunto (que menciona 1065) no puede ganarle al return bajo revision
   const k1 = "Schedule K-1 (Form 1065) U.S. Return of Partnership Income";

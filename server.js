@@ -33,6 +33,7 @@ const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
 const { buildSecondLookInstructions } = require("./lib/second-look");
 const { mergeReviews } = require("./lib/review-merge");
+const { selectFormRules } = require("./lib/master-prompt");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
 const ROOT = __dirname;
@@ -13974,27 +13975,18 @@ function isTransientNetworkError(status, message) {
 
 function selectMasterPromptForReturn(payload = {}) {
   if (!MASTER_REVIEW_PROMPT) return "";
-  const returnType = String(payload.metadata?.returnType || payload.returnType || "").trim();
-  const sharedEnd = MASTER_REVIEW_PROMPT.search(/\n\s*â•+\s*\nFORM\s+/i);
-  const sharedRules = sharedEnd > 0 ? MASTER_REVIEW_PROMPT.slice(0, sharedEnd).trim() : MASTER_REVIEW_PROMPT.slice(0, 18000).trim();
-  const formPrompt = extractFormPrompt(returnType);
+  // Con el selector vacio se usa el tipo que dice la propia declaracion, igual que para el
+  // encabezado y el checklist de tie-out: sin tipo no hay reglas de formulario.
+  const chosen = String(payload.metadata?.returnType || payload.returnType || "").trim();
+  const returnType = chosen || detectReturnTypeFromFiles(payload.files) || "";
+  const formType = normalizeReturnType(returnType);
+  const { shared, form } = selectFormRules(MASTER_REVIEW_PROMPT, formType);
+  console.log(`[Review] master prompt: reglas comunes (${shared.length.toLocaleString("en-US")} caracteres) + ${form ? `FORM ${formType}${chosen ? "" : " (tipo detectado en la declaracion)"} (${form.length.toLocaleString("en-US")})` : "ninguna seccion de formulario"}.`);
   const selected = [
-    sharedRules,
-    formPrompt || `FORM-SPECIFIC RULES: Return type "${returnType || "not specified"}" was not matched to a configured form section. Apply shared rules, uploaded documents, knowledge base, and official web research where enabled.`,
+    shared,
+    form || `FORM-SPECIFIC RULES: Return type "${returnType || "not specified"}" was not matched to a configured form section. Apply shared rules, uploaded documents, knowledge base, and official web research where enabled.`,
   ].join("\n\n");
   return truncateMiddle(selected, 26000);
-}
-
-function extractFormPrompt(returnType) {
-  const normalized = normalizeReturnType(returnType);
-  if (!normalized) return "";
-  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const startMatch = MASTER_REVIEW_PROMPT.match(new RegExp(`\\nFORM\\s+${escaped}\\b[\\s\\S]*`, "i"));
-  if (!startMatch || typeof startMatch.index !== "number") return "";
-  const start = startMatch.index + 1;
-  const next = MASTER_REVIEW_PROMPT.slice(start + 1).search(/\n\s*â•+\s*\nFORM\s+/i);
-  const end = next >= 0 ? start + 1 + next : MASTER_REVIEW_PROMPT.length;
-  return MASTER_REVIEW_PROMPT.slice(start, end).trim();
 }
 
 function normalizeReturnType(returnType) {
