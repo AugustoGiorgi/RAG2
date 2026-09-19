@@ -31,6 +31,9 @@ const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
+const { runPackageChecks } = require("./lib/package-checks");
+const { runIndividualChecks } = require("./lib/individual-checks");
+const { runEntityExtraChecks } = require("./lib/entity-extra-checks");
 const { buildSecondLookInstructions } = require("./lib/second-look");
 const { mergeReviews } = require("./lib/review-merge");
 const { selectFormRules } = require("./lib/master-prompt");
@@ -193,6 +196,9 @@ const REVIEW_PASSES = Math.max(1, Math.min(4, Number(process.env.CLAUDE_REVIEW_P
 // La segunda pasada ya no repite el pedido: recibe lo encontrado y preguntas que obligan a
 // cruzar documentos (lib/second-look.js). CLAUDE_REVIEW_SECOND_LOOK=off vuelve a la copia.
 const REVIEW_SECOND_LOOK = !/^(off|0|false|no)$/i.test(String(process.env.CLAUDE_REVIEW_SECOND_LOOK || "on").trim());
+// Los cruces del codigo corren ANTES del modelo y le llegan como hechos: no los repite y
+// sigue sus consecuencias. CLAUDE_REVIEW_AUTOMATED_FACTS=off los deja solo en el informe.
+const REVIEW_AUTOMATED_FACTS = !/^(off|0|false|no)$/i.test(String(process.env.CLAUDE_REVIEW_AUTOMATED_FACTS || "on").trim());
 // El presupuesto de documentos: cuanto del paquete se le manda al modelo.
 //
 // Es alto a proposito. Quien limita el gasto ya no es este numero sino REVIEW_MAX_USD, que
@@ -10527,6 +10533,7 @@ A figure you read off an image is NOT verified support. Reading scans is error-p
     : "";
   const volatileSuffix = [
     scanReminder,
+    REVIEW_AUTOMATED_FACTS ? automatedFactsBlock(scanSource) : "",
     userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
     clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
     "Return the complete senior review as JSON in exactly this schema:",
@@ -10883,11 +10890,63 @@ function normalizeDirectReview(review, reviewRequest) {
  * El ultimo bloque de la segunda pasada: lo ya encontrado, las preguntas que cruzan documentos
  * y el mismo esquema. Las instrucciones del usuario y los hechos del cliente siguen valiendo.
  */
+/**
+ * Los cruces deterministas que no dependen del modelo, corridos una vez por paquete. Los usa el
+ * pedido (como hechos ya establecidos) y la segunda pasada (como ya reportados); el informe los
+ * vuelve a armar despues del modelo con sus controles, asi que esto es solo para el prompt.
+ */
+const automatedFindingsCache = new WeakMap();
+function automatedFindingsFor(payload) {
+  if (!payload || typeof payload !== "object") return [];
+  if (automatedFindingsCache.has(payload)) return automatedFindingsCache.get(payload);
+  const files = payload.files;
+  const metadata = payload.metadata || {};
+  const found = [];
+  const modules = [
+    () => runPackageChecks(files, { ...metadata, returnType: metadata.returnType || payload.returnType || "" }),
+    () => runIdentityChecks(files, metadata),
+    () => runPriorYearChecks(files, metadata),
+    () => runEntityReturnChecks(files, metadata),
+    () => runReturnConsistencyChecks(files, metadata),
+    () => runCorporateReturnChecks(files, metadata),
+    () => runStateReturnChecks(files, metadata),
+    () => runAnswerArithmeticChecks(files, metadata),
+    () => runCrossDocumentChecks(files, metadata),
+    () => runIndividualChecks(files, metadata),
+    () => runEntityExtraChecks(files, metadata),
+  ];
+  for (const run of modules) {
+    try { found.push(...(run() || []).filter(Boolean)); } catch (error) { console.warn(`[Review] automated facts: ${error.message}`); }
+  }
+  automatedFindingsCache.set(payload, found);
+  return found;
+}
+
+/** Los mismos hallazgos con la forma de un issue, para la lista de "ya reportados". */
+function automatedFindingsAsIssues(payload) {
+  return automatedFindingsFor(payload).map((f) => ({ priority: f.severity, formOrSchedule: f.title, issueDescription: f.detail }));
+}
+
+/** El bloque que el primer pedido lee antes del esquema. */
+function automatedFactsBlock(payload) {
+  const found = automatedFindingsFor(payload);
+  if (!found.length) return "";
+  return [
+    `AUTOMATED CHECKS ALREADY RUN ON THIS PACKAGE — ${found.length} finding(s) computed by code directly from the documents. Each one is added to the report automatically:`,
+    ...found.map((f, n) => `${n + 1}. [${f.severity}] ${f.title} — ${String(f.detail || "").replace(/\s+/g, " ").slice(0, 260)}`),
+    "Do not report these again, reworded or not. Treat them as established facts: follow their consequences (what else in this return, the other returns in the package or the workpaper changes because of them) and spend the review on everything they do not cover.",
+    "",
+  ].join("\n");
+}
+
 function buildSecondLookSuffix(reviewRequest, payload, reviewsSoFar) {
   const metadata = payload?.metadata || {};
   const userNotes = String(metadata.userNotes || "").trim();
   const clientFacts = String(metadata.clientFacts || "").trim();
-  const issues = (reviewsSoFar || []).flatMap((r) => (Array.isArray(r?.issues) ? r.issues : []));
+  const issues = [
+    ...(REVIEW_AUTOMATED_FACTS ? automatedFindingsAsIssues(payload) : []),
+    ...(reviewsSoFar || []).flatMap((r) => (Array.isArray(r?.issues) ? r.issues : [])),
+  ];
   return [
     buildSecondLookInstructions({ returnType: reviewRequest?.meta?.returnType, issues }),
     userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
@@ -11059,6 +11118,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // Lo que solo aparece poniendo un papel al lado de otro: una liquidacion de venta sin Form
   // 4797, una propiedad que deja de depreciarse, un K-1 que falta o que es una estimacion.
   const crossDocChecks = runCrossDocumentChecks(payload?.files, payload?.metadata || {});
+  // Lo que viene del año anterior y se pierde en silencio, y cada documento contra su renglon
+  // (1040); cada socio contra si mismo el año anterior y los K-1 recibidos contra lo cargado
+  // (entidades); y que el paquete sea el que se cree que es (todos los tipos).
+  const form1040Checks = runIndividualChecks(payload?.files, payload?.metadata || {});
+  const entityOwnerChecks = runEntityExtraChecks(payload?.files, payload?.metadata || {});
+  const packageChecks = runPackageChecks(payload?.files, { ...(payload?.metadata || {}), returnType: payload?.metadata?.returnType || payload?.returnType || "" });
   const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
   const depreciationOk = verifiedDepreciation(currentReturnText, payload?.metadata || {});
   if (depreciationOk.length) {
@@ -11068,7 +11133,9 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       console.log(`[Review] ${depr.corrected} finding(s) called a depreciation figure wrong that the MACRS table says is right; lowered to LOW.`);
     }
   }
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...identityChecks].filter(Boolean);
+  // El paquete va justo antes de la identidad: un archivo ilegible o un tipo de declaracion
+  // equivocado se lee antes que cualquier cruce que dependa de ellos.
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...form1040Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -11115,6 +11182,9 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["state returns", stateChecks.length],
     ["answered conditions", answerChecks.length],
     ["cross-document", crossDocChecks.length],
+    ["1040 carryovers and documents", form1040Checks.length],
+    ["entity owners and K-1s", entityOwnerChecks.length],
+    ["package integrity", packageChecks.length],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
