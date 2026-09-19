@@ -15,7 +15,7 @@ const { test } = require("node:test");
 const assert = require("node:assert");
 const {
   runStateReturnChecks, checkStateFederalStartingFigure, checkStateIdentifiersAgainstFederal,
-  checkApportionmentOutOfRange, lastAmount,
+  checkApportionmentOutOfRange, lastAmount, checkStateBalanceSheets,
 } = require("../lib/state-return-checks");
 
 const FEDERAL_1040 = `
@@ -173,4 +173,31 @@ test("un documento demasiado corto no se analiza", () => {
 test("lastAmount ignora un año suelto pero no un importe", () => {
   assert.strictEqual(lastAmount("For calendar year 2025"), null);
   assert.strictEqual(lastAmount("Total . . . 1,234,567."), 1234567);
+});
+
+/* --- El balance de la copia estatal --------------------------------------- */
+
+function balance(assets, equity, footer) {
+  return [
+    "--- Page 5 ---",
+    "Schedule L Balance Sheets",
+    `14 Total assets . . . . . . . . . . 900,000. ${assets}`,
+    "21 Partners' capital accounts . . . . . . 400,000. 500,000.",
+    `22 Total liabilities and capital . . . . . 900,000. ${equity}`,
+    footer,
+  ].join("\n");
+}
+
+test("el balance estatal que no cuadra se marca con su formulario", () => {
+  const text = [balance("1,000,000.", "1,000,000.", "Form 1065 (2025) Page 5"), balance("1,000,000.", "1,040,000.", "EXAMPLE 000 Form 568 2025 Page 6")].join("\n");
+  const f = checkStateBalanceSheets(text);
+  assert.match(f.title, /Form 568/);
+  assert.match(f.detail, /closes with \$1,000,000 of assets against \$1,040,000 of liabilities and capital, out by \$40,000/);
+});
+
+test("el federal no se mira aca, y un estatal que cuadra no dice nada", () => {
+  const soloFederal = balance("1,000,000.", "1,040,000.", "Form 1065 (2025) Page 5");
+  assert.strictEqual(checkStateBalanceSheets(soloFederal), null, "el federal lo cubre entity-return-checks");
+  const estatalBien = [balance("1,000,000.", "1,040,000.", "Form 1065 (2025) Page 5"), balance("1,000,000.", "1,000,000.", "Form 568 2025 Page 6")].join("\n");
+  assert.strictEqual(checkStateBalanceSheets(estatalBien), null);
 });

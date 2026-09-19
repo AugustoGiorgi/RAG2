@@ -30,6 +30,8 @@ const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, veri
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
+const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
+const { buildSecondLookInstructions } = require("./lib/second-look");
 const { mergeReviews } = require("./lib/review-merge");
 const { saveWorkpaperToArchive, listArchive, loadNewestPriorWorkpaper, xlsxBufferToTemplate, templateToText } = require("./lib/workpaper-archive");
 
@@ -187,6 +189,9 @@ const REVIEW_MIN_USD = Number(process.env.CLAUDE_REVIEW_MIN_USD || 0.80);
 // La union esta en lib/review-merge.js. Con CLAUDE_REVIEW_PASSES=1 el camino es identico al de
 // una sola pasada, reintento por timeout y rescate de JSON incluidos.
 const REVIEW_PASSES = Math.max(1, Math.min(4, Number(process.env.CLAUDE_REVIEW_PASSES || 2)));
+// La segunda pasada ya no repite el pedido: recibe lo encontrado y preguntas que obligan a
+// cruzar documentos (lib/second-look.js). CLAUDE_REVIEW_SECOND_LOOK=off vuelve a la copia.
+const REVIEW_SECOND_LOOK = !/^(off|0|false|no)$/i.test(String(process.env.CLAUDE_REVIEW_SECOND_LOOK || "on").trim());
 // El presupuesto de documentos: cuanto del paquete se le manda al modelo.
 //
 // Es alto a proposito. Quien limita el gasto ya no es este numero sino REVIEW_MAX_USD, que
@@ -10096,12 +10101,17 @@ async function handleReview(req, res) {
     if (review && REVIEW_PASSES > 1) {
       for (let pass = 2; pass <= REVIEW_PASSES; pass += 1) {
         const passStartedAt = Date.now();
+        // Mismos documentos, que siguen en el cache de prompt; en lugar del ultimo bloque, lo ya
+        // encontrado y las preguntas que se pierden las revisiones de una sola mirada.
+        const content = REVIEW_SECOND_LOOK
+          ? [...reviewRequest.userContent.slice(0, -1), { type: "text", text: buildSecondLookSuffix(reviewRequest, payload, [review, ...extraReviews]) }]
+          : reviewRequest.userContent;
         const again = await callAnthropicDirectWithFallbacks(apiKey, {
           max_tokens: reviewMaxTokens,
           thinking: { type: "disabled" },
           temperature: 0,
           system: systemBlocks,
-          messages: [{ role: "user", content: reviewRequest.userContent }],
+          messages: [{ role: "user", content }],
         }, candidates);
         if (!again.ok) {
           console.warn(`[Review] pasada ${pass} de ${REVIEW_PASSES} no completo (${String(again.error || "").slice(0, 120)}); se sigue con las que si.`);
@@ -10109,7 +10119,7 @@ async function handleReview(req, res) {
         }
         logClaudeCost(req, again, "review", "review_pass_" + pass, payload, passStartedAt);
         const passUsage = again?.data?.usage || {};
-        console.log(`[Review] pasada ${pass}: ${Number(passUsage.output_tokens || 0).toLocaleString("en-US")} tokens de salida, cache leido ${Number(passUsage.cache_read_input_tokens || 0).toLocaleString("en-US")}.`);
+        console.log(`[Review] pasada ${pass}${REVIEW_SECOND_LOOK ? " (segunda mirada)" : ""}: ${Number(passUsage.output_tokens || 0).toLocaleString("en-US")} tokens de salida, cache leido ${Number(passUsage.cache_read_input_tokens || 0).toLocaleString("en-US")}.`);
         extraUsage.push(again.data.usage || {});
         const passReview = normalizeDirectReview(parseClaudeJson(extractTextBlocksOnly(again.data)), reviewRequest);
         if (hasDirectReviewContent(passReview)) extraReviews.push(passReview);
@@ -10868,6 +10878,24 @@ function normalizeDirectReview(review, reviewRequest) {
   return normalized;
 }
 
+/**
+ * El ultimo bloque de la segunda pasada: lo ya encontrado, las preguntas que cruzan documentos
+ * y el mismo esquema. Las instrucciones del usuario y los hechos del cliente siguen valiendo.
+ */
+function buildSecondLookSuffix(reviewRequest, payload, reviewsSoFar) {
+  const metadata = payload?.metadata || {};
+  const userNotes = String(metadata.userNotes || "").trim();
+  const clientFacts = String(metadata.clientFacts || "").trim();
+  const issues = (reviewsSoFar || []).flatMap((r) => (Array.isArray(r?.issues) ? r.issues : []));
+  return [
+    buildSecondLookInstructions({ returnType: reviewRequest?.meta?.returnType, issues }),
+    userNotes ? `USER REVIEW INSTRUCTIONS:\n${userNotes}\n` : "",
+    clientFacts ? `CLIENT FACTS TO VERIFY:\n${clientFacts}\n` : "",
+    "Return your findings as JSON in exactly this schema:",
+    reviewJsonSchemaText(),
+  ].filter(Boolean).join("\n");
+}
+
 function hasDirectReviewContent(review) {
   if (!review || typeof review !== "object") return false;
   const text = [review.executiveSummary, review.finalConclusion, review.overallRiskScore].filter(Boolean).join(" ");
@@ -11027,6 +11055,9 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // no necesita criterio: necesita una resta. El extractor resuelve el tilde y escribe
   // [ANSWER: Yes/No], asi que la resta se puede hacer aca.
   const answerChecks = runAnswerArithmeticChecks(payload?.files, payload?.metadata || {});
+  // Lo que solo aparece poniendo un papel al lado de otro: una liquidacion de venta sin Form
+  // 4797, una propiedad que deja de depreciarse, un K-1 que falta o que es una estimacion.
+  const crossDocChecks = runCrossDocumentChecks(payload?.files, payload?.metadata || {});
   const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
   const depreciationOk = verifiedDepreciation(currentReturnText, payload?.metadata || {});
   if (depreciationOk.length) {
@@ -11036,7 +11067,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       console.log(`[Review] ${depr.corrected} finding(s) called a depreciation figure wrong that the MACRS table says is right; lowered to LOW.`);
     }
   }
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -11056,7 +11087,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
         areaReviewed: finding.category,
         formOrSchedule: finding.title,
         issueDescription: finding.detail,
-        evidence: "Computed by RAG Tax AI directly from the filed returns in this package, not by the language model.",
+        evidence: finding.evidence || "Computed by RAG Tax AI directly from the filed returns in this package, not by the language model.",
         riskAnalysis: "This check runs deterministically on every review. Confirm the figures against the forms before acting.",
         proposedSolution: finding.action,
         authority: finding.authority,
@@ -11082,6 +11113,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["depreciation", depreciationCheck ? 1 : 0],
     ["state returns", stateChecks.length],
     ["answered conditions", answerChecks.length],
+    ["cross-document", crossDocChecks.length],
   ];
   normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
   normalized.verifiedItems.push(
