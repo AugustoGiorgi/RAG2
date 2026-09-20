@@ -371,6 +371,47 @@ test("1120: dividendos de la pagina 1 contra el Schedule C", () => {
   assert.match(f.detail, /\$12,000 .* \$10,000/);
 });
 
+const form6765 = ({ qre = "563,050.", components = "" } = {}) => [
+  "Credit for Increasing Research Activities",
+  "Form 6765",
+  `5 Total qualified research expenses (QREs). Enter amount from line 48 . . . . . 5 ${qre}`,
+  "Section E - Other Information. See instructions.",
+  `37 Enter the number of business components generating the QREs on line 5 or line 20 . . . 37 ${components}`,
+  "38 Enter the amount of officers' wages included on line 42 . . . . . . . . . . 38",
+];
+
+const payrollSheet = (rows) => ({
+  name: "Example 2025 R&D payroll.xlsx", reviewRole: "current_workpaper",
+  text: ["--- Sheet: payroll ---", "Payroll Journal Report", "Name,Department,Gross Earnings,,R&D Percentage", ...rows].join("\n"),
+});
+
+test("el credito de investigacion sobre casi toda la nomina y sin estudio detras", () => {
+  const text = f1120({ before: "-500,000.", taxable: "-500,000." })
+    + "\n13 Salaries and wages (less employment credits) . . . . . . 13 887,010."
+    + "\n" + form6765().join("\n");
+  const payroll = payrollSheet(["Ann Example,Engineering,157500,,1", "Lee Example,Operations,12500,,1", "Totals,,170000,,"]);
+  const [f] = run(pkg(text, null, [payroll]), ee.checkResearchCreditSupport, { taxYear: "2025" });
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /\$563,050 of qualified research expenses against \$887,010 of total wages on the return \(63%\)/);
+  assert.match(f.detail, /puts 2 of its 2 people at 100% research/);
+  assert.match(f.detail, /Section E line 37 .* is blank/);
+});
+
+test("con componentes de negocio declarados y una asignacion repartida, no se pregunta", () => {
+  const text = f1120({ before: "-500,000.", taxable: "-500,000." })
+    + "\n13 Salaries and wages (less employment credits) . . . . . . 13 887,010."
+    + "\n" + form6765({ components: "4" }).join("\n");
+  const payroll = payrollSheet(["Ann Example,Engineering,157500,,1", "Lee Example,Operations,12500,,0.3"]);
+  assert.deepStrictEqual(run(pkg(text, null, [payroll]), ee.checkResearchCreditSupport, { taxYear: "2025" }), []);
+});
+
+test("un credito chico frente a la nomina no dice nada", () => {
+  const text = f1120({ before: "-500,000.", taxable: "-500,000." })
+    + "\n13 Salaries and wages (less employment credits) . . . . . . 13 887,010."
+    + "\n" + form6765({ qre: "150,000." }).join("\n");
+  assert.deepStrictEqual(run(pkg(text), ee.checkResearchCreditSupport, { taxYear: "2025" }), []);
+});
+
 /* --- Papel de trabajo ------------------------------------------------------ */
 
 const receivedK1 = ({ income = "(1,500)" } = {}) => ({

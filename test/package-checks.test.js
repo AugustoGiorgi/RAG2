@@ -105,6 +105,35 @@ test("el tipo de cada documento exige numero y frase del cuerpo", () => {
   assert.strictEqual(pd.docYear("Form 1099-B (Rev. 1-2022)\nFor calendar year 2025"), 2025);
 });
 
+const carryoverPage = (year, rows) => ["2025 GENERAL INFORMATION PAGE 1", `CARRYOVERS TO ${year}`, ...rows].join("\n");
+
+test("un arrastre estatal sin la declaracion de ese estado el año anterior", () => {
+  const current = f1065([carryoverPage(2026, [
+    "FEDERAL CARRYOVERS", "NET OPERATING LOSS 9,651,542.",
+    "FLORIDA CARRYOVERS", "NET OPERATING LOSS 34,714.",
+    "NEW JERSEY CARRYOVERS", "NET OPERATING LOSS 3,303,149.",
+  ])]);
+  const prior = [
+    "Form 1065 U.S. Return of Partnership Income 2024",
+    "EXAMPLE PARTNERS LLC 12-3456789",
+    "FORMS NEEDED FOR THIS RETURN",
+    "FEDERAL: 1065, SCH K-1",
+    "NEW JERSEY: NJ-1065",
+    PAD,
+  ].join("\n");
+  const files = [...pkg(current), { name: "Example 2024 return.pdf", reviewRole: "prior_return", text: prior }];
+  const [f] = pc.checkCarryoverWithoutPriorReturn(files, { taxYear: "2025" });
+  assert.match(f.detail, /FLORIDA carries net operating loss of \$34,714 forward/);
+  assert.doesNotMatch(f.detail, /NEW JERSEY/, "la estatal que si esta el año anterior no se nombra");
+});
+
+test("si el año anterior trae ese estado, no hay hallazgo", () => {
+  const current = f1065([carryoverPage(2026, ["FLORIDA CARRYOVERS", "NET OPERATING LOSS 34,714."])]);
+  const prior = ["Form 1065 U.S. Return of Partnership Income 2024", "FLORIDA: F-1065", PAD].join("\n");
+  const files = [...pkg(current), { name: "Example 2024 return.pdf", reviewRole: "prior_return", text: prior }];
+  assert.deepStrictEqual(pc.checkCarryoverWithoutPriorReturn(files, { taxYear: "2025" }), []);
+});
+
 test("tie-out: el lado de la declaracion lo lee el codigo", () => {
   const rows = [
     { lineItem: "Form 1040 Line 1a — Wages", returnAmount: "84,000", workpaperAmount: "85,000", status: "OUT_OF_BALANCE" },
@@ -114,6 +143,44 @@ test("tie-out: el lado de la declaracion lo lee el codigo", () => {
   assert.strictEqual(changed, 1);
   assert.strictEqual(out[0].returnAmount, 85000);
   assert.match(out[0].note, /read from the return by code \(the review had 84000\.00\)/);
+  const { rows: verdicts } = to.enforceTieOutVerdicts(out);
+  assert.strictEqual(verdicts[0].status, "TIE", "con el importe correcto de la declaracion, cierra");
+  const { review, returnSideFromCode } = to.enforceNumericVerdicts({ tieOutResults: rows }, "1040", pkg(f1040()));
+  assert.strictEqual(returnSideFromCode, 1);
+  assert.strictEqual(review.tieOutResults[0].returnAmount, 85000);
+});
+
+test("tie-out de entidad: el M-2 tambien lo lee el codigo", () => {
+  // El caso real: el modelo arma su propio arrastre (inicio + resultado) y lo declara TIE, sin
+  // ver los "otros aumentos" del M-2. Con las dos cifras del mismo lado inventado, la
+  // aritmetica no puede notar nada; el codigo lee el renglon y la fila se cae.
+  const entity = f1065([
+    "Schedule L Balance Sheets per Books Beginning of tax year End of tax year",
+    "14 Total assets . . . . . . . . . . 400,000. 450,000.",
+    "Schedule M-2 Analysis of Partners' Capital Accounts",
+    "1 Balance at beginning of year . . . . . . 100,000. 6 Distributions: a Cash . . . 60,000.",
+    "3 Other increases (itemize): STATEMENT 7 . . . 110,000.",
+    "5 Add lines 1 through 4 . . . . . 210,000. 9 Balance at end of year. Subtract line 8 from line 5 . . . 150,000.",
+  ]);
+  const rows = [
+    { lineItem: "Schedule M-2 / retained earnings roll-forward", returnAmount: "40000", workpaperAmount: "40000", status: "TIE" },
+    { lineItem: "Schedule L — Total assets", returnAmount: "450000", workpaperAmount: "450000", status: "TIE" },
+  ];
+  const { rows: out, changed } = to.returnSideFromCode(rows, "1065", pkg(entity));
+  assert.strictEqual(changed, 1, "solo el M-2 estaba mal");
+  assert.strictEqual(out[0].returnAmount, 150000);
+  assert.strictEqual(to.enforceTieOutVerdicts(out).rows[0].status, "OUT_OF_BALANCE");
+});
+
+test("tie-out: la fila que el codigo no sabe leer queda como la escribio el modelo", () => {
+  const rows = [{ lineItem: "Total of all Schedule K-1s issued", returnAmount: "694395", workpaperAmount: "694395", status: "TIE" }];
+  const { changed } = to.returnSideFromCode(rows, "1065", pkg(f1065()));
+  assert.strictEqual(changed, 0);
+});
+
+test("tie-out (1040): el lado de la declaracion se corrige y la fila cierra", () => {
+  const rows = [{ lineItem: "Form 1040 Line 1a — Wages", returnAmount: "84,000", workpaperAmount: "85,000", status: "OUT_OF_BALANCE" }];
+  const { rows: out } = to.returnSideFromCode(rows, "1040", pkg(f1040()));
   const { rows: verdicts } = to.enforceTieOutVerdicts(out);
   assert.strictEqual(verdicts[0].status, "TIE", "con el importe correcto de la declaracion, cierra");
   const { review, returnSideFromCode } = to.enforceNumericVerdicts({ tieOutResults: rows }, "1040", pkg(f1040()));
