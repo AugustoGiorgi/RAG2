@@ -256,6 +256,30 @@ test("un solo contratista chico no merece un hallazgo", () => {
   assert.strictEqual(checkPaymentsWithNoFilingQuestion(chico), null);
 });
 
+// El Schedule K del 1120 SI pregunta, con otras palabras: "would require IT to file". Con el
+// patron que solo miraba "require YOU to file", todo 1120 caia en "no pregunta nada" y salia un
+// hallazgo sobre una pregunta que la declaracion ya tenia respondida.
+const PREGUNTA_1120 = (a, b) => `${RETURN_1120_SIN_PREGUNTA}
+15 a Did the corporation make any payments that would require it to file Form(s) 1099? . . X [ANSWER: ${a}]
+b If "Yes," did or will the corporation file required Form(s) 1099? . . . . . . . . . . . X [ANSWER: ${b}]`;
+
+test("el 1120 tambien pregunta por los 1099, con sus propias palabras", () => {
+  assert.strictEqual(checkPaymentsWithNoFilingQuestion(PREGUNTA_1120("Yes", "Yes")), null, "la pregunta esta respondida");
+  assert.strictEqual(checkPaymentsRequiring1099(PREGUNTA_1120("Yes", "Yes")), null, "y la respuesta esta bien");
+});
+
+test("un 1120 que admite que los 1099 hacian falta y no se presentaron", () => {
+  const f = checkPaymentsRequiring1099(PREGUNTA_1120("Yes", "No"));
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.title, /says the required 1099s were not filed/);
+});
+
+test("un 1120 que dice que no hubo pagos con 1099, teniendo pagos a no empleados", () => {
+  const f = checkPaymentsRequiring1099(PREGUNTA_1120("No", "No"));
+  assert.match(f.title, /answers no to the 1099 question/);
+  assert.match(f.detail, /OUTSIDE SERVICES/);
+});
+
 test("cobrado por adelantado y fuera de ingresos, por lo devengado", () => {
   const finding = checkDeferredRevenueOnAccrual(RETURN_1120_SIN_PREGUNTA);
   assert.ok(finding);
