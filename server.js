@@ -16,6 +16,8 @@ const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { resolvePreparationYear, preparationPeriodRule } = require("./lib/preparation-year");
+const { fullSheetRows, partialSheetsNote } = require("./lib/sheet-text");
+const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
@@ -12352,6 +12354,10 @@ async function handlePrepareWorkpaper(req, res) {
   }
 
   payload.files = annotatePreparationFileRoles(payload.files || [], payload);
+  // When the uploaded balance sheet splits equity into Retained Earnings and a separate Net
+  // Income line (QuickBooks does), code computes the Schedule L retained earnings for each date:
+  // the model gets them as a fact, and the entry guide is checked against them below.
+  payload.equityFacts = readBalanceSheetEquity(payload.files, taxYear);
   const content = buildPreparerContent(payload);
   const softwareContext = buildSoftwareContext(taxSoftware, returnType, taxYear);
   const entryGuideSystem = buildDataEntryGuideSystemPrompt(returnType, taxYear, taxSoftware)
@@ -12473,6 +12479,18 @@ async function handlePrepareWorkpaper(req, res) {
     }
 
     const entryGuide = normalizeOrBuildEntryGuide(parsed, workbook, payload);
+
+    // Schedule L retained earnings: if the guide carried only the balance sheet's Retained
+    // Earnings line for a date whose column also has a separate Net Income line, add it back.
+    // One real run left Schedule L out of balance at the beginning of the year by exactly the
+    // prior year's income. Also adds a tie-out check per date. See lib/balance-sheet-equity.js.
+    const retainedEarningsFixes = fixRetainedEarningsInGuide(entryGuide, payload.equityFacts);
+    const retainedEarningsFixNote = retainedEarningsNote(retainedEarningsFixes, payload.equityFacts);
+    if (retainedEarningsFixNote) {
+      workbook.aiNotes.push(retainedEarningsFixNote);
+      const notesSheet = workbook.sheets.find((s) => String(s.name || "").trim().toLowerCase() === "ai notes");
+      if (notesSheet && Array.isArray(notesSheet.rows)) notesSheet.rows.push([retainedEarningsFixNote]);
+    }
 
     // NOTE: a naive code recompute of the book-to-tax running subtotals was tried and
     // reverted — the reconciliation structure varies too much run to run (differently
@@ -14544,6 +14562,7 @@ function buildPreparerContent(payload) {
   // Only when the preparer picked the year in the tab: then the period is known for certain,
   // and the model can be told to leave other periods' columns, balances and transactions out.
   const periodRule = metadata.taxYearSelected ? preparationPeriodRule(taxYearNum) : "";
+  const equityFacts = equityFactsPrompt(payload.equityFacts);
   const content = [{
     type: "text",
     text: [
@@ -14551,6 +14570,7 @@ function buildPreparerContent(payload) {
       "Do not prepare a tax return and do not invent amounts.",
       ...(yearContext ? [yearContext] : []),
       ...(periodRule ? [periodRule] : []),
+      ...(equityFacts ? [equityFacts] : []),
       "Use the uploaded files according to the user's instructions. If prior-year workpapers and current-year reports are included, use prior-year workpapers for workbook structure, sheet names, section order, labels, and row layout; use current-year reports for updated values.",
       "The backend labels each uploaded file with a preparation role. Follow those labels exactly:",
       "- current_financials: source of truth for every current-year P&L, balance sheet, trial balance, and GL amount.",
@@ -14663,8 +14683,13 @@ function buildPreparerContent(payload) {
       structuredDataHeader = `=== STRUCTURED WORKBOOK DATA ===`;
     }
 
+    // The browser keeps only the first 250 rows of each sheet in this structured copy, while the
+    // text version above carries the whole sheet. When a sheet was cut, say so, so a long general
+    // ledger is not read as complete. (A prior workpaper's text is rebuilt from this same cut
+    // copy, so for that role the text is no more complete and there is nothing to point at.)
+    const partialNote = role === "prior_workpaper" ? "" : partialSheetsNote(workbookTemplates);
     const templateBlock = workbookTemplates.length
-      ? ["", structuredDataHeader, safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
+      ? ["", structuredDataHeader, ...(partialNote ? [partialNote] : []), safeJsonForPrompt(workbookTemplates.slice(0, 3), 100000)].join("\n")
       : "";
 
     // Per-file year instruction so Claude cannot miss which year the data belongs to
@@ -15388,9 +15413,14 @@ function appendSourceReportSheets(workbook, files) {
       for (const s of sheets) {
         if (added >= MAX_SOURCE_SHEETS) return workbook;
         const label = multi ? `${fileBase} - ${s.name || ""}`.trim() : (fileBase || s.name || "Source");
+        // The structured copy stops at 250 rows; the extracted text has the whole sheet. A cut
+        // sheet is rebuilt from the text so the copy in the workbook is complete (fullSheetRows
+        // returns null when the text does not have that sheet exactly once).
+        const cut = Number(s.totalRows) > s.rows.length;
+        const sourceRows = (cut && fullSheetRows(file?.text, s.name)) || s.rows;
         workbook.sheets.push({
           name: String(label).slice(0, 31),
-          rows: normalizeRows(s.rows),
+          rows: normalizeRows(sourceRows),
           styles: [],
           verbatim: true,
         });

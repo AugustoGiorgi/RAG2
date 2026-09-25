@@ -82,11 +82,11 @@ const grab = (name) => {
 };
 // eslint-disable-next-line no-new-func
 const buildPreparerContent = new Function(
-  "preparationPeriodRule", "softwareDisplayName", "RECONCILIATION_PROMPT_LINES", "collectScannedPdfDocuments",
-  "stripAmountsFromTemplate", "csvTextFromTemplates", "stripFinancialAmountsFromText", "safeJsonForPrompt",
+  "preparationPeriodRule", "equityFactsPrompt", "partialSheetsNote", "softwareDisplayName", "RECONCILIATION_PROMPT_LINES",
+  "collectScannedPdfDocuments", "stripAmountsFromTemplate", "csvTextFromTemplates", "stripFinancialAmountsFromText", "safeJsonForPrompt",
   `${grab("buildPreparerContent")}\nreturn buildPreparerContent;`,
 )(
-  preparationPeriodRule, () => "ProConnect Tax", [], () => ({ scannedDocs: [], skippedScans: [] }),
+  preparationPeriodRule, () => "", () => "", () => "ProConnect Tax", [], () => ({ scannedDocs: [], skippedScans: [] }),
   (x) => x, () => "", (x) => x, () => "",
 );
 const promptFor = (metadata) => buildPreparerContent({ metadata: { instructions: "Prepare the workpaper.", ...metadata }, files: [] })

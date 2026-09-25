@@ -8883,12 +8883,17 @@ async function extractXlsxWithTemplate(file) {
     const sheet = workbook.Sheets[sheetName];
     const csv = XLSX.utils.sheet_to_csv(sheet, { blankrows: false });
     if (csv.trim()) parts.push(`--- Sheet: ${sheetName} ---\n${csv}`);
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" })
+    const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+    const rows = allRows
       .slice(0, 250)
       .map((row) => row.slice(0, 80).map((cell) => sanitizeExcelCell(cell)));
     template.sheets.push({
       name: sheetName,
       rows,
+      // The structured copy stops at 250 rows; the text above has the whole sheet. The real
+      // count lets the server tell the model when this copy is partial, and rebuild the sheet
+      // from the text for the copy that goes into the workbook.
+      totalRows: allRows.length,
       merges: Array.isArray(sheet["!merges"]) ? sheet["!merges"].slice(0, 100) : [],
       cols: Array.isArray(sheet["!cols"]) ? sheet["!cols"].slice(0, 80).map((col) => ({ wch: col.wch || col.width || undefined })) : [],
       styles: extractWorksheetStyleDescriptors(sheet),
