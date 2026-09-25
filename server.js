@@ -15,6 +15,7 @@ const { createPool, isDatabaseConfigured } = require("./lib/postgres");
 const { PDFParse } = require("pdf-parse");
 const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
+const { resolvePreparationYear, preparationPeriodRule } = require("./lib/preparation-year");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
 const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
@@ -12317,12 +12318,15 @@ async function handlePrepareWorkpaper(req, res) {
   const taxSoftware = resolveTaxSoftwareFromPayload(payload);
   const returnType = resolveReturnTypeFromPayload(payload);
   const rawTaxYear = String(payload.metadata?.taxYear || payload.taxYear || "").trim();
-  // The frontend can send a stale preparation year (a hidden field default), so
-  // reconcile it against the years that actually appear in the uploaded filenames.
-  // Current-year financials carry the most recent year, so the latest filename year
-  // is the authoritative preparation year when it is newer than the metadata year.
-  const taxYear = reconcilePreparationYear(rawTaxYear, payload.files);
-  payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear };
+  // The tax year the preparer picked in the tab wins: no filename and no other tab can change
+  // it. Without that choice (a browser tab still running the old page, an API call) the year is
+  // reconciled against the years in the uploaded filenames, as before — the old page sent a
+  // stale hidden-field default. See lib/preparation-year.js.
+  const { taxYear, selected: taxYearSelected } = resolvePreparationYear(
+    { taxYear: rawTaxYear, taxYearSelected: payload.metadata?.taxYearSelected },
+    payload.files,
+  );
+  payload.metadata = { ...(payload.metadata || {}), taxSoftware, returnType, taxYear, taxYearSelected };
 
   // Season roll-forward: attach the client's newest ARCHIVED prior-season workpaper as a
   // regular file, so the existing prior_workpaper pipeline (structure mirroring + amount
@@ -14537,12 +14541,16 @@ function buildPreparerContent(payload) {
   const yearContext = taxYearNum
     ? `TAX YEAR CONTEXT: You are preparing the workpaper for TAX YEAR ${taxYearNum}. The prior year is ${priorYearNum}. Any file or document whose name includes "${priorYearNum}" or that was uploaded as a prior-year reference contains ${priorYearNum} amounts — those are REFERENCE ONLY and must never appear as current-year amounts in this workpaper. All income, expense, balance sheet, and GL amounts for the ${taxYearNum} workpaper must come exclusively from files labeled current_financials.`
     : "";
+  // Only when the preparer picked the year in the tab: then the period is known for certain,
+  // and the model can be told to leave other periods' columns, balances and transactions out.
+  const periodRule = metadata.taxYearSelected ? preparationPeriodRule(taxYearNum) : "";
   const content = [{
     type: "text",
     text: [
       "You are a senior tax preparer assistant. Your task is to produce an Excel-ready workpaper workbook based on the user's instructions and uploaded files.",
       "Do not prepare a tax return and do not invent amounts.",
       ...(yearContext ? [yearContext] : []),
+      ...(periodRule ? [periodRule] : []),
       "Use the uploaded files according to the user's instructions. If prior-year workpapers and current-year reports are included, use prior-year workpapers for workbook structure, sheet names, section order, labels, and row layout; use current-year reports for updated values.",
       "The backend labels each uploaded file with a preparation role. Follow those labels exactly:",
       "- current_financials: source of truth for every current-year P&L, balance sheet, trial balance, and GL amount.",
@@ -15105,22 +15113,6 @@ function getReviewFeedbackForPayload(payload = {}) {
     createdBy: entry.createdBy || entry.addedBy || entry.username || "",
     createdAt: entry.createdAt || entry.addedAt || "",
   })).filter((entry) => entry.text);
-}
-
-// Returns the preparation (current) tax year as a string, reconciling the metadata
-// year with the most recent year that appears in the uploaded filenames. The metadata
-// year can be a stale hidden-field default (e.g. "2024" while the user uploads 2025
-// financials), so we take whichever year is later. Falls back to the metadata year,
-// then the latest filename year, then "".
-function reconcilePreparationYear(metaYearStr, files) {
-  const metaYear = Number(String(metaYearStr || "").match(/\b(20\d{2})\b/)?.[1] || 0);
-  let maxFileYear = 0;
-  for (const file of Array.isArray(files) ? files : []) {
-    const matches = String(file?.name || "").match(/\b(20\d{2})\b/g);
-    if (matches) for (const y of matches) maxFileYear = Math.max(maxFileYear, Number(y));
-  }
-  const reconciled = Math.max(metaYear, maxFileYear);
-  return reconciled ? String(reconciled) : String(metaYearStr || "").trim();
 }
 
 function annotatePreparationFileRoles(files, payload = {}) {

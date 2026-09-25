@@ -702,6 +702,7 @@ function init() {
       if (els.deliverableSaveDefaults.checked) saveFirmDefaults();
     });
   });
+  setupPrepTaxYear();
   document.getElementById("prepNotes").addEventListener("input", () => renderPreparerValidation(validatePreparerInputs()));
   document.getElementById("userNotes").addEventListener("input", () => renderValidation(validateBeforeReview({ showWarnings: true })));
   document.getElementById("clientFacts").addEventListener("input", () => renderValidation(validateBeforeReview({ showWarnings: true })));
@@ -6647,10 +6648,15 @@ async function runPreparerWorkflow() {
   renderPreparerValidation(messages);
   if (messages.some((item) => item.blocks)) return;
 
+  // The tax year picked in the tab. When it comes from the selector the server uses it as-is
+  // instead of guessing it from the filenames.
+  const prepYear = document.getElementById("prepCurrentYear");
+  const selectedTaxYear = prepYear?.tagName === "SELECT" ? prepYear.value : "";
+
   els.prepStatus.textContent = "Running";
   els.runPreparer.disabled = true;
   els.prepRunHint.textContent = "Preparing uploaded files...";
-  els.prepResults.innerHTML = `<article><span class="tag neutral">Running</span><h3>Generating Excel workpaper</h3><p>Claude is building workbook data and AI notes.</p></article>`;
+  els.prepResults.innerHTML = `<article><span class="tag neutral">Running</span><h3>Generating Excel workpaper</h3><p>Claude is building workbook data and AI notes${selectedTaxYear ? ` for tax year ${escapeHtml(selectedTaxYear)}` : ""}.</p></article>`;
 
   try {
     const files = [];
@@ -6660,7 +6666,8 @@ async function runPreparerWorkflow() {
         instructions: document.getElementById("prepNotes").value.trim(),
         taxSoftware: prepState.taxSoftware,
         taxSoftwareLabel: prepState.taxSoftwareLabel,
-        taxYear: document.getElementById("prepCurrentYear")?.value || document.getElementById("taxYear")?.value || "",
+        taxYear: selectedTaxYear || document.getElementById("prepCurrentYear")?.value || document.getElementById("taxYear")?.value || "",
+        taxYearSelected: Boolean(selectedTaxYear),
         returnType: document.getElementById("prepReturnType")?.value || document.getElementById("returnType")?.value || document.getElementById("organizerReturnType")?.value || "",
         clientId: activePreparationClient()?.id || "",
         clientName: activePreparationClient()?.name || document.getElementById("clientName")?.value.trim() || document.getElementById("entityName")?.value.trim() || "",
@@ -6709,6 +6716,19 @@ async function runPreparerWorkflow() {
   } finally {
     els.runPreparer.disabled = false;
     els.prepRunHint.textContent = "The app will send your instructions and files to Claude, then build one Excel workbook with AI Notes and a software-specific Data Entry Guide.";
+  }
+}
+
+// The tax year being prepared. The preparer picks it and the server honors it as-is: neither a
+// filename nor the Review tab can change it. Defaults to the previous calendar year, which is
+// the one prepared during the season.
+function setupPrepTaxYear() {
+  const select = document.getElementById("prepCurrentYear");
+  if (!select || select.tagName !== "SELECT" || select.options.length) return;
+  const thisYear = new Date().getFullYear();
+  for (let year = thisYear; year >= thisYear - 7; year -= 1) {
+    const isDefault = year === thisYear - 1;
+    select.add(new Option(String(year), String(year), isDefault, isDefault));
   }
 }
 
@@ -7388,7 +7408,9 @@ async function ensureEntryGuide(options = {}) {
 
   const software = document.getElementById("entryGuideSoftware")?.value || prepState.taxSoftware || localStorage.getItem("taxapp_default_software") || "proconnect";
   const returnType = document.getElementById("returnType")?.value || document.getElementById("organizerReturnType")?.value || "1120";
-  const taxYear = document.getElementById("taxYear")?.value || document.getElementById("prepCurrentYear")?.value || new Date().getFullYear();
+  // The guide belongs to the workbook just prepared, so it takes that workbook's tax year —
+  // not the Review tab's field, which has nothing to do with this preparation.
+  const taxYear = lastPreparerOutput?.payload?.metadata?.taxYear || document.getElementById("prepCurrentYear")?.value || document.getElementById("taxYear")?.value || new Date().getFullYear();
 
   updateEntryGuideStatus(`Generating ${entryGuideSoftwareName(software)} entry guide...`);
   startEntryGuideLoadingMessages();

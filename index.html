@@ -949,6 +949,11 @@
             </div>
             <div class="form-grid">
               <label class="field compact">
+                <span>Tax year</span>
+                <select id="prepCurrentYear"></select>
+                <small>The AI uses only this year's figures. P&amp;L columns, balances or transactions from other years are left out and listed in AI Notes.</small>
+              </label>
+              <label class="field compact">
                 <span>Return type</span>
                 <select id="prepReturnType">
                   <option value="">Select</option>
@@ -973,7 +978,6 @@
               <span style="font-weight:normal"><strong>Season roll-forward:</strong> attach this client's archived workpaper from last season as the prior workpaper (no re-upload needed). Every generated workpaper is archived automatically when a client is selected.</span>
             </label>
             <input id="prepEntityName" type="hidden" />
-            <input id="prepCurrentYear" type="hidden" value="2024" />
             <input id="prepPriorYear" type="hidden" value="2023" />
           </section>
 
@@ -2232,6 +2236,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20260910b"></script>
+    <script src="app.js?v=20260925a"></script>
   </body>
 </html>
