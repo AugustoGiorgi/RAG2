@@ -37,3 +37,22 @@ test("queued requests time out without consuming a slot", async () => {
   assert.deepEqual(limiter.stats(), { active: 1, queued: 0 });
   release();
 });
+
+test("20 simultaneous AI jobs complete without exceeding ten active slots", async () => {
+  const limiter = createConcurrencyLimiter({ maxActive: 10, maxQueue: 40, waitMs: 1000 });
+  let active = 0;
+  let peak = 0;
+  await Promise.all(Array.from({ length: 20 }, async () => {
+    const release = await limiter.acquire();
+    active += 1;
+    peak = Math.max(peak, active);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      active -= 1;
+      release();
+    }
+  }));
+  assert.equal(peak, 10);
+  assert.deepEqual(limiter.stats(), { active: 0, queued: 0 });
+});

@@ -366,6 +366,12 @@ const MASTER_REVIEW_PROMPT = loadMasterReviewPrompt();
 ensureDatabase();
 const researchHistories = new Map();
 const rateLimitBuckets = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateLimitBuckets) {
+    if (bucket.resetAt <= now) rateLimitBuckets.delete(key);
+  }
+}, 60 * 1000).unref();
 const adminTwoFactorChallenges = new Map();
 
 const ACCOUNTING_SOFTWARE = {
@@ -866,9 +872,13 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     // users fall through to the app exactly as before. If landing.html is missing, the
     // old behavior (redirect to /login) is preserved.
     if (req.method === "GET" && requestUrl.pathname === "/" && !getSession(req)) { await handleLandingPage(req, res); return; }
-    if (isApiRequest(req) && req.url !== "/api/login" && isRateLimited(req, "api", API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS)) {
-      sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
-      return;
+    if (isApiRequest(req) && req.url !== "/api/login") {
+      const session = getSession(req);
+      const bucket = session?.username ? `api:user:${session.username}` : "api:anonymous";
+      if (isRateLimited(req, bucket, API_RATE_LIMIT_MAX, API_RATE_LIMIT_WINDOW_MS)) {
+        sendJson(res, 429, { error: "Too many requests. Please wait a moment and try again." });
+        return;
+      }
     }
     if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
     if (req.method === "POST" && req.url === "/api/access-request") { await handleAccessRequest(req, res); return; }
@@ -6046,7 +6056,12 @@ function redactSensitiveString(value) {
 }
 
 function clientIp(req) {
-  return String(req.headers?.["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim();
+  const remote = String(req.socket?.remoteAddress || "").trim();
+  if (remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1") {
+    const proxyIp = String(req.headers?.["x-real-ip"] || "").trim();
+    if (net.isIP(proxyIp)) return proxyIp;
+  }
+  return remote;
 }
 
 function isRateLimited(req, bucket, maxRequests, windowMs) {

@@ -72,3 +72,24 @@ Use `/healthz` for hosting health checks.
 - On the GoDaddy VPS, `scripts/deploy-vps.sh` is installed as `/home/agiorgi/deploy-rag-tax.sh`. It backs up local data, refuses non-fast-forward updates or commits that change tracked `data/` files, runs the database setup, and restarts PM2 only after checks pass. Keep the VPS script in sync with this copy; do not replace its fast-forward merge with `git reset --hard` because live JSON files are modified in production.
 - Run one Node/PM2 instance per data directory. The remaining JSON-backed stores and in-memory limits are safe for concurrent requests within one process, but are not shared across a PM2 cluster or multiple VPS instances. Move those stores and limits to PostgreSQL/Redis before horizontal scaling.
 - `AI_MAX_CONCURRENT` caps active AI work; `AI_MAX_QUEUE` and `AI_QUEUE_WAIT_MS` bound the wait. Increase them only after measuring VPS memory, CPU, Anthropic rate limits, and real user latency.
+
+## Initial 20-user capacity check
+
+Run `node --test test/twenty-users.test.js` on the target host. It starts a separate
+loopback-only server with a temporary data directory, 20 synthetic accounts in two
+firms, and no database, Anthropic, Google, or QuickBooks credentials. It does not
+modify production client data or call external APIs. The test reports request count,
+p95 latency, and worst latency. Run `npm test` for the wider regression suite.
+
+The check covers concurrent login, client/task/session writes and reads, same-firm
+sharing, cross-firm access by direct ID, personal Google/QuickBooks token state,
+and API rate-limit behavior for users behind one office IP. It also tests that
+20 AI jobs are admitted through the in-process limiter without exceeding ten
+active slots. This is an initial functional/capacity gate, not a guarantee that
+20 simultaneous long AI reviews or uploads will finish quickly. Those need a
+separate staged test with realistic document sizes and provider quotas before
+raising concurrency limits.
+
+Keep one PM2 instance while JSON-backed stores and rate limits remain local to
+the process. Before adding instances or servers, move shared state and distributed
+coordination to durable services and rerun the isolation and capacity checks.
