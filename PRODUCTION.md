@@ -38,6 +38,9 @@ GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/userinfo.email https://www.g
 GOOGLE_PICKER_API_KEY=restricted-browser-api-key
 GOOGLE_CLOUD_PROJECT_NUMBER=numeric-project-number
 ENABLE_GMAIL_SEND=true
+AI_MAX_CONCURRENT=10
+AI_MAX_QUEUE=40
+AI_QUEUE_WAIT_MS=90000
 ```
 
 Google Picker is required with `drive.file`; it grants access only to files the user explicitly selects. Existing connections created with another scope set must reconnect once.
@@ -65,3 +68,6 @@ Use `/healthz` for hosting health checks.
 - ZIP uploads are extracted in the browser before review. Very large ZIPs still count against browser memory and request-size limits.
 - Set `CLAUDE_INPUT_COST_PER_MTOK` and `CLAUDE_OUTPUT_COST_PER_MTOK` if pricing changes or if a different Claude model is used.
 - Keep the exact approved OAuth scope set aligned between the code, production environment, and Google Cloud Console. Direct Gmail sending requires the verified `gmail.send` scope.
+- Run `npm run db:setup` after updating the code and before restarting Node. This applies the `firm_admin` role constraint and keeps the private schema current.
+- Run one Node/PM2 instance per data directory. The remaining JSON-backed stores and in-memory limits are safe for concurrent requests within one process, but are not shared across a PM2 cluster or multiple VPS instances. Move those stores and limits to PostgreSQL/Redis before horizontal scaling.
+- `AI_MAX_CONCURRENT` caps active AI work; `AI_MAX_QUEUE` and `AI_QUEUE_WAIT_MS` bound the wait. Increase them only after measuring VPS memory, CPU, Anthropic rate limits, and real user latency.

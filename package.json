@@ -17,6 +17,11 @@
     "pg": "^8.13.1",
     "pptxgenjs": "^3.12.0"
   },
+  "overrides": {
+    "pptxgenjs": {
+      "image-size": "^2.0.4"
+    }
+  },
   "engines": {
     "node": ">=20"
   }

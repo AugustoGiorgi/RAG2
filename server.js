@@ -7,6 +7,10 @@ const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
 const net = require("node:net");
 const tls = require("node:tls");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { isDeepStrictEqual } = require("node:util");
+const { createConcurrencyLimiter } = require("./lib/concurrency-limiter");
+let tenantLookupCache = null;
 const { buildPresentation } = require("./lib/pptx-builder");
 const { buildPlanningDeck } = require("./lib/pptx-builder");
 const planningTax = require("./lib/tax-calculations");
@@ -261,6 +265,8 @@ let databasePool = null;
 let databaseReady = false;
 let databaseHydrating = false;
 let databaseSyncQueue = Promise.resolve();
+const pendingDatabaseSync = new Map();
+let databaseSyncScheduled = false;
 let databaseSyncLastError = "";
 const MASTER_REVIEW_PROMPT_PATH = path.join(ROOT, "senior-review-master-prompt.txt");
 const KNOWLEDGE_BASE_DIR = path.resolve(process.env.KNOWLEDGE_BASE_DIR || path.join(ROOT, "knowledge_base"));
@@ -847,7 +853,8 @@ const TAX_SOFTWARE_LIST = [
 // ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+const requestScope = new AsyncLocalStorage();
+const server = http.createServer((req, res) => requestScope.run(req, async () => {
   try {
     setSecurityHeaders(res);
     res.corsOrigin = getAllowedOrigin(req);
@@ -885,31 +892,36 @@ const server = http.createServer(async (req, res) => {
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
-    // For token-consuming routes: set up AbortController, global slot, and release hooks.
+    // Reserve a bounded global slot and release both reservations exactly once.
     if (req._concurrencyUsername) {
-      // Create an AbortController so handlers can cancel the Anthropic fetch when
-      // the client disconnects, saving tokens on abandoned requests.
       const abortController = new AbortController();
       req._abortController = abortController;
-      // Wait for a global Anthropic slot (max MAX_CONCURRENT_GLOBAL simultaneous calls).
-      // If all slots are in use, this await parks the request in a queue until one frees
-      // rather than rejecting it — the client waits but does not get an error.
-      await acquireGlobalSlot();
-      // IMPORTANT: listen on res (ServerResponse) not req (IncomingMessage).
-      // req "close" fires when the request body stream is consumed — which happens
-      // immediately after readJsonBody() reads the POST body, long before the
-      // response is written. res "close" fires only when the actual TCP socket
-      // closes prematurely (real client disconnect).
-      res.once("finish", () => { releaseUserSlot(req); releaseGlobalSlot(); });
+      let releaseGlobal = null;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        releaseUserSlot(req);
+        releaseGlobal?.();
+      };
+      res.once("finish", release);
       res.once("close", () => {
         if (!res.writableEnded) {
           abortController.abort();
-          const username = req._concurrencyUsername || "unknown";
-          console.log(`[ABORTED] userId=${username} path=${requestUrl.pathname} reason=client_closed`);
         }
-        releaseUserSlot(req);
-        releaseGlobalSlot();
+        release();
       });
+      try {
+        releaseGlobal = await globalAiLimiter.acquire(abortController.signal);
+      } catch (error) {
+        release();
+        if (error.code !== "ABORTED" && !res.destroyed) {
+          res.setHeader("retry-after", "5");
+          sendJson(res, 503, { code: "AI_CAPACITY_BUSY", error: "El servidor está ocupado. Intentá de nuevo en unos segundos." });
+        }
+        return;
+      }
+      if (released || res.destroyed) { releaseGlobal(); return; }
     }
     if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
@@ -973,13 +985,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (requestUrl.pathname.startsWith("/api/library")) {
-      if (req.method !== "GET" && !requireAdmin(req, res)) return;
+      if (req.method !== "GET" && !requireUserManager(req, res)) return;
       await handleLibraryApi(req, res, requestUrl);
       return;
     }
     if (requestUrl.pathname.startsWith("/api/deadlines")) { await handleDeadlinesApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/learning")) {
-      if (!requireAdmin(req, res)) return;
+      if (!requireUserManager(req, res)) return;
       await handleLearningApi(req, res, requestUrl);
       return;
     }
@@ -1019,8 +1031,16 @@ const server = http.createServer(async (req, res) => {
       await handleAdminUsersApi(req, res, requestUrl);
       return;
     }
-    if (requestUrl.pathname.startsWith("/api/tracker")) { await handleTrackerApi(req, res, requestUrl); return; }
-    if (requestUrl.pathname.startsWith("/api/pto")) { await handlePtoApi(req, res, requestUrl); return; }
+    if (requestUrl.pathname.startsWith("/api/tracker")) {
+      if (req.method === "GET") await handleTrackerApi(req, res, requestUrl);
+      else await withWriteLock(_trackerLocks, req.user.tenantId, () => handleTrackerApi(req, res, requestUrl));
+      return;
+    }
+    if (requestUrl.pathname.startsWith("/api/pto")) {
+      if (req.method === "GET") await handlePtoApi(req, res, requestUrl);
+      else await withWriteLock(_trackerLocks, req.user.tenantId, () => handlePtoApi(req, res, requestUrl));
+      return;
+    }
     if (requestUrl.pathname.startsWith("/api/clients")) { await handleClientApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/sessions")) { await handleSessionApi(req, res, requestUrl); return; }
     if (req.method === "GET" && req.url === "/api/config") { await handleConfig(req, res); return; }
@@ -1040,7 +1060,7 @@ const server = http.createServer(async (req, res) => {
     console.error(error);
     sendJson(res, error.statusCode || 500, { error: error.expose ? error.message : "Unexpected server error." });
   }
-});
+}));
 
 startServer();
 
@@ -1108,7 +1128,7 @@ function defaultTrackerData() {
 
 function readTracker() {
   ensureDatabase();
-  const tracker = readJsonFile(TRACKER_PATH, defaultTrackerData());
+  const tracker = readTenantJson(TRACKER_PATH, defaultTrackerData());
   let changed = false;
   if (!Array.isArray(tracker.globalStatuses) || tracker.globalStatuses.length === 0) {
     tracker.globalStatuses = structuredCloneSafe(DEFAULT_TRACKER_STATUSES);
@@ -1130,7 +1150,7 @@ function readTracker() {
 }
 
 function writeTracker(tracker) {
-  writeJsonFile(TRACKER_PATH, tracker);
+  writeTenantJson(TRACKER_PATH, tracker);
 }
 
 async function handleTrackerApi(req, res, requestUrl) {
@@ -4389,7 +4409,9 @@ async function handleLogin(req, res) {
   }
 
   const sessionUser = authUserForSession(user);
-  const token = signSession({ ...sessionUser, user: sessionUser, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS });
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const token = signSession({ ...sessionUser, user: sessionUser, iat: issuedAt,
+    authVersion: hmac(user.passwordHash), exp: issuedAt + SESSION_TTL_SECONDS });
   res.setHeader("set-cookie", buildSessionCookie(token));
   appendAuditLog(req, "auth.login_success", { username: sessionUser.username, role: sessionUser.role });
   sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
@@ -4862,6 +4884,7 @@ function readUserStore() {
 }
 
 function writeUserStore(store) {
+  tenantLookupCache = null;
   writeJsonFile(USERS_PATH, {
     users: Array.isArray(store.users) ? store.users : [],
     budgetGroups: Array.isArray(store.budgetGroups) ? store.budgetGroups : [],
@@ -5019,8 +5042,13 @@ function getSession(req) {
     const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
     if (!payload.username || !payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
     const configuredUser = getAuthUsers().find((user) => user.username === payload.username);
-    const sessionUser = authUserForSession({ ...configuredUser, ...payload });
-    return { ...payload, ...sessionUser, user: sessionUser };
+    if (!configuredUser) return null;
+    if (payload.role !== configuredUser.role || String(payload.tenantId || DEFAULT_TENANT_ID) !== configuredUser.tenantId) return null;
+    if (payload.authVersion && !safeEqual(payload.authVersion, hmac(configuredUser.passwordHash))) return null;
+    const changedAt = configuredUser.lastPasswordChangeAt ? Math.floor(new Date(configuredUser.lastPasswordChangeAt).getTime() / 1000) : 0;
+    if (changedAt && (!payload.iat || payload.iat < changedAt)) return null;
+    const sessionUser = authUserForSession(configuredUser);
+    return { ...sessionUser, exp: payload.exp, user: sessionUser };
   } catch (_) {
     return null;
   }
@@ -5054,7 +5082,6 @@ function requireUserManager(req, res) {
 //     startup migration, so this only guards records created through unexpected paths —
 //     the old behavior of "ownerless = visible to everyone" was a cross-firm leak).
 //   • otherwise → visible when the record owner's firm matches the requester's firm.
-let tenantLookupCache = null;
 function userTenantId(username) {
   if (!username) return "";
   const now = Date.now();
@@ -5065,9 +5092,7 @@ function userTenantId(username) {
     } catch (_) {}
     tenantLookupCache = { at: now, map };
   }
-  // Unknown owner (user deleted): fall back to the default tenant so the firm that has
-  // always operated the app keeps seeing its historical records.
-  return tenantLookupCache.map[String(username)] || DEFAULT_TENANT_ID;
+  return tenantLookupCache.map[String(username)] || "";
 }
 
 function canAccessOwner(req, ownerUsername) {
@@ -5076,7 +5101,8 @@ function canAccessOwner(req, ownerUsername) {
   if (session.role === "admin") return true;
   if (!ownerUsername) return false;
   if (ownerUsername === session.username) return true;
-  return userTenantId(ownerUsername) === userTenantId(session.username);
+  const ownerTenant = userTenantId(ownerUsername);
+  return Boolean(ownerTenant) && ownerTenant === session.tenantId;
 }
 
 function requireOwnerAccess(req, res, ownerUsername) {
@@ -5231,6 +5257,31 @@ function readJsonFile(filePath, fallback) {
   }
 }
 
+function requestTenantId() {
+  return String(requestScope.getStore()?.user?.tenantId || DEFAULT_TENANT_ID);
+}
+
+function readTenantJson(filePath, fallback) {
+  const all = readJsonFile(filePath, fallback);
+  const tenantId = requestTenantId();
+  if (tenantId !== DEFAULT_TENANT_ID) {
+    const tenants = all.tenants || {};
+    return structuredCloneSafe(Object.hasOwn(tenants, tenantId) ? tenants[tenantId] : fallback);
+  }
+  const { tenants, ...legacy } = all;
+  return legacy;
+}
+
+function writeTenantJson(filePath, value) {
+  const tenantId = requestTenantId();
+  const all = readJsonFile(filePath, {});
+  if (tenantId === DEFAULT_TENANT_ID) {
+    writeJsonFile(filePath, { ...value, ...(all.tenants ? { tenants: all.tenants } : {}) });
+  } else {
+    writeJsonFile(filePath, { ...all, tenants: { ...(all.tenants || {}), [tenantId]: value } });
+  }
+}
+
 function writeJsonFile(filePath, value) {
   ensurePrivateDirectory(path.dirname(filePath));
   const tempPath = `${filePath}.${process.pid}.tmp`;
@@ -5344,13 +5395,29 @@ async function hydrateAccessRequestsFromDatabase() {
 function queueDatabaseSync(filePath, value) {
   if (!databaseReady || databaseHydrating || !databasePool || !isDataJsonPath(filePath)) return;
   const snapshotKey = dataSnapshotKey(filePath);
-  const payload = structuredCloneSafe(value);
-  databaseSyncQueue = databaseSyncQueue
-    .then(() => syncJsonToDatabase(filePath, snapshotKey, payload))
-    .catch((error) => {
-      databaseSyncLastError = error.message || String(error);
-      console.warn(`[Database] Sync failed for ${snapshotKey}:`, error.message);
-    });
+  pendingDatabaseSync.set(filePath, { snapshotKey, payload: structuredCloneSafe(value) });
+  scheduleDatabaseSync();
+}
+
+function scheduleDatabaseSync() {
+  if (databaseSyncScheduled) return;
+  databaseSyncScheduled = true;
+  databaseSyncQueue = databaseSyncQueue.then(async () => {
+    while (pendingDatabaseSync.size) {
+      const [nextPath, next] = pendingDatabaseSync.entries().next().value;
+      pendingDatabaseSync.delete(nextPath);
+      try {
+        await syncJsonToDatabase(nextPath, next.snapshotKey, next.payload);
+        databaseSyncLastError = "";
+      } catch (error) {
+        databaseSyncLastError = error.message || String(error);
+        console.warn(`[Database] Sync failed for ${next.snapshotKey}:`, error.message);
+      }
+    }
+  }).finally(() => {
+    databaseSyncScheduled = false;
+    if (pendingDatabaseSync.size) scheduleDatabaseSync();
+  });
 }
 
 async function flushDatabaseSyncQueue(timeoutMs = 5000) {
@@ -5369,6 +5436,19 @@ async function flushDatabaseSyncQueue(timeoutMs = 5000) {
 }
 
 async function syncJsonToDatabase(filePath, snapshotKey, payload) {
+  if (filePath === COST_LOG_PATH || filePath === AUDIT_LOG_PATH) {
+    await syncAppendOnlyLogToDatabase(filePath, snapshotKey, payload);
+    return;
+  }
+  if (filePath === DB_PATH) {
+    await syncClientsToDatabase(snapshotKey, payload);
+    return;
+  }
+  if ([GOOGLE_TOKEN_PATH, QBO_TOKEN_PATH, ACCOUNTING_TOKEN_PATH].includes(filePath)) {
+    const provider = filePath === GOOGLE_TOKEN_PATH ? "google" : filePath === QBO_TOKEN_PATH ? "quickbooks" : "accounting";
+    await syncOauthTokenStoreToDatabase(provider, snapshotKey, payload);
+    return;
+  }
   await databasePool.query(
     `insert into rag_private.app_json_snapshots (snapshot_key, payload, imported_at)
      values ($1, $2::jsonb, now())
@@ -5376,13 +5456,7 @@ async function syncJsonToDatabase(filePath, snapshotKey, payload) {
     [snapshotKey, jsonParam(payload)],
   );
   if (filePath === USERS_PATH) await syncUsersToDatabase(payload);
-  else if (filePath === COST_LOG_PATH) await syncCostLogToDatabase(payload);
-  else if (filePath === AUDIT_LOG_PATH) await syncAuditLogToDatabase(payload);
   else if (filePath === ACCESS_REQUESTS_PATH) await syncAccessRequestsToDatabase(payload);
-  else if (filePath === DB_PATH) await syncClientsToDatabase(payload);
-  else if (filePath === GOOGLE_TOKEN_PATH) await syncOauthTokenStoreToDatabase("google", payload);
-  else if (filePath === QBO_TOKEN_PATH) await syncOauthTokenStoreToDatabase("quickbooks", payload);
-  else if (filePath === ACCOUNTING_TOKEN_PATH) await syncOauthTokenStoreToDatabase("accounting", payload);
 }
 
 async function syncUsersToDatabase(store) {
@@ -5434,61 +5508,69 @@ async function syncUsersToDatabase(store) {
       `insert into rag_private.user_firms (username, tenant_id, firm_role)
        values ($1, $2, $3)
        on conflict (username, tenant_id) do update set firm_role = excluded.firm_role`,
-      [String(user.username), tenantId, user.role === "admin" ? "admin" : "member"],
+      [String(user.username), tenantId, ["admin", "firm_admin"].includes(user.role) ? "admin" : "member"],
     );
+    await databasePool.query("delete from rag_private.user_firms where username = $1 and tenant_id <> $2", [String(user.username), tenantId]);
   }
   if (usernames.length) {
     await databasePool.query("delete from rag_private.app_users where not (username = any($1::text[]))", [usernames]);
   }
 }
 
-async function syncCostLogToDatabase(store) {
+async function syncAppendOnlyLogToDatabase(filePath, snapshotKey, store) {
+  const isCost = filePath === COST_LOG_PATH;
+  const table = isCost ? "rag_private.cost_log_entries" : "rag_private.audit_log_entries";
   const entries = Array.isArray(store?.entries) ? store.entries : [];
   const tenantsByUsername = userTenantMap();
-  await databasePool.query("delete from rag_private.cost_log_entries");
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index] || {};
-    const username = entry.username || entry.user || null;
-    await databasePool.query(
-      `insert into rag_private.cost_log_entries
-        (source_index, username, tenant_id, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::jsonb)`,
-      [
-        index,
-        username,
-        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
-        entry.action || null,
-        entry.model || null,
-        sqlNumber(entry.inputTokens ?? entry.input_tokens),
-        sqlNumber(entry.outputTokens ?? entry.output_tokens),
-        sqlNumber(entry.totalCostUsd ?? entry.total_cost_usd ?? entry.costUsd),
-        sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at),
-        jsonParam(entry),
-      ],
+  const client = await databasePool.connect();
+  try {
+    await client.query("begin");
+    const last = await client.query(`select source_index, payload->>'id' as entry_id from ${table} order by source_index desc nulls last limit 1`);
+    const previous = last.rows[0];
+    const previousPosition = previous?.entry_id ? entries.findIndex((entry) => entry?.id === previous.entry_id) : -1;
+    const canAppend = previous && previousPosition >= 0 && Number.isInteger(previous.source_index);
+    if (!canAppend) await client.query(`delete from ${table}`);
+    const start = canAppend ? previousPosition + 1 : 0;
+    let nextIndex = canAppend ? previous.source_index + 1 : 0;
+    for (let position = start; position < entries.length; position += 1) {
+      const entry = entries[position] || {};
+      const username = entry.username || entry.user?.username || entry.user || null;
+      const tenantId = entry.tenantId || (username ? tenantsByUsername.get(String(username)) : null) || DEFAULT_TENANT_ID;
+      if (isCost) {
+        await client.query(
+          `insert into rag_private.cost_log_entries
+            (source_index, username, tenant_id, action, model, input_tokens, output_tokens, total_cost_usd, occurred_at, payload)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::jsonb)`,
+          [nextIndex++, username, tenantId, entry.action || null, entry.model || null,
+            sqlNumber(entry.inputTokens ?? entry.input_tokens), sqlNumber(entry.outputTokens ?? entry.output_tokens),
+            sqlNumber(entry.totalCostUsd ?? entry.total_cost_usd ?? entry.costUsd),
+            sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at), jsonParam(entry)],
+        );
+      } else {
+        await client.query(
+          `insert into rag_private.audit_log_entries
+            (source_index, username, tenant_id, action, occurred_at, payload)
+           values ($1, $2, $3, $4, $5::timestamptz, $6::jsonb)`,
+          [nextIndex++, username, tenantId, entry.action || null,
+            sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at), jsonParam(entry)],
+        );
+      }
+    }
+    if (!isCost && entries.length) {
+      await client.query(`delete from ${table} where source_index < $1`, [nextIndex - entries.length]);
+    }
+    await client.query(
+      `insert into rag_private.app_json_snapshots (snapshot_key, payload, imported_at)
+       values ($1, $2::jsonb, now())
+       on conflict (snapshot_key) do update set payload = excluded.payload, imported_at = now()`,
+      [snapshotKey, jsonParam(store)],
     );
-  }
-}
-
-async function syncAuditLogToDatabase(store) {
-  const entries = Array.isArray(store?.entries) ? store.entries : [];
-  const tenantsByUsername = userTenantMap();
-  await databasePool.query("delete from rag_private.audit_log_entries");
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index] || {};
-    const username = entry.username || entry.user?.username || null;
-    await databasePool.query(
-      `insert into rag_private.audit_log_entries
-        (source_index, username, tenant_id, action, occurred_at, payload)
-       values ($1, $2, $3, $4, $5::timestamptz, $6::jsonb)`,
-      [
-        index,
-        username,
-        username ? tenantsByUsername.get(String(username)) || DEFAULT_TENANT_ID : DEFAULT_TENANT_ID,
-        entry.action || null,
-        sqlTimestamp(entry.createdAt || entry.timestamp || entry.occurredAt || entry.at),
-        jsonParam(entry),
-      ],
-    );
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -5513,49 +5595,86 @@ async function syncAccessRequestsToDatabase(store) {
   }
 }
 
-async function syncClientsToDatabase(store) {
+async function syncClientsToDatabase(snapshotKey, store) {
   const clients = store?.clients && typeof store.clients === "object" ? store.clients : {};
-  await databasePool.query("delete from rag_private.clients");
-  for (const [clientId, record] of Object.entries(clients)) {
-    const tenantId = record?.tenantId || record?.tenant_id || DEFAULT_TENANT_ID;
-    await databasePool.query(
-      `insert into rag_private.firms (tenant_id, name)
-       values ($1, $2)
-       on conflict (tenant_id) do nothing`,
-      [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+  const client = await databasePool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query("select client_id, payload from rag_private.clients");
+    const existingById = new Map(existing.rows.map((row) => [row.client_id, row.payload]));
+    for (const [clientId, record] of Object.entries(clients)) {
+      if (isDeepStrictEqual(existingById.get(clientId), record)) continue;
+      const tenantId = record?.tenantId || record?.tenant_id || DEFAULT_TENANT_ID;
+      await client.query(
+        `insert into rag_private.firms (tenant_id, name)
+         values ($1, $2)
+         on conflict (tenant_id) do nothing`,
+        [tenantId, tenantId === DEFAULT_TENANT_ID ? DEFAULT_TENANT_NAME : tenantId],
+      );
+      await client.query(
+        `insert into rag_private.clients (client_id, tenant_id, owner_username, display_name, payload)
+         values ($1, $2, $3, $4, $5::jsonb)
+         on conflict (client_id) do update set
+          tenant_id = excluded.tenant_id,
+          owner_username = excluded.owner_username,
+          display_name = excluded.display_name,
+          payload = excluded.payload,
+          updated_at = now()`,
+        [clientId, tenantId, record?.ownerUsername || record?.createdBy || null,
+          record?.name || record?.clientName || clientId, jsonParam(record)],
+      );
+    }
+    const ids = Object.keys(clients);
+    await client.query("delete from rag_private.clients where not (client_id = any($1::text[]))", [ids]);
+    await client.query(
+      `insert into rag_private.app_json_snapshots (snapshot_key, payload, imported_at)
+       values ($1, $2::jsonb, now())
+       on conflict (snapshot_key) do update set payload = excluded.payload, imported_at = now()`,
+      [snapshotKey, jsonParam(store)],
     );
-    await databasePool.query(
-      `insert into rag_private.clients (client_id, tenant_id, owner_username, display_name, payload)
-       values ($1, $2, $3, $4, $5::jsonb)
-       on conflict (client_id) do update set
-        tenant_id = excluded.tenant_id,
-        owner_username = excluded.owner_username,
-        display_name = excluded.display_name,
-        payload = excluded.payload,
-        updated_at = now()`,
-      [
-        clientId,
-        tenantId,
-        record?.ownerUsername || record?.createdBy || null,
-        record?.name || record?.clientName || clientId,
-        jsonParam(record),
-      ],
-    );
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
-async function syncOauthTokenStoreToDatabase(provider, store) {
+async function syncOauthTokenStoreToDatabase(provider, snapshotKey, store) {
   const users = store?.users && typeof store.users === "object" ? store.users : {};
-  await databasePool.query("delete from rag_private.oauth_tokens where provider = $1", [provider]);
-  for (const [username, payload] of Object.entries(users)) {
-    await databasePool.query(
-      `insert into rag_private.oauth_tokens (provider, username, account_key, encrypted_payload)
-       values ($1, $2, $3, $4::jsonb)
-       on conflict (provider, username, account_key) do update set
-        encrypted_payload = excluded.encrypted_payload,
-        updated_at = now()`,
-      [provider, String(username), "default", jsonParam(payload)],
+  const client = await databasePool.connect();
+  try {
+    await client.query("begin");
+    const existing = await client.query("select username, encrypted_payload from rag_private.oauth_tokens where provider = $1 and account_key = 'default'", [provider]);
+    const existingByUsername = new Map(existing.rows.map((row) => [row.username, row.encrypted_payload]));
+    for (const [username, payload] of Object.entries(users)) {
+      if (isDeepStrictEqual(existingByUsername.get(username), payload)) continue;
+      await client.query(
+        `insert into rag_private.oauth_tokens (provider, username, account_key, encrypted_payload)
+         values ($1, $2, $3, $4::jsonb)
+         on conflict (provider, username, account_key) do update set
+          encrypted_payload = excluded.encrypted_payload,
+          updated_at = now()`,
+        [provider, String(username), "default", jsonParam(payload)],
+      );
+    }
+    await client.query(
+      "delete from rag_private.oauth_tokens where provider = $1 and account_key = 'default' and not (username = any($2::text[]))",
+      [provider, Object.keys(users)],
     );
+    await client.query(
+      `insert into rag_private.app_json_snapshots (snapshot_key, payload, imported_at)
+       values ($1, $2::jsonb, now())
+       on conflict (snapshot_key) do update set payload = excluded.payload, imported_at = now()`,
+      [snapshotKey, jsonParam(store)],
+    );
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -5669,6 +5788,7 @@ function appendAuditLog(reqOrUser, action, details = {}) {
       at: new Date().toISOString(),
       action: String(action || "unknown"),
       username: String(user.username || ""),
+      tenantId: String(user.tenantId || userTenantId(user.username) || DEFAULT_TENANT_ID),
       role: String(user.role || ""),
       ip: reqOrUser?.headers ? clientIp(reqOrUser) : "",
       details: sanitizeAuditDetails(details),
@@ -6012,13 +6132,19 @@ function pickClientFields(payload = {}) {
   };
 }
 
-function getOrCreateClient(db, payload = {}) {
-  if (payload.clientId && db.clients[payload.clientId]) return db.clients[payload.clientId];
+function getOrCreateClient(db, payload = {}, req = requestScope.getStore()) {
+  if (payload.clientId && db.clients[payload.clientId]) {
+    const client = db.clients[payload.clientId];
+    if (!canAccessOwner(req, clientOwner(client))) throw Object.assign(new Error("Access denied."), { statusCode: 403, expose: true });
+    return client;
+  }
   const clientFields = pickClientFields(payload);
-  const existing = Object.values(db.clients).find((client) => client.name.toLowerCase() === clientFields.name.toLowerCase() && clientFields.name);
+  const existing = Object.values(db.clients).find((client) => clientFields.name
+    && client.name.toLowerCase() === clientFields.name.toLowerCase()
+    && canAccessOwner(req, clientOwner(client)));
   if (existing) return existing;
   const now = new Date().toISOString();
-  const client = normalizeClientRecord({ id: crypto.randomUUID(), tenantId: DEFAULT_TENANT_ID, ...clientFields, name: clientFields.name || "Unnamed client", createdAt: now, updatedAt: now });
+  const client = normalizeClientRecord({ id: crypto.randomUUID(), tenantId: req?.user?.tenantId || DEFAULT_TENANT_ID, ...clientFields, name: clientFields.name || "Unnamed client", createdAt: now, updatedAt: now });
   db.clients[client.id] = client;
   return client;
 }
@@ -7546,38 +7672,12 @@ function requireUserSpendBudget(req, res) {
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Per-user concurrency limiter (in-memory semaphore)
-// Prevents the same user from firing multiple simultaneous AI calls.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Global concurrency limiter — caps simultaneous outbound Anthropic calls
-// across ALL users. When the cap is reached, new requests wait in a Promise
-// queue until a slot is released rather than failing immediately.
-// MAX_CONCURRENT_GLOBAL should be tuned to stay below Anthropic's RPM limit.
-// ---------------------------------------------------------------------------
-const MAX_CONCURRENT_GLOBAL = 10;
-let _globalActiveCount = 0;
-const _globalWaiters = []; // queue of { resolve } for requests waiting for a slot
-
-function acquireGlobalSlot() {
-  if (_globalActiveCount < MAX_CONCURRENT_GLOBAL) {
-    _globalActiveCount++;
-    return Promise.resolve();
-  }
-  // At cap: park the caller in the queue. It will be woken up when a slot frees.
-  return new Promise((resolve) => _globalWaiters.push(resolve));
-}
-
-function releaseGlobalSlot() {
-  if (_globalWaiters.length > 0) {
-    // Hand the slot directly to the next waiter — count stays the same.
-    const next = _globalWaiters.shift();
-    next();
-  } else {
-    _globalActiveCount = Math.max(0, _globalActiveCount - 1);
-  }
-}
+// Queue only the expensive AI actions; waiting requests are bounded and cancellable.
+const globalAiLimiter = createConcurrencyLimiter({
+  maxActive: Math.max(1, Number(process.env.AI_MAX_CONCURRENT || 10)),
+  maxQueue: Math.max(0, Number(process.env.AI_MAX_QUEUE || 40)),
+  waitMs: Math.max(1000, Number(process.env.AI_QUEUE_WAIT_MS || 90000)),
+});
 
 const MAX_CONCURRENT_PER_USER = 2;
 const _activeCallsPerUser = new Map(); // username → number of active AI calls
@@ -7678,10 +7778,13 @@ function writeUserCredits(data) {
 function withWriteLock(lockMap, key, fn) {
   const prev = lockMap.get(key) || Promise.resolve();
   const next = prev.then(fn);
-  lockMap.set(key, next.catch(() => {})); // tail-only: GC'd after completion
+  const tail = next.catch(() => {});
+  lockMap.set(key, tail);
+  tail.then(() => { if (lockMap.get(key) === tail) lockMap.delete(key); });
   return next;
 }
 
+const _trackerLocks = new Map();
 // Convenience: per-user lock for user-store writes (username as key).
 const _userStoreLocks = new Map();
 function withUserStoreLock(username, fn) {
@@ -7915,6 +8018,7 @@ function logClaudeCost(req, result, action, tab, payload = {}, startedAt = Date.
     returnType: resolveReturnTypeFromPayload(payload) || null,
     taxYear: String(payload.metadata?.taxYear || payload.taxYear || payload.context?.taxYear || ""),
     username: req.user?.username || getSession(req)?.username || "unknown",
+    tenantId: req.user?.tenantId || getSession(req)?.tenantId || DEFAULT_TENANT_ID,
     durationMs: Math.max(0, Date.now() - startedAt),
   };
   const log = readCostLog();
@@ -8709,7 +8813,7 @@ function handleClientApi(req, res, requestUrl) {
       if (!client) { sendJson(res, 404, { error: "Client not found." }); return; }
       if (!requireOwnerAccess(req, res, clientOwner(client))) return;
       const realmId = String(payload.realmId || "");
-      const company = Object.values(readQboStore().users || {}).flatMap((user) => Object.values(user.companies || {})).find((item) => item.realmId === realmId);
+      const company = Object.values(getQboUserStore(username).companies || {}).find((item) => item.realmId === realmId);
       client.qboRealmId = realmId;
       client.qboCompanyName = company?.companyName || realmId;
       client.qboLinkedAt = new Date().toISOString();
@@ -8774,7 +8878,7 @@ function handleClientApi(req, res, requestUrl) {
 }
 
 function readFirmLibrary() {
-  const library = readJsonFile(FIRM_LIBRARY_PATH, { documents: [], globalInstructions: "", defaultTaxSoftware: "" });
+  const library = readTenantJson(FIRM_LIBRARY_PATH, { documents: [], globalInstructions: "", defaultTaxSoftware: "" });
   return {
     documents: Array.isArray(library.documents) ? library.documents : [],
     globalInstructions: String(library.globalInstructions || ""),
@@ -8784,7 +8888,7 @@ function readFirmLibrary() {
 }
 
 function writeFirmLibrary(library) {
-  writeJsonFile(FIRM_LIBRARY_PATH, {
+  writeTenantJson(FIRM_LIBRARY_PATH, {
     documents: Array.isArray(library.documents) ? library.documents : [],
     globalInstructions: String(library.globalInstructions || ""),
     driveFolderId: library.driveFolderId || null,
@@ -8793,7 +8897,7 @@ function writeFirmLibrary(library) {
 }
 
 function readLearning() {
-  const learning = readJsonFile(AI_LEARNING_PATH, { globalCorrections: [], clientCorrections: {}, returnTypePatterns: {} });
+  const learning = readTenantJson(AI_LEARNING_PATH, { globalCorrections: [], clientCorrections: {}, returnTypePatterns: {} });
   return {
     globalCorrections: Array.isArray(learning.globalCorrections) ? learning.globalCorrections : [],
     clientCorrections: learning.clientCorrections && typeof learning.clientCorrections === "object" ? learning.clientCorrections : {},
@@ -8802,7 +8906,7 @@ function readLearning() {
 }
 
 function writeLearning(learning) {
-  writeJsonFile(AI_LEARNING_PATH, {
+  writeTenantJson(AI_LEARNING_PATH, {
     globalCorrections: Array.isArray(learning.globalCorrections) ? learning.globalCorrections : [],
     clientCorrections: learning.clientCorrections && typeof learning.clientCorrections === "object" ? learning.clientCorrections : {},
     returnTypePatterns: learning.returnTypePatterns && typeof learning.returnTypePatterns === "object" ? learning.returnTypePatterns : {},
@@ -8810,17 +8914,17 @@ function writeLearning(learning) {
 }
 
 function readFeedbackStore() {
-  const feedback = readJsonFile(FEEDBACK_PATH, { entries: [] });
+  const feedback = readTenantJson(FEEDBACK_PATH, { entries: [] });
   return { entries: Array.isArray(feedback.entries) ? feedback.entries : [] };
 }
 
 function writeFeedbackStore(feedback) {
-  writeJsonFile(FEEDBACK_PATH, { entries: Array.isArray(feedback.entries) ? feedback.entries : [] });
+  writeTenantJson(FEEDBACK_PATH, { entries: Array.isArray(feedback.entries) ? feedback.entries : [] });
 }
 
 function handleLibraryApi(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
-  const library = readFirmLibrary();
+  let library = readFirmLibrary();
   if (req.method === "GET" && requestUrl.pathname === "/api/library") {
     sendJson(res, 200, library);
     return;
@@ -8832,6 +8936,7 @@ function handleLibraryApi(req, res, requestUrl) {
     }
     if (req.method === "PUT") {
       readJsonBody(req).then((payload) => {
+        library = readFirmLibrary();
         library.globalInstructions = String(payload.globalInstructions ?? payload.text ?? "");
         writeFirmLibrary(library);
         sendJson(res, 200, { globalInstructions: library.globalInstructions, savedAt: new Date().toISOString() });
@@ -8846,6 +8951,7 @@ function handleLibraryApi(req, res, requestUrl) {
     }
     if (req.method === "PUT") {
       readJsonBody(req).then((payload) => {
+        library = readFirmLibrary();
         library.defaultTaxSoftware = String(payload.defaultTaxSoftware || payload.primary || "").trim();
         writeFirmLibrary(library);
         sendJson(res, 200, { defaultTaxSoftware: library.defaultTaxSoftware, savedAt: new Date().toISOString() });
@@ -8855,6 +8961,7 @@ function handleLibraryApi(req, res, requestUrl) {
   }
   if (parts.length === 2 && req.method === "POST") {
     readJsonBody(req).then((payload) => {
+      library = readFirmLibrary();
       const now = new Date().toISOString();
       const doc = {
         id: crypto.randomUUID(),
@@ -8882,6 +8989,7 @@ function handleLibraryApi(req, res, requestUrl) {
   }
   if (parts.length === 3 && req.method === "PUT") {
     readJsonBody(req).then((payload) => {
+      library = readFirmLibrary();
       const doc = library.documents.find((item) => item.id === parts[2]);
       if (!doc) { sendJson(res, 404, { error: "Library item not found." }); return; }
       Object.assign(doc, payload, { updatedAt: new Date().toISOString() });
@@ -9062,13 +9170,14 @@ function handleDeadlinesApi(req, res, requestUrl) {
 
 function handleLearningApi(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
-  const learning = readLearning();
+  let learning = readLearning();
   if (req.method === "GET" && parts.length === 2) {
     sendJson(res, 200, learning);
     return;
   }
   if (req.method === "POST" && parts.length === 3 && parts[2] === "global") {
     readJsonBody(req).then((payload) => {
+      learning = readLearning();
       const item = {
         id: crypto.randomUUID(),
         correction: String(payload.correction || payload.text || "").trim(),
@@ -9088,6 +9197,7 @@ function handleLearningApi(req, res, requestUrl) {
   }
   if (req.method === "POST" && parts.length === 4 && parts[2] === "client") {
     readJsonBody(req).then((payload) => {
+      learning = readLearning();
       const clientId = parts[3];
       const item = {
         id: crypto.randomUUID(),
@@ -9107,6 +9217,7 @@ function handleLearningApi(req, res, requestUrl) {
   }
   if (req.method === "PUT" && parts.length === 3) {
     readJsonBody(req).then((payload) => {
+      learning = readLearning();
       const item = findLearningCorrection(learning, parts[2]);
       if (!item) { sendJson(res, 404, { error: "Correction not found." }); return; }
       Object.assign(item, payload, { updatedAt: new Date().toISOString() });
@@ -9143,7 +9254,7 @@ function findLearningCorrection(learning, id) {
 
 function handleFeedbackApi(req, res, requestUrl) {
   const parts = requestUrl.pathname.split("/").filter(Boolean);
-  const feedback = readFeedbackStore();
+  let feedback = readFeedbackStore();
   if (req.method === "GET" && requestUrl.pathname === "/api/feedback/stats") {
     const stats = { totalEntries: feedback.entries.length, byType: {}, byRating: {}, byTab: {} };
     feedback.entries.forEach((entry) => {
@@ -9175,6 +9286,7 @@ function handleFeedbackApi(req, res, requestUrl) {
   }
   if (req.method === "POST" && parts.length === 2) {
     readJsonBody(req).then((payload) => {
+      feedback = readFeedbackStore();
       const entry = {
         id: crypto.randomUUID(),
         sessionId: payload.sessionId || null,
@@ -9507,7 +9619,7 @@ function handleSessionApi(req, res, requestUrl) {
   if (parts.length === 2 && req.method === "POST") {
     readJsonBody(req).then((payload) => {
       const db = readDb();
-      const client = getOrCreateClient(db, payload.client || payload);
+      const client = getOrCreateClient(db, { ...(payload.client || payload), clientId: payload.clientId || payload.client?.clientId || payload.client?.id }, req);
       client.tenantId = client.tenantId || req.user?.tenantId || DEFAULT_TENANT_ID;
       client.ownerUsername = client.ownerUsername || username;
       client.createdBy = client.createdBy || username;
@@ -14120,7 +14232,12 @@ function resolveReturnTypeFromPayload(payload = {}) {
 
 function resolveClientIdFromPayload(payload = {}) {
   const explicit = payload.clientId || payload.metadata?.clientId || payload.context?.clientId || payload.client?.id;
-  if (explicit) return String(explicit);
+  const db = readDb();
+  const req = requestScope.getStore();
+  if (explicit) {
+    const client = db.clients[String(explicit)];
+    return client && (!req || canAccessOwner(req, clientOwner(client))) ? String(explicit) : "";
+  }
   const name = String(
     payload.metadata?.clientName ||
     payload.metadata?.entityName ||
@@ -14131,8 +14248,8 @@ function resolveClientIdFromPayload(payload = {}) {
     ""
   ).trim().toLowerCase();
   if (!name) return "";
-  const db = readDb();
-  const match = Object.values(db.clients || {}).find((client) => String(client.name || "").trim().toLowerCase() === name);
+  const match = Object.values(db.clients || {}).find((client) => String(client.name || "").trim().toLowerCase() === name
+    && (!req || canAccessOwner(req, clientOwner(client))));
   return match?.id || "";
 }
 
@@ -14168,7 +14285,9 @@ function buildDatabaseContext(clientId, returnType, tab) {
   });
   pushContextSection(parts, `DATABASE CONTEXT - FIRM LIBRARY FOR ${type || "THIS RETURN"}`, applicableDocs.map((doc) => `- ${doc.title}: ${doc.content || doc.driveWebViewLink || "File attached in firm library."}`), 1600);
 
-  const client = clientId ? readDb().clients?.[clientId] : null;
+  const candidate = clientId ? readDb().clients?.[clientId] : null;
+  const req = requestScope.getStore();
+  const client = candidate && (!req || canAccessOwner(req, clientOwner(candidate))) ? candidate : null;
   if (client) {
     pushContextSection(parts, `DATABASE CONTEXT - PERMANENT INSTRUCTIONS FOR ${client.name}`, (client.permanentInstructions || []).filter((item) => item.active !== false).map((item) => `- [${item.category || "other"}] ${item.text}`), 1600);
     pushContextSection(parts, `DATABASE CONTEXT - RELATED PARTIES FOR ${client.name}`, (client.relatedParties || []).map((item) => `- ${item.name} (${item.relationship || "relationship not specified"})${item.ein ? ` EIN: ${item.ein}` : ""}${item.notes ? ` - ${item.notes}` : ""}`), 900);
@@ -16926,7 +17045,25 @@ function readJsonBody(req) {
       }
       body += chunk;
     });
-    req.on("end", () => { try { resolve(JSON.parse(body || "{}")); } catch (e) { reject(new Error("Invalid JSON body.")); } });
+    req.on("end", () => {
+      let parsed;
+      try { parsed = JSON.parse(body || "{}"); } catch (_) { reject(new Error("Invalid JSON body.")); return; }
+      try {
+        if (req.user && parsed && typeof parsed === "object") {
+          const clientIds = [parsed.clientId, parsed.client?.id, parsed.client?.clientId, parsed.metadata?.clientId, parsed.context?.clientId];
+          const hasReference = clientIds.some(Boolean) || Boolean(parsed.sessionId);
+          if (!hasReference) { resolve(parsed); return; }
+          const db = readDb();
+          for (const id of clientIds) {
+            const client = id && db.clients[String(id)];
+            if (client && !canAccessOwner(req, clientOwner(client))) throw Object.assign(new Error("Access denied."), { statusCode: 403, expose: true });
+          }
+          const session = parsed.sessionId && db.sessions[String(parsed.sessionId)];
+          if (session && !canAccessOwner(req, sessionOwner(session, db))) throw Object.assign(new Error("Access denied."), { statusCode: 403, expose: true });
+        }
+        resolve(parsed);
+      } catch (error) { reject(error); }
+    });
     req.on("error", reject);
   });
 }

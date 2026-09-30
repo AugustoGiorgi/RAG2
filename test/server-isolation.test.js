@@ -155,3 +155,65 @@ test("firm_admin ve los DATOS como usuario común de su firma", async () => {
   const clients = await api("boss_t", "GET", "/api/clients");
   assert.deepStrictEqual(clients.json.clients.map((c) => c.name), ["Cliente Del Piloto Inc"]);
 });
+
+test("crear una sesión con el mismo nombre no reutiliza el cliente de otra firma", async () => {
+  const adminClient = (await api("admin_t", "GET", "/api/clients")).json.clients.find((c) => c.name === "Cliente Confidencial SRL");
+  const created = await api("pilot_t", "POST", "/api/sessions", { client: { name: "Cliente Confidencial SRL" }, taxYear: "2025" });
+  assert.strictEqual(created.status, 200);
+  assert.notStrictEqual(created.json.client.id, adminClient.id);
+  assert.strictEqual(created.json.client.tenantId, "otrafirma");
+  assert.strictEqual((await api("pilot_t", "GET", `/api/clients/${adminClient.id}`)).status, 403);
+  const foreignReference = await api("pilot_t", "POST", "/api/sessions", { clientId: adminClient.id, client: { name: "Otro" } });
+  assert.notStrictEqual(foreignReference.status, 200);
+});
+
+test("biblioteca, aprendizaje, feedback y tracker quedan aislados por firma", async () => {
+  assert.strictEqual((await api("admin_t", "POST", "/api/library", { title: "Referencia privada", content: "Solo firma A" })).status, 200);
+  assert.strictEqual((await api("admin_t", "POST", "/api/learning/global", { correction: "Regla privada A" })).status, 200);
+  assert.strictEqual((await api("ana_t", "POST", "/api/feedback", { preparerCorrection: "Feedback privado A" })).status, 200);
+  assert.strictEqual((await api("pilot_t", "POST", "/api/tracker/tasks", { title: "Tarea privada B" })).status, 200);
+  assert.strictEqual((await api("pilot_t", "GET", "/api/library")).json.documents.length, 0);
+  assert.strictEqual((await api("boss_t", "GET", "/api/learning")).json.globalCorrections.length, 0);
+  assert.strictEqual((await api("pilot_t", "GET", "/api/feedback")).json.entries.length, 0);
+  assert.strictEqual((await api("ana_t", "GET", "/api/tracker")).json.tasks.length, 1);
+  assert.strictEqual((await api("pilot_t", "GET", "/api/tracker")).json.tasks.length, 1);
+  assert.strictEqual((await api("boss_t", "POST", "/api/library", { title: "Referencia B", content: "Solo firma B" })).status, 200);
+  assert.deepStrictEqual((await api("ana_t", "GET", "/api/library")).json.documents.map((d) => d.title), ["Referencia privada"]);
+});
+
+test("varios usuarios pueden crear clientes a la vez sin perder registros", async () => {
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => api(i % 2 ? "pilot_t" : "ana_t", "POST", "/api/clients", { name: `Concurrente ${i}` })));
+  assert.ok(results.every((result) => result.status === 200));
+  const firmA = (await api("ana_t", "GET", "/api/clients")).json.clients;
+  const firmB = (await api("pilot_t", "GET", "/api/clients")).json.clients;
+  assert.strictEqual(firmA.filter((c) => c.name.startsWith("Concurrente")).length, 4);
+  assert.strictEqual(firmB.filter((c) => c.name.startsWith("Concurrente")).length, 4);
+});
+
+test("la escritura simultánea del tracker conserva todas las tareas de la firma", async () => {
+  const results = await Promise.all(Array.from({ length: 8 }, (_, i) => api(i % 2 ? "boss_t" : "pilot_t", "POST", "/api/tracker/tasks", { title: `Tarea concurrente ${i}` })));
+  assert.ok(results.every((result) => result.status === 200));
+  const tasks = (await api("pilot_t", "GET", "/api/tracker")).json.tasks;
+  assert.strictEqual(tasks.filter((task) => task.title.startsWith("Tarea concurrente")).length, 8);
+  assert.strictEqual((await api("ana_t", "GET", "/api/tracker")).json.tasks.length, 1);
+});
+
+test("desactivar un usuario invalida inmediatamente su sesión existente", async () => {
+  assert.strictEqual((await api("admin_t", "PUT", "/api/admin/users/pilot_t", { active: false })).status, 200);
+  assert.strictEqual((await api("pilot_t", "GET", "/api/clients")).status, 401);
+  assert.strictEqual((await api("boss_t", "GET", "/api/clients")).status, 200);
+});
+
+test("cambiar la contraseña revoca la cookie anterior de inmediato", async () => {
+  assert.strictEqual((await api("admin_t", "PUT", "/api/admin/users/ana_t/password", { password: "NuevaClaveTest123456" })).status, 200);
+  assert.strictEqual((await api("ana_t", "GET", "/api/clients")).status, 401);
+  await login("ana_t", "NuevaClaveTest123456");
+  assert.strictEqual((await api("ana_t", "GET", "/api/clients")).status, 200);
+});
+
+test("bajar un rol revoca la cookie anterior y sus privilegios", async () => {
+  assert.strictEqual((await api("admin_t", "PUT", "/api/admin/users/boss_t", { role: "user" })).status, 200);
+  assert.strictEqual((await api("boss_t", "GET", "/api/admin/users")).status, 401);
+  await login("boss_t", "BossTest1234567");
+  assert.strictEqual((await api("boss_t", "GET", "/api/admin/users")).status, 403);
+});

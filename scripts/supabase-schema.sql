@@ -14,7 +14,7 @@ create table if not exists rag_private.app_users (
   username text primary key,
   password_hash text not null,
   tenant_id text not null default 'rag-tax-ai' references rag_private.firms(tenant_id),
-  role text not null default 'user' check (role in ('admin', 'user')),
+  role text not null default 'user' check (role in ('admin', 'firm_admin', 'user')),
   display_name text not null,
   active boolean not null default true,
   spend_limit_usd numeric(12, 4),
@@ -59,6 +59,8 @@ on conflict (tenant_id) do nothing;
 
 alter table rag_private.app_users add column if not exists tenant_id text not null default 'rag-tax-ai';
 alter table rag_private.clients add column if not exists tenant_id text not null default 'rag-tax-ai';
+alter table rag_private.app_users drop constraint if exists app_users_role_check;
+alter table rag_private.app_users add constraint app_users_role_check check (role in ('admin', 'firm_admin', 'user'));
 
 create table if not exists rag_private.cost_log_entries (
   id bigserial primary key,
