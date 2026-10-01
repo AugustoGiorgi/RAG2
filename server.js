@@ -22,6 +22,7 @@ const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { resolvePreparationYear, preparationPeriodRule } = require("./lib/preparation-year");
 const { fullSheetRows, partialSheetsNote } = require("./lib/sheet-text");
 const { packPlanningPdfs } = require("./lib/planning-input");
+const { planningModels, upfrontThinkingOff, planningMaxTokens } = require("./lib/planning-model");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
@@ -326,6 +327,7 @@ const MODEL_COSTS = {
   "claude-sonnet-4-5-20251001": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-4-6": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.2 },
+  "claude-sonnet-5-5": { inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.2 },
   "claude-sonnet-4-5": { inputPerMTok: 3, outputPerMTok: 15, cacheWritePerMTok: 3.75, cacheReadPerMTok: 0.3 },
   "claude-opus-5": { inputPerMTok: 5, outputPerMTok: 25, cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.5 },
   "claude-haiku-4-5": { inputPerMTok: 1, outputPerMTok: 5, cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.1 },
@@ -1743,7 +1745,9 @@ async function handleExtensionCalculate(req, res) {
 // model's own arithmetic is never trusted for liability numbers.
 // ===========================================================================
 
-const PLANNING_MODELS = [...MODEL_FALLBACKS, "claude-sonnet-4-5-20250929"];
+// Sonnet 5.5 primero, sin razonamiento previo — ver lib/planning-model.js. Para volver atras sin
+// deploy: CLAUDE_PLANNING_MODEL=claude-sonnet-4-6 en el entorno del VPS.
+const PLANNING_MODELS = planningModels(process.env.CLAUDE_PLANNING_MODEL, MODEL_FALLBACKS);
 // Profile fields a scenario adjustment is allowed to touch (mirrors applyAdjustments).
 const PLANNING_FIELDS = [
   "wages", "netSEIncome", "otherIncome", "longTermGains", "shortTermGains",
@@ -1921,9 +1925,10 @@ async function callPlanningClaude(req, content, systemText, action, payload, max
   if (!apiKey) return { error: "Claude API key is not configured.", status: 400 };
   const startedAt = Date.now();
   const result = await callClaudeContentWithFallbacks(apiKey, content, { knowledgeBase: [], reviewExamples: [] }, {
-    maxTokens,
+    maxTokens: planningMaxTokens(maxTokens),
     webSearch: false,
     models: PLANNING_MODELS,
+    noUpfrontThinking: true,
     system: [{ type: "text", text: systemText }],
     signal: req._abortController?.signal,
     userId: req.user?.username || getSession(req)?.username || "unknown",
@@ -14136,6 +14141,9 @@ async function callClaudeContentWithFallbacks(apiKey, content, context, options 
       messages: [{ role: "user", content }],
     };
     if (options.thinking && /sonnet-4-5/i.test(model)) requestBody.thinking = options.thinking;
+    // Solo lo pide Tax Planning: que los modelos que razonan por defecto contesten sin razonar.
+    const thinkingOff = options.noUpfrontThinking ? upfrontThinkingOff(model) : null;
+    if (thinkingOff) requestBody.thinking = thinkingOff;
     if (WEB_SEARCH_ENABLED && options.webSearch !== false) requestBody.tools = [buildWebSearchTool()];
 
     let triedNextModel = false;
