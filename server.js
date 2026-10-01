@@ -21,6 +21,7 @@ const { buildStyledWorkpaperXlsx } = require("./lib/xlsx-workpaper");
 const { buildM1Sheet, hasReconciliation } = require("./lib/m1-reconciliation");
 const { resolvePreparationYear, preparationPeriodRule } = require("./lib/preparation-year");
 const { fullSheetRows, partialSheetsNote } = require("./lib/sheet-text");
+const { packPlanningPdfs } = require("./lib/planning-input");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
@@ -1841,7 +1842,63 @@ function finalizePlanningScenario(profile, def, baseTotal, year, index) {
   };
 }
 
+// Tax Planning reads PDFs as text, not as an image of every page (see lib/planning-input.js):
+// one planning with two 40-page returns cost $1.67, almost all of it those page images.
+// PLANNING_PDF_IMAGES=on goes back to attaching every PDF as a document, no deploy needed.
+const PLANNING_PDF_IMAGES = String(process.env.PLANNING_PDF_IMAGES || "").trim().toLowerCase() === "on";
+
+async function planningPdfPages(base64) {
+  const parser = new PDFParse({ data: Buffer.from(base64, "base64") });
+  try {
+    const result = await parser.getText();
+    return { pages: Array.isArray(result?.pages) ? result.pages : [], total: Number(result?.total) || 0, failed: false };
+  } catch (_) {
+    return { pages: [], total: 0, failed: true };
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
+}
+
 async function planningFileContent(files, promptText) {
+  const list = Array.isArray(files) ? files : [];
+  if (PLANNING_PDF_IMAGES) return planningFileContentAsDocuments(list, promptText);
+  const isPdf = (file) => /\.pdf$/i.test(String(file?.name || "")) || String(file?.type || "").includes("pdf");
+  const pdfFiles = list.slice(0, 30).filter((file) => isPdf(file) && String(file?.content || file?.contentBase64 || ""));
+  // Everything that is not a PDF (Excel, Word, images, ZIPs) keeps the usual path.
+  const ctx = await buildUploadedFileContext(list.filter((file) => !pdfFiles.includes(file)));
+  const pdfs = [];
+  for (const file of pdfFiles) {
+    const content = String(file.content || file.contentBase64);
+    pdfs.push({ name: String(file.name || "Uploaded file"), role: file.role, content, ...(await planningPdfPages(content)) });
+  }
+  const packed = packPlanningPdfs(pdfs);
+  const skippedNote = packed.skipped.length
+    ? `NOT ATTACHED (scanned pages over the size limit — mention them in keyObservations if they matter): ${packed.skipped.join("; ")}.`
+    : "";
+  const fileText = [ctx.text, ...packed.texts.map((item) => item.text), skippedNote].filter(Boolean).join("\n\n");
+  const documents = [
+    ...packed.scanned.map((doc) => ({ name: doc.name, type: "application/pdf", content: doc.content })),
+    ...ctx.documents,
+  ];
+  const content = [
+    ...documents.slice(0, 8).map((doc) => ({
+      type: "document",
+      source: { type: "base64", media_type: doc.type || "application/pdf", data: doc.content },
+      title: doc.name,
+      context: "tax planning source document",
+    })),
+    ...ctx.images.slice(0, 6).map((img) => ({
+      type: "image",
+      source: { type: "base64", media_type: img.type || "image/png", data: img.content },
+    })),
+    { type: "text", text: promptText.replace("__FILE_TEXT__", fileText || "(no extractable text — read attached documents/images)") },
+  ];
+  return { content, hasInput: Boolean(fileText || documents.length || ctx.images.length) };
+}
+
+// The previous behaviour: every PDF attached as a document plus its text. Kept for
+// PLANNING_PDF_IMAGES=on.
+async function planningFileContentAsDocuments(files, promptText) {
   const ctx = await buildUploadedFileContext(Array.isArray(files) ? files : []);
   const content = [
     ...ctx.documents.slice(0, 8).map((doc) => ({
