@@ -23,6 +23,7 @@ const { resolvePreparationYear, preparationPeriodRule } = require("./lib/prepara
 const { fullSheetRows, partialSheetsNote } = require("./lib/sheet-text");
 const { packPlanningPdfs } = require("./lib/planning-input");
 const { planningModels, upfrontThinkingOff, planningMaxTokens } = require("./lib/planning-model");
+const planningStrategies = require("./lib/planning-strategies");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
@@ -956,6 +957,7 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (req.method === "POST" && req.url === "/api/planning/scenarios") { await handlePlanningScenarios(req, res); return; }
     if (req.method === "POST" && req.url === "/api/planning/scenario") { await handlePlanningScenarioCustom(req, res); return; }
     if (req.method === "POST" && req.url === "/api/planning/recompute") { await handlePlanningRecompute(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/planning/refresh") { await handlePlanningRefresh(req, res); return; }
     if (req.method === "POST" && req.url === "/api/planning/opportunities") { await handlePlanningOpportunities(req, res); return; }
     if (req.method === "POST" && req.url === "/api/planning/deck") { await handlePlanningDeck(req, res); return; }
     if (requestUrl.pathname.startsWith("/api/planning/templates")) { await handlePlanningTemplatesApi(req, res, requestUrl); return; }
@@ -1749,21 +1751,48 @@ async function handleExtensionCalculate(req, res) {
 // deploy: CLAUDE_PLANNING_MODEL=claude-sonnet-4-6 en el entorno del VPS.
 const PLANNING_MODELS = planningModels(process.env.CLAUDE_PLANNING_MODEL, MODEL_FALLBACKS);
 // Profile fields a scenario adjustment is allowed to touch (mirrors applyAdjustments).
-const PLANNING_FIELDS = [
-  "wages", "netSEIncome", "otherIncome", "longTermGains", "shortTermGains",
-  "deductions", "qbi", "w2Wages", "retirementContribution", "sec179", "bonusDepreciation",
-  "selfEmployedHealthInsurance", "hsaContribution",
-];
+const PLANNING_FIELDS = planningTax.PROFILE_FIELDS;
 
 function planningNum(value) {
   const n = Number(String(value == null ? "" : value).replace(/[^0-9.\-]/g, ""));
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Where the main business's income goes. An S corporation's K-1 never pays self-employment tax;
+ * Schedule C and partnership income do. Profiles saved before the two were separated kept an S
+ * corporation's K-1 in netSEIncome; an S-corp entity type tells those apart.
+ */
+function planningIncomeType(b) {
+  const type = String(b.businessIncomeType || "").trim().toLowerCase();
+  if (type === "scorp" || type === "se" || type === "none") return type;
+  if (planningNum(b.sCorpIncome) > 0 && !(planningNum(b.netSEIncome) > 0)) return "scorp";
+  if (b.sCorpIncome == null && /s[\s-]*corp|1120-?s/i.test(String(b.entityType || ""))) return "scorp";
+  return "se";
+}
+
+function planningCount(value, max = 2) {
+  return Math.min(max, Math.max(0, Math.round(planningNum(value))));
+}
+
 function normalizePlanningProfile(baseData = {}) {
   const b = baseData || {};
   const income = b.income || {};
   const ded = b.deductions || {};
+  const incomeType = planningIncomeType(b);
+  const total = planningNum(b.businessIncomeTotal);
+  const pct = b.ownershipPct != null ? planningNum(b.ownershipPct) : null;
+  const share = incomeType !== "none" && total > 0 && pct != null ? planningRound(total * pct / 100) : null;
+  // Before the split, an S corporation's K-1 sat in netSEIncome.
+  const legacyScorp = incomeType === "scorp" && b.sCorpIncome == null;
+  const sCorpIncome = incomeType === "scorp"
+    ? (share != null ? share : planningNum(legacyScorp ? b.netSEIncome : b.sCorpIncome))
+    : planningNum(b.sCorpIncome);
+  const netSEIncome = incomeType === "se"
+    ? (share != null ? share : planningNum(b.netSEIncome != null ? b.netSEIncome : income.grossReceipts))
+    : (legacyScorp ? 0 : planningNum(b.netSEIncome));
+  const ownerWages = planningNum(b.ownerWages);
+  const hsaEligible = String(b.hsaEligible == null ? "" : b.hsaEligible).trim().toLowerCase();
   return {
     clientName: String(b.clientName || "").trim(),
     entityType: String(b.entityType || "").trim(),
@@ -1771,26 +1800,40 @@ function normalizePlanningProfile(baseData = {}) {
     filingStatus: planningTax.normalizeStatus(b.filingStatus),
     state: String(b.state || "").trim().toUpperCase(),
     dependents: Number(b.dependents) || 0,
-    wages: planningNum(b.wages != null ? b.wages : income.wages),
-    businessIncomeTotal: planningNum(b.businessIncomeTotal),
+    // The owners' S-corp salary is part of their W-2 wages.
+    wages: Math.max(planningNum(b.wages != null ? b.wages : income.wages), ownerWages),
+    businessIncomeType: incomeType,
+    businessIncomeTotal: total,
     ownershipPct: b.ownershipPct != null ? Math.min(100, Math.max(0, planningNum(b.ownershipPct))) : 100,
-    netSEIncome: (function() {
-      const total = planningNum(b.businessIncomeTotal);
-      const pct = b.ownershipPct != null ? planningNum(b.ownershipPct) : null;
-      if (total > 0 && pct != null) return planningRound(total * pct / 100);
-      return planningNum(b.netSEIncome != null ? b.netSEIncome : income.grossReceipts);
-    })(),
+    sCorpIncome,
+    ownerWages,
+    ownerCount: ownerWages > 0 ? Math.max(1, planningCount(b.ownerCount)) : planningCount(b.ownerCount),
+    netSEIncome,
     otherIncome: planningNum(b.otherIncome != null ? b.otherIncome : income.otherIncome),
+    qualifiedDividends: planningNum(b.qualifiedDividends),
     longTermGains: planningNum(b.longTermGains != null ? b.longTermGains : income.capitalGains),
     shortTermGains: planningNum(b.shortTermGains),
     deductions: planningNum(b.deductions != null ? b.deductions : ded.total),
     qbi: planningNum(b.qbi),
     w2Wages: planningNum(b.w2Wages),
+    employeeWages: planningNum(b.employeeWages),
+    hasRetirementPlan: b.hasRetirementPlan === true || String(b.hasRetirementPlan).trim().toLowerCase() === "true",
     retirementContribution: planningNum(b.retirementContribution),
+    iraDeduction: planningNum(b.iraDeduction),
+    ownersAge50Plus: planningCount(b.ownersAge50Plus),
+    ownersAge55Plus: planningCount(b.ownersAge55Plus),
     sec179: planningNum(b.sec179),
     bonusDepreciation: planningNum(b.bonusDepreciation),
     selfEmployedHealthInsurance: planningNum(b.selfEmployedHealthInsurance),
+    healthPremiumsPaidByBusiness: planningNum(b.healthPremiumsPaidByBusiness),
+    healthPremiumsPaidPersonally: planningNum(b.healthPremiumsPaidPersonally),
     hsaContribution: planningNum(b.hsaContribution),
+    hsaEligible: hsaEligible === "yes" || hsaEligible === "true" ? "yes" : (hsaEligible === "no" || hsaEligible === "false" ? "no" : "unknown"),
+    businessCredits: planningNum(b.businessCredits),
+    excessAptcRepayment: planningNum(b.excessAptcRepayment),
+    plannedAssetPurchases: planningNum(b.plannedAssetPurchases),
+    assetPurchaseNotes: (Array.isArray(b.assetPurchaseNotes) ? b.assetPurchaseNotes : [])
+      .map((s) => String(s || "").trim().slice(0, 200)).filter(Boolean).slice(0, 4),
     withholding: planningNum(b.withholding),
     estimatedTaxPaid: planningNum(b.estimatedTaxPaid),
     priorYearTax: planningNum(b.priorYearTax),
@@ -1835,7 +1878,7 @@ function finalizePlanningScenario(profile, def, baseTotal, year, index) {
   const taxCalcNext = planningTax.computeScenarioTax(profile, adjustments, year + 1);
   const dollars = planningRound((baseTotal || 0) - taxCalc.total);
   const percentage = baseTotal > 0 ? planningRound((dollars / baseTotal) * 100) : 0;
-  return {
+  const scenario = {
     id: String(def.id || `scenario-${index + 1}`),
     name: String(def.name || `Scenario ${index + 1}`).slice(0, 120),
     description: String(def.description || "").slice(0, 600),
@@ -1844,6 +1887,41 @@ function finalizePlanningScenario(profile, def, baseTotal, year, index) {
     taxCalcNext,
     savingsVsBase: { dollars, percentage },
   };
+  // A scenario from the fixed rules (lib/planning-strategies.js) carries its kind and its cash
+  // costs: they decide "Best" and what the table and the cards show.
+  if (def.rule === true) {
+    Object.assign(scenario, {
+      strategyId: String(def.id),
+      kind: def.kind === "risk" ? "risk" : "savings",
+      category: String(def.category || ""),
+      extraCost: planningNum(def.extraCost),
+      requiresSpending: planningNum(def.requiresSpending),
+      deadline: def.deadline ? String(def.deadline).slice(0, 80) : null,
+      complexity: ["Simple", "Moderate", "Complex"].includes(def.complexity) ? def.complexity : "Moderate",
+      cpaNote: String(def.cpaNote || "").slice(0, 900),
+      assumptions: (Array.isArray(def.assumptions) ? def.assumptions : []).slice(0, 8).map((a) => String(a).slice(0, 300)),
+    });
+    if (Array.isArray(def.parts)) scenario.parts = def.parts.map(String);
+    scenario.netBenefit = planningStrategies.netBenefit(scenario);
+  }
+  return scenario;
+}
+
+/**
+ * The "Best" scenario of an analysis: the one the fixed rules recommend; for an analysis saved
+ * before them, the lowest total as before.
+ */
+function planningBestId(scenarios) {
+  const list = Array.isArray(scenarios) ? scenarios : [];
+  if (list.some((s) => s && s.kind)) return planningStrategies.pickRecommended(list);
+  const baseTotal = Number(list.find((s) => s && s.isBase)?.taxCalc?.total) || 0;
+  let best = null;
+  for (const s of list) {
+    if (!s || s.isBase) continue;
+    const t = Number(s?.taxCalc?.total);
+    if (Number.isFinite(t) && (!best || t < Number(best.taxCalc.total))) best = s;
+  }
+  return best && Number(best.taxCalc.total) < baseTotal ? best.id : null;
 }
 
 // Tax Planning reads PDFs as text, not as an image of every page (see lib/planning-input.js):
@@ -1962,9 +2040,12 @@ async function handlePlanningAnalyze(req, res) {
     "  • Business address on 1120S, 1065, or K-1  • W-2 state box",
     "Never leave 'state' blank or null if the state is identifiable anywhere in the documents.",
     "",
+    "CRITICAL — S CORPORATIONS: S corporation K-1 income is NOT self-employment income. Put it in sCorpIncome, never in netSEIncome.",
+    "The salary an S corporation pays its owners is W-2 wages: it goes in wages and also in ownerWages. netSEIncome is only Schedule C and partnership self-employment earnings.",
+    "",
     `PROJECTION — Plan year is ${planYear}. If source documents are from a prior tax year:`,
     `  • Use prior-year income figures as the baseline projection for ${planYear} unless the documents contain explicit projections, bookkeeping reports, or quarterly estimates for ${planYear}.`,
-    "  • Do NOT set wages, netSEIncome, otherIncome, longTermGains, or shortTermGains to 0 unless the client truly has no income of that type.",
+    "  • Do NOT set wages, sCorpIncome, netSEIncome, otherIncome, longTermGains, or shortTermGains to 0 unless the client truly has no income of that type.",
     "  • If quarterly estimated tax payments are provided, back-calculate the estimated annual income they represent.",
     "  • Project pass-through K-1 income from prior year if no current-year figure is available.",
     "",
@@ -1972,21 +2053,39 @@ async function handlePlanningAnalyze(req, res) {
     "",
     "DOCUMENT TEXT: __FILE_TEXT__",
     "",
-    'Return ONLY JSON in ```json``` fences (numbers only, no $ signs):',
+    'Return ONLY JSON in ```json``` fences (numbers only, no $ signs; 0 when the documents do not show a figure):',
     '{',
     '  "clientName":string, "entityType":string, "taxYear":number,',
     '  "filingStatus":"Single"|"MFJ"|"MFS"|"HOH", "state":string, "dependents":number,',
-    '  "wages":number,',
-    '  "businessIncomeTotal":number (total entity ordinary income before owner split; K-1 Box 1 aggregate, Schedule C net profit, entity net income),',
-    '  "ownershipPct":number (0-100; from K-1 percentage, partnership agreement; 100 if sole owner),',
-    '  "netSEIncome":number (= businessIncomeTotal × ownershipPct / 100, plus any guaranteed payments),',
-    '  "otherIncome":number (dividends, interest, royalties, 1099-MISC not from main business — NOT business pass-through income),',
+    '  "wages":number (total W-2 wages, Form 1040 line 1a — includes any salary from the client\'s own S corporation),',
+    '  "businessIncomeType":"scorp"|"se"|"none" (scorp = the main business is an S corporation the client owns; se = Schedule C or partnership),',
+    '  "businessIncomeTotal":number (the main business\'s ordinary income before splitting among owners: 1120-S line 21, 1065 line 23, or Schedule C net profit),',
+    '  "ownershipPct":number (0-100; combined ownership of the taxpayer and spouse, e.g. 50% + 50% = 100),',
+    '  "sCorpIncome":number (S corporation ordinary business income on the taxpayer and spouse K-1s, box 1, combined),',
+    '  "ownerWages":number (W-2 salary the taxpayer and spouse receive from an S corporation they own: officer compensation, 1120-S line 7 / Form 1125-E; 0 if none),',
+    '  "ownerCount":number (how many of taxpayer and spouse are on that S corporation payroll: 0, 1 or 2),',
+    '  "netSEIncome":number (ONLY self-employment earnings: Schedule C net profit, partnership K-1 box 14 code A including guaranteed payments),',
+    '  "otherIncome":number (interest, ordinary dividends that are not qualified, royalties, 1099-MISC other income, other non-business income),',
+    '  "qualifiedDividends":number (Form 1040 line 3a),',
     '  "longTermGains":number, "shortTermGains":number,',
-    '  "deductions":number (itemized; 0 if standard deduction applies),',
-    '  "qbi":number (qualified business income for §199A — usually equals netSEIncome for pass-throughs),',
-    '  "w2Wages":number (W-2 wages paid by the business entity, for QBI W-2 wage limit),',
-    '  "selfEmployedHealthInsurance":number (SE health insurance premiums deductible above-the-line; from Sch 1 line 17 or entity K-1 footnotes),',
-    '  "hsaContribution":number (HSA contributions deductible above-the-line; from Form 8889 or payroll),',
+    '  "deductions":number (itemized total; 0 if the standard deduction is larger),',
+    '  "qbi":number (qualified business income for §199A: Form 8995 / 8995-A total),',
+    '  "w2Wages":number (W-2 wages the business paid to ALL its employees including the owners, times ownershipPct — for the QBI wage limit),',
+    '  "employeeWages":number (wages the client\'s business paid to employees OTHER than the owners: 1120-S line 8, 1065 line 9, Schedule C line 26),',
+    '  "hasRetirementPlan":boolean (true if the business deducts pension or profit-sharing contributions — 1120-S line 17, 1065 line 18, Schedule C line 19 — or the W-2s show 401(k) deferrals in box 12, or Schedule 1 line 16 > 0),',
+    '  "retirementContribution":number (Schedule 1 line 16 plus the owners\' pre-tax 401(k) deferrals),',
+    '  "iraDeduction":number (traditional IRA deduction, Schedule 1 line 20),',
+    '  "ownersAge50Plus":number (0-2: how many of taxpayer and spouse are 50 or older — e.g. an $8,000 IRA contribution for 2025 means 50+; 0 if unknown),',
+    '  "ownersAge55Plus":number (0-2: how many are 55 or older; 0 if unknown),',
+    '  "selfEmployedHealthInsurance":number (Schedule 1 line 17),',
+    '  "healthPremiumsPaidByBusiness":number (health insurance the client\'s business paid for the owners, e.g. "Health insurance" in the P&L or officer health premiums; 0 for an employee group plan or if unknown),',
+    '  "healthPremiumsPaidPersonally":number (health premiums the client paid out of pocket and not through the business, e.g. Form 1095-A / 8962 premiums net of the advance credit; 0 if unknown),',
+    '  "hsaContribution":number (Form 8889, Schedule 1 line 13, or W-2 box 12 code W),',
+    '  "hsaEligible":"yes"|"no"|"unknown" (whether the client has HSA-eligible high-deductible health coverage),',
+    '  "businessCredits":number (nonrefundable general business credits used on the return: Form 3800 / Schedule 3 line 6a, e.g. the FICA tip credit),',
+    '  "excessAptcRepayment":number (excess advance premium tax credit repaid: Schedule 2 line 1a / Form 8962 line 29),',
+    '  "plannedAssetPurchases":number (equipment, vehicles or improvements the documents or the CPA instructions say will be bought in the plan year — ONLY if an amount is stated, else 0),',
+    '  "assetPurchaseNotes":[string] (signals of upcoming capital spending without an amount, e.g. a loan for a new location),',
     '  "withholding":number (total federal income tax withheld from W-2s for the plan year; Box 2 of W-2),',
     '  "estimatedTaxPaid":number (federal estimated tax payments already made for the plan year; Q1+Q2+Q3 if mid-year),',
     '  "priorYearTax":number (total federal income tax from prior year return; Form 1040 line 24 or 1120S Schedule D),',
@@ -2013,39 +2112,13 @@ async function handlePlanningAnalyze(req, res) {
   });
 }
 
+// The fixed-rule scenarios, no AI. The UI calls /api/planning/generate; this route stays for
+// compatibility and returns the same thing.
 async function handlePlanningScenarios(req, res) {
   const payload = await readJsonBody(req);
   const profile = normalizePlanningProfile(payload.baseData);
   const year = Number(payload.year) || profile.taxYear;
-  const instructions = String(payload.instructions || "").slice(0, 4000);
-  const base = buildPlanningBaseScenario(profile, year);
-
-  const prompt = [
-    "Given this client's tax profile and the CPA's instructions, propose 3 to 5 relevant tax-planning scenarios.",
-    "",
-    "PROFILE (facts):",
-    JSON.stringify(profile),
-    "",
-    "BASE LIABILITY (already computed by the system, for reference): total = " + base.taxCalc.total,
-    "",
-    "CPA INSTRUCTIONS:",
-    instructions || "(none)",
-    "",
-    "Each scenario is a set of ADJUSTMENTS to these allowed fields ONLY: " + PLANNING_FIELDS.join(", ") + ".",
-    "Do NOT output tax numbers — the system computes them. Output only the levers to pull.",
-    "Return ONLY JSON inside ```json``` fences:",
-    '{ "scenarios": [ { "id": string, "name": string, "description": string,',
-    '  "adjustments": [ { "field": string, "newValue": number, "rationale": string } ] } ] }',
-    "Examples of good scenarios: max SEP-IRA (retirementContribution), Sec 179 asset purchase (sec179),",
-    "S-corp salary optimization (wages/netSEIncome), defer income (otherIncome), bunch deductions (deductions).",
-  ].join("\n");
-
-  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You design tax-planning scenarios as field adjustments and return only valid JSON. Never output computed tax numbers.", "planning_scenarios", payload);
-  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
-
-  const defs = Array.isArray(result.data.scenarios) ? result.data.scenarios.slice(0, 5) : [];
-  const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
-  sendJson(res, 200, { scenarios });
+  sendJson(res, 200, buildPlanningStrategyScenarios(profile, year));
 }
 
 async function handlePlanningScenarioCustom(req, res) {
@@ -2053,7 +2126,9 @@ async function handlePlanningScenarioCustom(req, res) {
   const profile = normalizePlanningProfile(payload.baseData);
   const year = Number(payload.year) || profile.taxYear;
   const instruction = String(payload.instruction || "").slice(0, 2000);
-  const baseTotal = planningNum(payload.baseTotal) || planningTax.computeScenarioTax(profile, [], year).total;
+  // The base comes from the current engine, not from the total the browser sends: an analysis
+  // saved with an earlier engine would measure savings against a different base.
+  const baseTotal = planningTax.computeScenarioTax(profile, [], year).total;
   if (!instruction) { sendJson(res, 400, { error: "Describe the scenario you want to model." }); return; }
 
   const prompt = [
@@ -2064,6 +2139,10 @@ async function handlePlanningScenarioCustom(req, res) {
     JSON.stringify(profile),
     "",
     "Convert it into ONE scenario expressed as adjustments to these allowed fields ONLY: " + PLANNING_FIELDS.join(", ") + ".",
+    "Field meaning: sCorpIncome = S corporation K-1 income (no self-employment tax); netSEIncome = Schedule C / partnership income (self-employment tax applies).",
+    "ownerWages = the owners' salary from their own S corporation. To change it, adjust ownerWages only: the system moves the difference out of sCorpIncome and adds both halves of payroll tax.",
+    "retirementContribution = pre-tax deferrals and self-employed plan deductions; employer contributions by an S corporation reduce sCorpIncome instead.",
+    "iraDeduction = traditional IRA deduction; sec179 / bonusDepreciation = deductions for new equipment; businessCredits = general business credits.",
     "If the instruction is ambiguous, assume the conservative case and say so in rationale.",
     "Do NOT output tax numbers. Return ONLY JSON inside ```json``` fences:",
     '{ "id": string, "name": string, "description": string,',
@@ -2073,14 +2152,127 @@ async function handlePlanningScenarioCustom(req, res) {
   const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You convert a natural-language tax-planning request into one scenario of field adjustments and return only valid JSON.", "planning_scenario_custom", payload, 4000);
   if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
 
-  const scenario = finalizePlanningScenario(profile, result.data, baseTotal, year, 0);
+  // Its own id, so it never collides with a rule scenario's.
+  const slug = String(result.data.id || "scenario").replace(/[^a-z0-9-]/gi, "").slice(0, 40) || "scenario";
+  const scenario = finalizePlanningScenario(profile, { ...result.data, id: `custom-${slug}-${Date.now().toString(36)}`, rule: false }, baseTotal, year, 0);
   sendJson(res, 200, { scenario });
+}
+
+const PLANNING_FIELD_NAMES = {
+  wages: "W-2 wages", ownerWages: "owner salary", sCorpIncome: "S-corp K-1 income", netSEIncome: "self-employment income",
+  otherIncome: "other income", qualifiedDividends: "qualified dividends", longTermGains: "long-term gains",
+  shortTermGains: "short-term gains", deductions: "itemized deductions", qbi: "QBI", w2Wages: "business W-2 wages",
+  retirementContribution: "retirement contributions", iraDeduction: "IRA deduction", sec179: "Section 179",
+  bonusDepreciation: "bonus depreciation", selfEmployedHealthInsurance: "SE health insurance",
+  hsaContribution: "HSA contribution", businessCredits: "business credits",
+};
+
+/** What a scenario changes and what it does to the total, for "How this was calculated". */
+function planningCalcExplanation(scenario, baseTotal) {
+  const usd = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("en-US");
+  const changes = (scenario.adjustments || []).map((a) => `${PLANNING_FIELD_NAMES[a.field] || a.field} to ${usd(a.newValue)}`);
+  const extra = Number(scenario.extraCost) > 0 ? ` It also costs up to ${usd(scenario.extraCost)} in contributions for employees.` : "";
+  return `Sets ${changes.join(", ")}. Total tax goes from ${usd(baseTotal)} to ${usd(scenario?.taxCalc?.total)}.${extra}`.slice(0, 600);
+}
+
+/** The opportunity cards come from the rule strategies and the notices, not from the model. */
+function planningStrategyCards(scenarios, items) {
+  const base = scenarios.find((s) => s && s.isBase);
+  const baseTotal = Number(base?.taxCalc?.total) || 0;
+  const cards = scenarios
+    .filter((s) => s && !s.isBase && s.strategyId && s.strategyId !== "combined")
+    .map((s) => {
+      const taxSavings = planningRound(s?.savingsVsBase?.dollars || 0);
+      const extraCost = planningNum(s.extraCost);
+      const net = planningRound(taxSavings - extraCost);
+      return {
+        id: String(s.strategyId),
+        title: String(s.name || "").slice(0, 160),
+        kind: s.kind === "risk" ? "risk" : "savings",
+        category: String(s.category || "Other").slice(0, 60),
+        taxSavings,
+        extraCost,
+        netBenefit: net,
+        requiresSpending: planningNum(s.requiresSpending),
+        estimatedSavings: { min: Math.max(0, net), max: Math.max(0, taxSavings) },
+        deadline: s.deadline ? String(s.deadline).slice(0, 80) : null,
+        complexity: ["Simple", "Moderate", "Complex"].includes(s.complexity) ? s.complexity : "Moderate",
+        description: String(s.description || ""),
+        cpaNote: String(s.cpaNote || ""),
+        requiresAction: true,
+        actionDeadline: s.deadline ? String(s.deadline).slice(0, 80) : null,
+        scenarioName: String(s.name || "").slice(0, 160),
+        calcExplanation: planningCalcExplanation(s, baseTotal),
+      };
+    });
+  for (const item of items) {
+    if (!item || !item.id) continue;
+    cards.push({
+      id: String(item.id).slice(0, 60),
+      title: String(item.title || "").slice(0, 160),
+      kind: item.kind === "discussion" ? "discussion" : "compliance",
+      category: String(item.category || "Other").slice(0, 60),
+      taxSavings: 0,
+      extraCost: 0,
+      netBenefit: 0,
+      requiresSpending: 0,
+      estimatedSavings: { min: 0, max: 0 },
+      deadline: item.deadline ? String(item.deadline).slice(0, 80) : null,
+      complexity: ["Simple", "Moderate", "Complex"].includes(item.complexity) ? item.complexity : "Moderate",
+      description: String(item.description || ""),
+      cpaNote: String(item.cpaNote || ""),
+      requiresAction: Boolean(item.requiresAction),
+      actionDeadline: item.requiresAction && item.deadline ? String(item.deadline).slice(0, 80) : null,
+      scenarioName: null,
+      calcExplanation: null,
+    });
+  }
+  return cards;
 }
 
 async function handlePlanningOpportunities(req, res) {
   const payload = await readJsonBody(req);
   const profile = normalizePlanningProfile(payload.baseData);
   const scenarios = Array.isArray(payload.scenarios) ? payload.scenarios : [];
+  const items = Array.isArray(payload.items) ? payload.items.slice(0, 12) : [];
+  const cards = planningStrategyCards(scenarios, items);
+  if (!cards.length) { await handlePlanningOpportunitiesLegacy(req, res, payload, profile, scenarios); return; }
+
+  // The strategies and every figure are already decided: the model only writes, in the firm's
+  // style. If it fails, the rule texts stay.
+  const drafts = cards.map((c) => ({
+    id: c.id, title: c.title, kind: c.kind, taxSavings: c.taxSavings, extraCost: c.extraCost,
+    requiresSpending: c.requiresSpending, deadline: c.deadline, description: c.description, cpaNote: c.cpaNote,
+  }));
+  const prompt = [
+    "Write the text for each tax-planning item below. The system already decided the strategies and every dollar figure:",
+    "do NOT add or drop items, do NOT change or invent numbers, and keep every condition and caveat.",
+    "For each item return the same id, a client-facing description (at most 2 sentences, plain language) and a cpaNote (at most 400 characters, technical, for the CPA).",
+    "kind: savings = lowers tax; risk = a fix that costs money but lowers audit risk; compliance = a reporting or filing fix; discussion = a topic to raise with the client.",
+    "",
+    "CLIENT PROFILE (facts):", JSON.stringify(profile),
+    "",
+    "ITEMS:", JSON.stringify(drafts),
+    "",
+    'Return ONLY JSON inside ```json``` fences: { "opportunities": [ { "id": string, "description": string, "cpaNote": string } ] }',
+  ].join("\n") + styleProfilePromptBlock(activeStyleProfile(req));
+
+  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "You write plain-language tax-planning text for strategies the system already computed. Return only valid JSON. Never add numbers or strategies.", "planning_opportunities", payload);
+  const written = new Map();
+  if (result.error) console.warn(`[Planning] opportunity text fell back to the rule templates: ${result.error}`);
+  else if (Array.isArray(result.data?.opportunities)) {
+    for (const o of result.data.opportunities) if (o && o.id) written.set(String(o.id), o);
+  }
+  const opportunities = cards.map((c) => {
+    const w = written.get(c.id) || {};
+    return { ...c, description: String(w.description || c.description).slice(0, 400), cpaNote: String(w.cpaNote || c.cpaNote).slice(0, 600) };
+  });
+  sendJson(res, 200, { opportunities });
+}
+
+// An analysis saved before the fixed rules has no strategy kinds: the model still proposes its
+// opportunities as before.
+async function handlePlanningOpportunitiesLegacy(req, res, payload, profile, scenarios) {
   // Feed the AI the system-computed savings so dollar figures originate from real math.
   const computedSavings = scenarios
     .filter((s) => s && !s.isBase)
@@ -2133,11 +2325,37 @@ async function handlePlanningRecompute(req, res) {
   const profile = normalizePlanningProfile(payload.baseData);
   const year = Number(payload.year) || profile.taxYear;
   const adjustments = sanitizePlanningAdjustments(payload.adjustments);
-  const baseTotal = planningNum(payload.baseTotal) || planningTax.computeScenarioTax(profile, [], year).total;
+  // The base comes from the current engine (see handlePlanningScenarioCustom).
+  const baseTotal = planningTax.computeScenarioTax(profile, [], year).total;
   const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+  const taxCalcNext = planningTax.computeScenarioTax(profile, adjustments, year + 1);
   const dollars = planningRound(baseTotal - taxCalc.total);
   const percentage = baseTotal > 0 ? planningRound((dollars / baseTotal) * 100) : 0;
-  sendJson(res, 200, { taxCalc, savingsVsBase: { dollars, percentage }, adjustments });
+  sendJson(res, 200, { taxCalc, taxCalcNext, savingsVsBase: { dollars, percentage }, adjustments });
+}
+
+// Recomputes a saved analysis with the current engine, no AI: saved figures may come from an
+// earlier version of the engine, and editing them would measure against a different base.
+async function handlePlanningRefresh(req, res) {
+  const payload = await readJsonBody(req);
+  const profile = normalizePlanningProfile(payload.baseData);
+  const year = Number(payload.year) || profile.taxYear;
+  const base = buildPlanningBaseScenario(profile, year);
+  const saved = Array.isArray(payload.scenarios) ? payload.scenarios : [];
+  const scenarios = saved.filter((s) => s && !s.isBase).map((s) => {
+    const adjustments = sanitizePlanningAdjustments(s.adjustments);
+    const taxCalc = planningTax.computeScenarioTax(profile, adjustments, year);
+    const taxCalcNext = planningTax.computeScenarioTax(profile, adjustments, year + 1);
+    const dollars = planningRound(base.taxCalc.total - taxCalc.total);
+    const percentage = base.taxCalc.total > 0 ? planningRound((dollars / base.taxCalc.total) * 100) : 0;
+    const out = { ...s, adjustments, taxCalc, taxCalcNext, savingsVsBase: { dollars, percentage } };
+    if (out.kind) out.netBenefit = planningStrategies.netBenefit(out);
+    return out;
+  });
+  const all = [base, ...scenarios];
+  const bestId = planningBestId(all);
+  all.forEach((s) => { s.recommended = s.id === bestId; });
+  sendJson(res, 200, { baseData: profile, scenarios: all, recommendedId: bestId });
 }
 
 // Maps the active style profile's extracted visual theme to pptx-builder theme fields.
@@ -2191,52 +2409,23 @@ async function handlePlanningDeck(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// Merged generate: scenarios + opportunities in one AI call.
+// Scenarios: the fixed rules of lib/planning-strategies.js, no AI. A model used to invent them
+// on every run; now the same facts give the same scenarios and the same figures.
 // ---------------------------------------------------------------------------
+function buildPlanningStrategyScenarios(profile, year) {
+  const base = buildPlanningBaseScenario(profile, year);
+  const { defs, items } = planningStrategies.planStrategies(profile, year);
+  const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
+  const recommendedId = planningStrategies.pickRecommended(scenarios);
+  scenarios.forEach((s) => { s.recommended = s.id === recommendedId; });
+  return { scenarios, items, recommendedId };
+}
+
 async function handlePlanningGenerate(req, res) {
   const payload = await readJsonBody(req);
   const profile = normalizePlanningProfile(payload.baseData);
   const year = Number(payload.year) || profile.taxYear;
-  const instructions = String(payload.instructions || "").slice(0, 4000);
-  const clientType = String(payload.clientType || "").slice(0, 20);
-  const linkedEntities = Array.isArray(payload.linkedEntities) ? payload.linkedEntities.slice(0, 3) : [];
-  const base = buildPlanningBaseScenario(profile, year);
-
-  const typeHints = {
-    "1040":  "Focus on individual: retirement (SEP-IRA/Solo-401k/Defined Benefit), S-corp election, QBI, capital gains harvesting, NIIT, deduction bunching.",
-    "1120S": "Focus on S-corp: reasonable salary optimization (wages vs distributions), retirement plan, Sec 179/bonus depreciation, QBID, shareholder basis.",
-    "1065":  "Focus on partnership: guaranteed payments vs distributions, self-employment tax on GPs, basis planning, section 754 election, retirement for partners.",
-    "1120":  "Focus on C-corp: accumulated earnings, salary vs dividend, fiscal year selection, Sec 179/bonus depreciation, deferred compensation, NOL planning.",
-    "990":   "Focus on exempt org: UBIT exposure, compensation reasonableness, endowment investment policy, state registration compliance.",
-  };
-  const typeContext = clientType
-    ? `Return type: ${clientType}. ${typeHints[clientType] || ""}`
-    : "";
-  const linkedNote = linkedEntities.length
-    ? `Linked entities in scope: ${linkedEntities.map((e) => `${e.type}${e.name ? ` (${e.name})` : ""}`).join(", ")}.`
-    : "";
-
-  const prompt = [
-    `Client tax profile (${clientType || "unknown"}, planning year ${year}): ` + JSON.stringify(profile),
-    "Base tax (system-computed): $" + Math.round(base.taxCalc.total).toLocaleString(),
-    typeContext,
-    linkedNote,
-    "CPA instructions: " + (instructions || "(none)"),
-    "",
-    "Propose 3-5 tax-planning scenarios as field ADJUSTMENTS only. No tax numbers — the system computes them.",
-    "Allowed fields: " + PLANNING_FIELDS.join(", "),
-    "Good levers: max SEP-IRA/Solo-401k (retirementContribution), Sec 179 purchase (sec179), S-corp salary split (wages+netSEIncome), defer income (otherIncome), bunch deductions.",
-    "",
-    'Return ONLY JSON in ```json``` fences:',
-    '{"scenarios":[{"id":string,"name":string,"description":string,"adjustments":[{"field":string,"newValue":number,"rationale":string}]}]}',
-  ].join("\n");
-
-  const result = await callPlanningClaude(req, [{ type: "text", text: prompt }], "Design tax-planning scenarios as field adjustments. Return only valid JSON. Never output computed tax numbers.", "planning_generate", payload, 6000);
-  if (result.error) { sendJson(res, result.status || 502, { error: result.error, details: result.details || "" }); return; }
-
-  const defs = Array.isArray(result.data.scenarios) ? result.data.scenarios.slice(0, 5) : [];
-  const scenarios = [base, ...defs.map((def, i) => finalizePlanningScenario(profile, def, base.taxCalc.total, year, i))];
-  sendJson(res, 200, { scenarios });
+  sendJson(res, 200, buildPlanningStrategyScenarios(profile, year));
 }
 
 // ---------------------------------------------------------------------------
@@ -2283,20 +2472,20 @@ async function handlePlanningDeckHtml(req, res) {
   const fmt = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("en-US");
   const fmtPct = (n) => { const v = Number(n) || 0; return ((Math.abs(v) <= 1 ? v * 100 : v).toFixed(1)) + "%"; };
 
+  const bestId = planningBestId(scenarios);
   const scenarioRows = scenarios.map((s) => {
     const c = s.taxCalc || {};
     const sav = s?.savingsVsBase?.dollars || 0;
-    const isBest = !s.isBase && sav > 0;
-    return `<tr${isBest ? ' class="best"' : ""}><td>${s.name || ""}${isBest ? " ★" : ""}</td><td>${fmt(c.federalTax)}</td><td>${fmt(c.stateTax)}</td><td>${fmt(c.seTax)}</td><td><strong>${fmt(c.total)}</strong></td><td>${sav > 0 ? `<strong>${fmt(sav)}</strong>` : "—"}</td><td>${fmtPct(c.effectiveRate)}</td></tr>`;
+    const isBest = s.id === bestId;
+    const savCell = sav > 0 ? `<strong>${fmt(sav)}</strong>` : (sav < 0 ? `cost ${fmt(-sav)}` : "—");
+    return `<tr${isBest ? ' class="best"' : ""}><td>${s.name || ""}${isBest ? " ★" : ""}</td><td>${fmt(c.federalTax)}</td><td>${fmt(c.stateTax)}</td><td>${fmt((c.seTax || 0) + (c.payrollTax || 0))}</td><td><strong>${fmt(c.total)}</strong></td><td>${savCell}</td><td>${fmtPct(c.effectiveRate)}</td></tr>`;
   }).join("");
 
   const oppCards = [...opportunities]
     .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
     .slice(0, 8)
     .map((o) => {
-      const min = Number(o?.estimatedSavings?.min) || 0;
-      const max = Number(o?.estimatedSavings?.max) || 0;
-      return `<div class="opp"><h3>${o.title || ""}</h3><p class="range">${max ? `${fmt(min)}–${fmt(max)} potential savings` : ""}</p><p class="cat">${o.category || ""} · ${o.complexity || "Moderate"}</p><p>${o.description || ""}</p></div>`;
+      return `<div class="opp"><h3>${o.title || ""}</h3><p class="range">${planningStrategies.opportunityAmountText(o, fmt)}</p><p class="cat">${o.category || ""} · ${o.complexity || "Moderate"}</p><p>${o.description || ""}</p></div>`;
     }).join("");
 
   const stepsHtml = nextSteps.length
@@ -2305,7 +2494,7 @@ async function handlePlanningDeckHtml(req, res) {
 
   const html = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Tax Planning — ${clientName} ${year}</title><style>@page{size:letter;margin:1in}*{box-sizing:border-box}body{font-family:Georgia,serif;color:#1a1a2e;font-size:12pt}h1{font-size:24pt;margin-bottom:4pt}h2{font-size:16pt;border-bottom:1px solid #ddd;padding-bottom:4pt;margin-top:24pt}.page{page-break-after:always}.cover{text-align:center;padding-top:2in}.hero{display:flex;gap:24pt;margin:20pt 0}.hero div{text-align:center;flex:1;background:#f5f5f5;padding:12pt;border-radius:4pt}.num{display:block;font-size:20pt;font-weight:bold}label{font-size:9pt;color:#555}table{width:100%;border-collapse:collapse;margin-top:12pt;font-size:10pt}th{background:#1a1a2e;color:#fff;padding:6pt 8pt;text-align:left}td{padding:5pt 8pt;border-bottom:1px solid #eee}tr.best td{background:#f0fff4;font-weight:bold}.opps{display:grid;grid-template-columns:1fr 1fr;gap:12pt;margin-top:12pt}.opp{border:1px solid #ddd;border-radius:4pt;padding:10pt}.opp h3{margin:0 0 4pt;font-size:11pt}.range{color:#16a34a;font-weight:bold;font-size:10pt;margin:2pt 0}.cat{color:#666;font-size:9pt;margin:2pt 0}ol li{margin-bottom:8pt}.owner{margin-left:8pt;color:#666;font-size:10pt}footer{font-size:8pt;color:#888;border-top:1px solid #ddd;padding-top:8pt;margin-top:24pt}.tip{margin-top:24pt;font-size:10pt;background:#f0f9ff;padding:10pt;border-radius:4pt}@media print{.tip{display:none}}</style></head><body>
 <div class="page cover"><h1>Tax Planning Analysis</h1><p style="color:#555">${clientName}</p><p style="color:#555">Tax Year ${year}</p><p style="margin-top:12pt;color:#999;font-size:10pt">Prepared ${new Date().toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</p><p class="tip">To save as PDF: Press <strong>Ctrl+P</strong> (Windows) or <strong>Cmd+P</strong> (Mac) → choose <strong>Save as PDF</strong>.</p></div>
-<div class="page"><h2>Current Situation</h2><div class="hero"><div><span class="num">${fmt(baseCalc.total)}</span><label>Total tax</label></div><div><span class="num">${fmtPct(baseCalc.effectiveRate)}</span><label>Effective rate</label></div><div><span class="num">${fmt(baseCalc.taxableIncome)}</span><label>Taxable income</label></div></div><h2>Scenario Comparison</h2><table><thead><tr><th>Scenario</th><th>Federal</th><th>State</th><th>SE Tax</th><th>Total</th><th>Savings</th><th>Eff. Rate</th></tr></thead><tbody>${scenarioRows}</tbody></table></div>
+<div class="page"><h2>Current Situation</h2><div class="hero"><div><span class="num">${fmt(baseCalc.total)}</span><label>Total tax</label></div><div><span class="num">${fmtPct(baseCalc.effectiveRate)}</span><label>Effective rate</label></div><div><span class="num">${fmt(baseCalc.taxableIncome)}</span><label>Taxable income</label></div></div><h2>Scenario Comparison</h2><table><thead><tr><th>Scenario</th><th>Federal</th><th>State</th><th>SE / Payroll</th><th>Total</th><th>Savings</th><th>Eff. Rate</th></tr></thead><tbody>${scenarioRows}</tbody></table></div>
 ${oppCards ? `<div class="page"><h2>Recommended Opportunities</h2><div class="opps">${oppCards}</div></div>` : ""}
 ${stepsHtml}
 <footer>${disclaimer}</footer></body></html>`;

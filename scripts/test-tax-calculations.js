@@ -103,9 +103,9 @@ check("unlisted state falls back to estimate flag", () => {
 });
 
 // --- Section 179 ------------------------------------------------------------
-check("Sec179 caps at limit", () => {
-  const r = tax.calcSec179(2000000, 5000000, 2025);
-  assert.strictEqual(r.deduction, 1160000);
+check("Sec179 caps at limit (OBBBA: $2,500,000 for 2025)", () => {
+  const r = tax.calcSec179(3000000, 5000000, 2025);
+  assert.strictEqual(r.deduction, 2500000);
 });
 
 check("Sec179 income-limited (no loss)", () => {
@@ -115,18 +115,15 @@ check("Sec179 income-limited (no loss)", () => {
 });
 
 check("Sec179 phase-out over threshold", () => {
-  // total assets 3,000,000 -> cap reduced by (3,000,000-2,890,000)=110,000
-  const r = tax.calcSec179(1200000, 5000000, 2025, 3000000);
-  assert.strictEqual(r.cap, 1160000 - 110000);
+  // total assets 4,100,000 -> cap reduced by (4,100,000-4,000,000)=100,000
+  const r = tax.calcSec179(1200000, 5000000, 2025, 4100000);
+  assert.strictEqual(r.cap, 2500000 - 100000);
 });
 
 // --- Bonus depreciation -----------------------------------------------------
-check("bonus depreciation 2025 = 40%", () => {
-  assert.strictEqual(tax.calcBonusDepreciation(100000, 2025).deduction, 40000);
-});
-
-check("bonus depreciation 2026 = 20%", () => {
-  assert.strictEqual(tax.calcBonusDepreciation(100000, 2026).deduction, 20000);
+check("bonus depreciation 2025 and 2026 = 100% (OBBBA)", () => {
+  assert.strictEqual(tax.calcBonusDepreciation(100000, 2025).deduction, 100000);
+  assert.strictEqual(tax.calcBonusDepreciation(100000, 2026).deduction, 100000);
 });
 
 // --- Retirement -------------------------------------------------------------

@@ -11205,6 +11205,7 @@ const planningStudio = {
   baseData: null,
   scenarios: [],
   opportunities: [],
+  items: [],
   busy: false,
   view: "analysis",
   state: "empty",
@@ -11227,33 +11228,51 @@ const PLANNING_CONFIRM_FIELDS = [
   { key: "taxYear", label: "Tax year", type: "number" },
   { key: "filingStatus", label: "Filing status", type: "select" },
   { key: "state", label: "State (2-letter)", type: "text" },
-  { key: "wages", label: "W-2 wages", type: "money" },
+  { key: "wages", label: "W-2 wages (all, including owner salary)", type: "money" },
   // businessIncome section rendered separately (not a simple field)
   // Advanced fields below
-  { key: "otherIncome", label: "Other income (dividends, interest, royalties…)", type: "money", advanced: true },
+  { key: "otherIncome", label: "Other income (interest, non-qualified dividends, royalties…)", type: "money", advanced: true },
+  { key: "qualifiedDividends", label: "Qualified dividends", type: "money", advanced: true },
   { key: "longTermGains", label: "Long-term cap gains", type: "money", advanced: true },
   { key: "shortTermGains", label: "Short-term cap gains", type: "money", advanced: true },
   { key: "deductions", label: "Itemized deductions (0 = standard)", type: "money", advanced: true },
   { key: "qbi", label: "QBI — qualified business income (§199A)", type: "money", advanced: true },
   { key: "w2Wages", label: "Business W-2 wages (QBI wage limit)", type: "money", advanced: true },
+  { key: "employeeWages", label: "Wages paid to non-owner employees", type: "money", advanced: true },
+  { key: "hasRetirementPlan", label: "Business already has a retirement plan", type: "yesno", advanced: true },
+  { key: "retirementContribution", label: "Retirement contributions (pre-tax deferrals, SEP)", type: "money", advanced: true },
+  { key: "iraDeduction", label: "Traditional IRA deduction", type: "money", advanced: true },
+  { key: "ownersAge50Plus", label: "Owners age 50+ (0–2)", type: "number", advanced: true },
+  { key: "ownersAge55Plus", label: "Owners age 55+ (0–2)", type: "number", advanced: true },
   { key: "selfEmployedHealthInsurance", label: "SE health insurance premium (above-the-line)", type: "money", advanced: true },
+  { key: "healthPremiumsPaidByBusiness", label: "Health premiums the business pays for the owners", type: "money", advanced: true },
+  { key: "healthPremiumsPaidPersonally", label: "Health premiums paid personally", type: "money", advanced: true },
   { key: "hsaContribution", label: "HSA contribution (above-the-line)", type: "money", advanced: true },
+  { key: "hsaEligible", label: "HSA-eligible health plan (HDHP)", type: "select", options: ["unknown", "yes", "no"], advanced: true },
+  { key: "businessCredits", label: "General business credits (Form 3800)", type: "money", advanced: true },
+  { key: "excessAptcRepayment", label: "Advance premium tax credit repaid", type: "money", advanced: true },
+  { key: "plannedAssetPurchases", label: "Planned equipment purchases this year", type: "money", advanced: true },
 ];
 
 const PLANNING_FIELD_LABELS = {
   wages: "W-2 wages",
-  netSEIncome: "Net SE / business income",
-  otherIncome: "Other income (div/int/royalties)",
+  ownerWages: "Owner salary (S-corp)",
+  sCorpIncome: "S-corp K-1 income",
+  netSEIncome: "Self-employment income",
+  otherIncome: "Other income (int/div/royalties)",
+  qualifiedDividends: "Qualified dividends",
   longTermGains: "LT cap gains",
   shortTermGains: "ST cap gains",
   deductions: "Itemized deductions",
   qbi: "QBI (§199A)",
   w2Wages: "Business W-2 wages",
   retirementContribution: "Retirement contribution",
+  iraDeduction: "IRA deduction",
   sec179: "Section 179",
   bonusDepreciation: "Bonus depreciation",
   selfEmployedHealthInsurance: "SE health insurance",
   hsaContribution: "HSA contribution",
+  businessCredits: "Business credits",
 };
 
 function planningFmtMoney(n) {
@@ -11612,6 +11631,7 @@ function planningReset() {
   planningStudio.baseData = null;
   planningStudio.scenarios = [];
   planningStudio.opportunities = [];
+  planningStudio.items = [];
   planningStudio.editingId = null;
   planningStudio.nextSteps = null;
   planningStudio.showMultiYear = false;
@@ -11689,8 +11709,12 @@ async function planningAnalyze() {
 function planningFieldHtml(f, baseData) {
   const raw = baseData[f.key];
   const val = raw == null ? "" : raw;
-  if (f.type === "select") {
-    const opts = PLANNING_FILING_STATUSES.map((s) => `<option value="${s}" ${s === val ? "selected" : ""}>${s}</option>`).join("");
+  if (f.type === "select" || f.type === "yesno") {
+    const choices = f.type === "yesno"
+      ? [["no", "No"], ["yes", "Yes"]]
+      : (f.options || PLANNING_FILING_STATUSES).map((s) => [s, s]);
+    const current = f.type === "yesno" ? (val === true || val === "true" || val === "yes" ? "yes" : "no") : String(val);
+    const opts = choices.map(([v, label]) => `<option value="${escapeHtml(v)}" ${v === current ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
     return `<label class="field"><span>${escapeHtml(f.label)}</span><select id="planning-f-${f.key}">${opts}</select></label>`;
   }
   const inputType = f.type === "text" ? "text" : "number";
@@ -11698,13 +11722,32 @@ function planningFieldHtml(f, baseData) {
   return `<label class="field"><span>${escapeHtml(f.label)}</span><input id="planning-f-${f.key}" type="${inputType}" value="${v}" /></label>`;
 }
 
+// S corporation K-1 income never pays self-employment tax; Schedule C and partnership income do.
+function planningBizNote(type) {
+  if (type === "scorp") return "S-corp K-1 income does not pay self-employment tax; the owners pay FICA on their salary.";
+  if (type === "none") return "No business income is used in the calculation.";
+  return "This amount is self-employment income: it pays self-employment tax.";
+}
+
 function planningBizIncomeHtml(baseData) {
   const total = Number(baseData.businessIncomeTotal) || 0;
   const pct = baseData.ownershipPct != null ? Number(baseData.ownershipPct) : 100;
   const share = Math.round(total * pct / 100);
+  const type = ["scorp", "se", "none"].includes(baseData.businessIncomeType)
+    ? baseData.businessIncomeType
+    : (Number(baseData.sCorpIncome) > 0 ? "scorp" : "se");
+  const ownerWages = Number(baseData.ownerWages) || 0;
+  const ownerCount = Number(baseData.ownerCount) || (ownerWages > 0 ? 1 : 0);
+  const otherSE = type === "scorp" ? Number(baseData.netSEIncome) || 0 : 0;
+  const otherScorp = type === "se" ? Number(baseData.sCorpIncome) || 0 : 0;
+  const typeOpt = (v, label) => `<option value="${v}" ${type === v ? "selected" : ""}>${label}</option>`;
   return `<div class="planning-biz-card" id="planningBizCard">
     <div class="planning-biz-title">Business / pass-through income</div>
     <div class="planning-biz-grid">
+      <label class="field">
+        <span>Business type</span>
+        <select id="planning-biz-type">${typeOpt("scorp", "S corporation (K-1, no SE tax)")}${typeOpt("se", "Schedule C or partnership (SE tax)")}${typeOpt("none", "No business income")}</select>
+      </label>
       <label class="field">
         <span>Total entity ordinary income</span>
         <input id="planning-biz-total" type="number" value="${total}" placeholder="0" />
@@ -11713,7 +11756,19 @@ function planningBizIncomeHtml(baseData) {
       <label class="field">
         <span>Ownership %</span>
         <input id="planning-biz-pct" type="number" min="0" max="100" step="0.01" value="${pct}" placeholder="100" />
-        <span class="planning-biz-hint">From K-1 or partnership agreement — 100 if sole owner</span>
+        <span class="planning-biz-hint">Taxpayer and spouse combined — 100 if they own it all</span>
+      </label>
+    </div>
+    <div class="planning-biz-grid" id="planning-biz-scorp" ${type === "scorp" ? "" : "hidden"}>
+      <label class="field">
+        <span>Owner salary from the S-corp (W-2)</span>
+        <input id="planning-biz-ownerwages" type="number" min="0" value="${ownerWages}" placeholder="0" />
+        <span class="planning-biz-hint">Officer compensation paid to the owners — pays FICA, both halves</span>
+      </label>
+      <label class="field">
+        <span>Owners on the payroll</span>
+        <input id="planning-biz-ownercount" type="number" min="0" max="2" value="${ownerCount}" placeholder="1" />
+        <span class="planning-biz-hint">Taxpayer and/or spouse (0–2)</span>
       </label>
     </div>
     <div class="planning-biz-share">
@@ -11721,7 +11776,9 @@ function planningBizIncomeHtml(baseData) {
       <strong id="planning-biz-share-val">${planningFmtMoney(share)}</strong>
       <span class="planning-biz-formula" id="planning-biz-formula">${total > 0 ? `(${planningFmtMoney(total)} × ${pct}%)` : ""}</span>
     </div>
-    <p class="planning-biz-note">This amount feeds into the tax calculation as net SE / business income.</p>
+    <p class="planning-biz-note" id="planning-biz-note">${planningBizNote(type)}</p>
+    ${otherSE > 0 ? `<p class="planning-biz-note">Also on the return: ${planningFmtMoney(otherSE)} of self-employment income (kept).</p>` : ""}
+    ${otherScorp > 0 ? `<p class="planning-biz-note">Also on the return: ${planningFmtMoney(otherScorp)} of S-corp K-1 income (kept).</p>` : ""}
   </div>`;
 }
 
@@ -11778,6 +11835,13 @@ function planningRenderConfirm(baseData, observations) {
     };
     totalInp?.addEventListener("input", recalc);
     pctInp?.addEventListener("input", recalc);
+    const typeSel = basicWrap.querySelector("#planning-biz-type");
+    typeSel?.addEventListener("change", () => {
+      const scorpRow = basicWrap.querySelector("#planning-biz-scorp");
+      if (scorpRow) scorpRow.hidden = typeSel.value !== "scorp";
+      const note = basicWrap.querySelector("#planning-biz-note");
+      if (note) note.textContent = planningBizNote(typeSel.value);
+    });
   }
   if (advWrap) advWrap.innerHTML = advanced.map((f) => planningFieldHtml(f, baseData)).join("");
   const toggle = document.getElementById("planningAdvancedToggle");
@@ -11796,14 +11860,29 @@ function planningCollectConfirm() {
     const el = document.getElementById(`planning-f-${f.key}`);
     if (!el) return;
     if (f.type === "money" || f.type === "number") base[f.key] = Number(el.value) || 0;
+    else if (f.type === "yesno") base[f.key] = el.value === "yes";
     else base[f.key] = el.value.trim();
   });
-  // Business income section
+  // Business income section. The owner's share goes to S-corp income or to self-employment
+  // income depending on the business type; switching the type moves it.
+  const originalType = planningStudio.baseData?.businessIncomeType;
+  const bizType = document.getElementById("planning-biz-type")?.value || "se";
   const bizTotal = Number(document.getElementById("planning-biz-total")?.value) || 0;
   const bizPct = Number(document.getElementById("planning-biz-pct")?.value) ?? 100;
+  const share = Math.round(bizTotal * bizPct / 100);
+  base.businessIncomeType = bizType;
   base.businessIncomeTotal = bizTotal;
   base.ownershipPct = bizPct;
-  base.netSEIncome = Math.round(bizTotal * bizPct / 100);
+  if (bizType === "scorp") {
+    base.sCorpIncome = share;
+    if (originalType === "se") base.netSEIncome = 0;
+    base.ownerWages = Number(document.getElementById("planning-biz-ownerwages")?.value) || 0;
+    base.ownerCount = Math.min(2, Math.max(0, Math.round(Number(document.getElementById("planning-biz-ownercount")?.value) || 0)));
+  } else {
+    if (bizType === "se") base.netSEIncome = share;
+    else if (originalType === "se") base.netSEIncome = 0;
+    if (originalType === "scorp") { base.sCorpIncome = 0; base.ownerWages = 0; base.ownerCount = 0; }
+  }
   // Payments section
   base.withholding = Number(document.getElementById("planning-pay-withholding")?.value) || 0;
   base.estimatedTaxPaid = Number(document.getElementById("planning-pay-estimated")?.value) || 0;
@@ -11835,12 +11914,13 @@ async function planningGenerateScenarios() {
     const sdata = await sres.json();
     if (!sres.ok) throw new Error(sdata.error || "Scenario generation failed.");
     planningStudio.scenarios = Array.isArray(sdata.scenarios) ? sdata.scenarios : [];
+    planningStudio.items = Array.isArray(sdata.items) ? sdata.items : [];
 
     planningSetStatus("Identifying opportunities…");
     const ores = await fetch(`${API_BASE_URL}/api/planning/opportunities`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios }),
+      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios, items: planningStudio.items }),
     });
     const odata = await ores.json();
     planningStudio.opportunities = ores.ok && Array.isArray(odata.opportunities) ? odata.opportunities : [];
@@ -11857,15 +11937,32 @@ async function planningGenerateScenarios() {
   }
 }
 
+// "Best": with the fixed strategy rules, the savings scenario with the highest net benefit (tax
+// savings minus cash costs such as contributions for employees) that does not depend on spending
+// money — the same rule as pickRecommended in lib/planning-strategies.js. For an analysis saved
+// before the rules, the lowest total as before. Marks `recommended` so the deck and PDF agree.
 function planningBestScenarioId() {
-  let best = null;
-  planningStudio.scenarios.forEach((s) => {
-    if (s.isBase) return;
-    const t = Number(s?.taxCalc?.total);
-    if (!Number.isFinite(t)) return;
-    if (!best || t < Number(best.taxCalc.total)) best = s;
-  });
-  return best ? best.id : null;
+  const list = planningStudio.scenarios;
+  let bestId = null;
+  if (list.some((s) => s && s.kind)) {
+    let bestValue = 0;
+    list.forEach((s) => {
+      if (!s || s.isBase || s.kind !== "savings" || (Number(s.requiresSpending) || 0) > 0) return;
+      const value = (Number(s?.savingsVsBase?.dollars) || 0) - (Number(s.extraCost) || 0);
+      if (value > bestValue) { bestValue = value; bestId = s.id; }
+    });
+  } else {
+    let best = null;
+    list.forEach((s) => {
+      if (s.isBase) return;
+      const t = Number(s?.taxCalc?.total);
+      if (!Number.isFinite(t)) return;
+      if (!best || t < Number(best.taxCalc.total)) best = s;
+    });
+    bestId = best ? best.id : null;
+  }
+  list.forEach((s) => { if (s) s.recommended = s.id === bestId; });
+  return bestId;
 }
 
 function planningRenderResults() {
@@ -11944,11 +12041,14 @@ function planningBreakdownHtml(scenario, baseScenario, year) {
           ${fmtRow("Gross income", c.grossIncome, b.grossIncome)}
           ${c.seHealthInsuranceDeduction > 0 ? fmtRow("SE health insurance deduction", -c.seHealthInsuranceDeduction, b.seHealthInsuranceDeduction > 0 ? -b.seHealthInsuranceDeduction : null) : ""}
           ${c.hsaDeduction > 0 ? fmtRow("HSA deduction", -c.hsaDeduction, b.hsaDeduction > 0 ? -b.hsaDeduction : null) : ""}
+          ${c.iraDeduction > 0 || b.iraDeduction > 0 ? fmtRow("IRA deduction", -(c.iraDeduction || 0), isBase ? null : -(b.iraDeduction || 0)) : ""}
           ${fmtRow("Taxable income", c.taxableIncome, b.taxableIncome)}
           <tr class="planning-bd-divider"><td colspan="${isBase ? 2 : 3}"></td></tr>
           ${fmtRow("Federal income tax", c.federalTax, b.federalTax)}
           ${fmtRow(stateLbl, c.stateTax, b.stateTax)}
           ${fmtRow("SE tax (self-employment)", c.seTax, b.seTax)}
+          ${c.payrollTax > 0 || b.payrollTax > 0 ? fmtRow("Payroll tax on owner salary (both halves)", c.payrollTax || 0, b.payrollTax || 0) : ""}
+          ${c.businessCredits > 0 || b.businessCredits > 0 ? fmtRow("General business credits (included above)", -(c.businessCredits || 0), isBase ? null : -(b.businessCredits || 0)) : ""}
           ${c.niit > 0 ? fmtRow("Net Investment Income Tax", c.niit, b.niit) : ""}
           <tr class="planning-bd-divider"><td colspan="${isBase ? 2 : 3}"></td></tr>
           ${fmtRow("Total tax liability", c.total, b.total)}
@@ -11957,6 +12057,11 @@ function planningBreakdownHtml(scenario, baseScenario, year) {
         </tbody>
       </table>
       ${!isBase && savings > 0 ? `<div class="planning-bd-savings">Net savings: <strong>${planningFmtMoney(savings)}</strong> (${planningFmtPct(savingsPct)} reduction in liability)</div>` : ""}
+      ${!isBase && savings < 0 ? `<div class="planning-bd-savings planning-neg">Added cost: <strong>${planningFmtMoney(-savings)}</strong> a year</div>` : ""}
+      ${!isBase && Number(scenario.extraCost) > 0 ? (() => { const net = (savings || 0) - Number(scenario.extraCost); return `<div class="planning-bd-savings">Cash cost outside taxes: up to <strong>${planningFmtMoney(scenario.extraCost)}</strong> (contributions for employees) · Net benefit: <strong>${net < 0 ? "−" : ""}${planningFmtMoney(Math.abs(net))}</strong></div>`; })() : ""}
+      ${Number(scenario.requiresSpending) > 0 ? `<div class="planning-bd-savings">Requires spending <strong>${planningFmtMoney(scenario.requiresSpending)}</strong> — never marked Best.</div>` : ""}
+      ${c.tablesEstimated ? `<p class="muted-note">${escapeHtml(String(year))} uses the ${escapeHtml(String(c.tablesYear))} tax tables: the ${escapeHtml(String(year))} inflation adjustments are not published yet.</p>` : ""}
+      ${Array.isArray(scenario.assumptions) && scenario.assumptions.length ? `<div class="planning-bd-section-title">Assumptions</div><ul class="planning-bd-assumptions">${scenario.assumptions.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>` : ""}
     </div>
     ${paymentsBlock}
   </div>`;
@@ -11982,13 +12087,13 @@ function planningRenderComparison() {
     const colspan = my ? 10 : 8;
     const nextCols = my ? `<td>${planningFmtMoney(cn.total)}</td><td>${planningFmtPct(cn.effectiveRate)}</td>` : "";
     const main = `<tr class="${isBest ? "planning-row-best" : ""}">
-      <td><div class="planning-scenario-name-cell">${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""}<div class="planning-row-actions">${editBtn}${expandBtn}</div></div></td>
+      <td><div class="planning-scenario-name-cell">${escapeHtml(s.name)}${isBest ? ' <span class="planning-badge">Best</span>' : ""}${s.kind === "risk" ? ' <span class="planning-badge planning-badge-risk">Risk</span>' : ""}${Number(s.requiresSpending) > 0 ? ` <span class="planning-badge planning-badge-spend">Requires spending ${planningFmtMoney(s.requiresSpending)}</span>` : ""}${Number(s.extraCost) > 0 ? `<span class="planning-scenario-sub">Up to ${planningFmtMoney(s.extraCost)} a year in contributions for employees</span>` : ""}<div class="planning-row-actions">${editBtn}${expandBtn}</div></div></td>
       <td>${planningFmtMoney(c.taxableIncome)}</td>
       <td>${planningFmtMoney(c.federalTax)}</td>
       <td>${planningFmtMoney(c.stateTax)}${c.stateEstimated ? '<span class="planning-est" title="Estimated state rate">*</span>' : ""}</td>
-      <td>${planningFmtMoney(c.seTax)}</td>
+      <td>${planningFmtMoney((c.seTax || 0) + (c.payrollTax || 0))}</td>
       <td><strong>${planningFmtMoney(c.total)}</strong></td>
-      <td class="${savings > 0 ? "planning-pos" : ""}">${savings > 0 ? planningFmtMoney(savings) : "—"}</td>
+      <td class="${savings > 0 ? "planning-pos" : (savings < 0 ? "planning-neg" : "")}">${savings > 0 ? planningFmtMoney(savings) : (savings < 0 ? `Cost ${planningFmtMoney(-savings)}` : "—")}</td>
       <td>${planningFmtPct(c.effectiveRate)}</td>
       ${nextCols}
     </tr>`;
@@ -12023,11 +12128,12 @@ function planningRenderComparison() {
   wrap.innerHTML = `
     <table class="planning-table">
       <thead><tr>
-        <th>Scenario</th><th>Taxable income</th><th>Federal</th><th>State</th><th>SE tax</th><th>${year} Total</th><th>Savings vs. base</th><th>${year} Rate</th>${nextYearCols}
+        <th>Scenario</th><th>Taxable income</th><th>Federal</th><th>State</th><th>SE / payroll</th><th>${year} Total</th><th>Savings vs. base</th><th>${year} Rate</th>${nextYearCols}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
     ${anyEstimated ? '<p class="muted-note">* State tax uses an estimated rate.</p>' : ""}
+    ${(() => { const t = planningStudio.scenarios.find((s) => s?.taxCalc?.tablesEstimated)?.taxCalc; return t ? `<p class="muted-note">${year} uses the ${t.tablesYear} tax tables: the ${year} inflation adjustments are not published yet.</p>` : ""; })()}
     <p class="planning-qbtns-row">${qBtns}</p>`;
 
   wrap.querySelectorAll("[data-planning-edit]").forEach((b) => b.addEventListener("click", () => { planningStudio.editingId = b.dataset.planningEdit; planningRenderComparison(); }));
@@ -12065,6 +12171,8 @@ async function planningApplyScenarioEdit(id) {
     scenario.adjustments = data.adjustments;
     scenario.taxCalc = data.taxCalc;
     scenario.savingsVsBase = data.savingsVsBase;
+    if (data.taxCalcNext) scenario.taxCalcNext = data.taxCalcNext;
+    if (scenario.kind) scenario.netBenefit = (Number(data.savingsVsBase?.dollars) || 0) - (Number(scenario.extraCost) || 0);
     planningStudio.editingId = null;
     planningRenderComparison();
   } catch (err) {
@@ -12072,15 +12180,46 @@ async function planningApplyScenarioEdit(id) {
   }
 }
 
+// How an opportunity card shows its amount. Rule strategies carry a kind: savings show what they
+// save (and their cash cost, if any), risks what they cost, notices a tag. Older cards show the
+// model's min–max range as before.
+function planningOppAmountHtml(o) {
+  const min = Number(o?.estimatedSavings?.min) || 0;
+  const max = Number(o?.estimatedSavings?.max) || 0;
+  if (!o.kind) return `<span class="planning-opp-savings">${max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : "—"}</span>`;
+  if (o.kind === "risk") return `<span class="planning-opp-cost">Cost ${planningFmtMoney(Math.abs(Number(o.taxSavings) || 0))}</span>`;
+  if (o.kind === "compliance") return '<span class="planning-opp-tag">Compliance</span>';
+  if (o.kind === "discussion") return '<span class="planning-opp-tag">To discuss</span>';
+  if (Number(o.extraCost) > 0) {
+    return `<span class="planning-opp-savings">${planningFmtMoney(o.taxSavings)}<span class="planning-opp-sub">tax savings · up to ${planningFmtMoney(o.extraCost)} cost</span></span>`;
+  }
+  return `<span class="planning-opp-savings">${max ? planningFmtMoney(max) : "—"}</span>`;
+}
+
+function planningOppAmountText(o) {
+  const min = Number(o?.estimatedSavings?.min) || 0;
+  const max = Number(o?.estimatedSavings?.max) || 0;
+  if (!o.kind) return max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : "";
+  if (o.kind === "risk") return `Cost ${planningFmtMoney(Math.abs(Number(o.taxSavings) || 0))}`;
+  if (o.kind === "compliance") return "Compliance";
+  if (o.kind === "discussion") return "To discuss";
+  if (Number(o.extraCost) > 0) return `${planningFmtMoney(o.taxSavings)} tax savings · up to ${planningFmtMoney(o.extraCost)} cost`;
+  return max ? planningFmtMoney(max) : "";
+}
+
+// Savings first by net benefit, then risks, compliance and topics to discuss.
+function planningOppOrder(o) {
+  const rank = { savings: 0, risk: 1, compliance: 2, discussion: 3 };
+  return o.kind ? rank[o.kind] ?? 4 : 0;
+}
+
 function planningRenderOpportunities() {
   const wrap = document.getElementById("planningOpportunities");
   if (!wrap) return;
   if (!planningStudio.opportunities.length) { wrap.innerHTML = "<p class=\"muted-note\">No opportunities identified.</p>"; return; }
-  const sorted = [...planningStudio.opportunities].sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0));
+  const value = (o) => (o.kind ? Number(o.netBenefit) || 0 : Number(o?.estimatedSavings?.max) || 0);
+  const sorted = [...planningStudio.opportunities].sort((a, b) => planningOppOrder(a) - planningOppOrder(b) || value(b) - value(a));
   wrap.innerHTML = sorted.map((o) => {
-    const min = Number(o?.estimatedSavings?.min) || 0;
-    const max = Number(o?.estimatedSavings?.max) || 0;
-    const range = max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : "—";
     const complexity = escapeHtml(o.complexity || "Moderate");
 
     // Find linked scenario for the full breakdown
@@ -12102,13 +12241,14 @@ function planningRenderOpportunities() {
           <p class="planning-opp-calc-note">Savings figures computed by the system's deterministic tax engine — not AI-estimated arithmetic.</p>
         </div>
       </details>` : "";
+    const spend = Number(o.requiresSpending) > 0 ? ` · requires spending ${planningFmtMoney(o.requiresSpending)}` : "";
 
     return `<article class="planning-opp-card planning-complexity-${complexity.toLowerCase()}">
       <div class="planning-opp-head">
         <strong>${escapeHtml(o.title || "Opportunity")}</strong>
-        <span class="planning-opp-savings">${range}</span>
+        ${planningOppAmountHtml(o)}
       </div>
-      <p class="planning-opp-meta">${escapeHtml(o.category || "")}${o.deadline ? ` · by ${escapeHtml(o.deadline)}` : ""} · ${complexity}</p>
+      <p class="planning-opp-meta">${escapeHtml(o.category || "")}${o.deadline ? ` · by ${escapeHtml(o.deadline)}` : ""} · ${complexity}${escapeHtml(spend)}</p>
       <p>${escapeHtml(o.description || "")}</p>
       ${o.cpaNote ? `<p class="planning-opp-note"><strong>CPA note:</strong> ${escapeHtml(o.cpaNote)}</p>` : ""}
       ${calcSection}
@@ -12273,6 +12413,22 @@ async function planningLoadAnalysisList() {
   } catch (_) { /* silently ignore */ }
 }
 
+// A saved analysis is recomputed with the current tax engine (no AI) before it is shown: its
+// figures may come from an earlier version, and edits would compare against a different base.
+async function planningRefreshLoaded() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/planning/refresh`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseData: planningStudio.baseData, scenarios: planningStudio.scenarios, year: planningStudio.baseData?.taxYear }),
+    });
+    const data = await res.json();
+    if (!res.ok) return;
+    planningStudio.baseData = { ...planningStudio.baseData, ...(data.baseData || {}) };
+    if (Array.isArray(data.scenarios)) planningStudio.scenarios = data.scenarios;
+  } catch (_) { /* keep the saved figures */ }
+}
+
 async function planningLoadAnalysis(id) {
   try {
     const res = await fetch(`${API_BASE_URL}/api/planning/saved/${id}`);
@@ -12282,7 +12438,9 @@ async function planningLoadAnalysis(id) {
     planningStudio.baseData = e.baseData;
     planningStudio.scenarios = Array.isArray(e.scenarios) ? e.scenarios : [];
     planningStudio.opportunities = Array.isArray(e.opportunities) ? e.opportunities : [];
+    planningStudio.items = [];
     planningStudio.nextSteps = null;
+    await planningRefreshLoaded();
     planningRenderResults();
     planningShowState("results");
     planningSetStatus("Loaded — " + (e.clientName || ""));
@@ -12632,22 +12790,21 @@ function planningRenderPresentation() {
   const baseCalc = base?.taxCalc || {};
   const bestId = planningBestScenarioId();
   const best = planningStudio.scenarios.find((s) => s.id === bestId);
-  const bestSavings = best ? (base?.taxCalc?.total || 0) - (best.taxCalc?.total || 0) : 0;
+  const bestSavings = !best ? 0
+    : (best.kind ? (Number(best?.savingsVsBase?.dollars) || 0) - (Number(best.extraCost) || 0) : (base?.taxCalc?.total || 0) - (best.taxCalc?.total || 0));
   const year = planningStudio.baseData?.taxYear || new Date().getFullYear();
   const client = planningStudio.baseData?.clientName || "Client";
 
   const compRows = planningStudio.scenarios.map((s) => {
     const c = s.taxCalc || {};
     const sav = s?.savingsVsBase?.dollars || 0;
-    return `<tr class="${s.id === bestId && sav > 0 ? "planning-row-best" : ""}"><td>${escapeHtml(s.name)}</td><td>${planningFmtMoney(c.total)}</td><td>${sav > 0 ? planningFmtMoney(sav) : "—"}</td><td>${planningFmtPct(c.effectiveRate)}</td></tr>`;
+    return `<tr class="${s.id === bestId && sav > 0 ? "planning-row-best" : ""}"><td>${escapeHtml(s.name)}</td><td>${planningFmtMoney(c.total)}</td><td>${sav > 0 ? planningFmtMoney(sav) : (sav < 0 ? `Cost ${planningFmtMoney(-sav)}` : "—")}</td><td>${planningFmtPct(c.effectiveRate)}</td></tr>`;
   }).join("");
 
   const oppCards = [...planningStudio.opportunities]
     .sort((a, b) => (Number(b?.estimatedSavings?.max) || 0) - (Number(a?.estimatedSavings?.max) || 0))
     .map((o) => {
-      const max = Number(o?.estimatedSavings?.max) || 0;
-      const min = Number(o?.estimatedSavings?.min) || 0;
-      return `<div class="planning-present-opp"><strong>${escapeHtml(o.title)}</strong><span>${max ? `${planningFmtMoney(min)}–${planningFmtMoney(max)}` : ""}</span><p>${escapeHtml(o.description || "")}</p></div>`;
+      return `<div class="planning-present-opp"><strong>${escapeHtml(o.title)}</strong><span>${escapeHtml(planningOppAmountText(o))}</span><p>${escapeHtml(o.description || "")}</p></div>`;
     }).join("");
 
   inner.innerHTML = `
