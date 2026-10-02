@@ -33,6 +33,8 @@ const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
 const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
+const { identityInventoryRows } = require("./lib/identity-inventory");
+const { checkboxInventoryRows, questionKey: checkboxQuestionKey } = require("./lib/checkbox-inventory");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -11618,6 +11620,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   enforceReviewConciseness(normalized);
   enforceInfoConsistencyStatus(normalized);
   mergeComputedIdentityRows(normalized, payload);
+  mergeComputedCheckboxRows(normalized, payload);
   enforceFilingReadinessConsistency(normalized);
   return normalized;
 }
@@ -11636,7 +11639,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
  * afirmaciones sobre lo mismo con distinto respaldo.
  */
 function mergeComputedIdentityRows(normalized, payload) {
-  const computed = identityRows(payload?.files, payload?.metadata || {});
+  // Despues de las cuatro filas basicas, el cruce de todos los SSN y EIN del paquete
+  // (lib/identity-inventory.js): diferencias y una fila de alcance con lo que dio bien.
+  const computed = [
+    ...identityRows(payload?.files, payload?.metadata || {}).map((row) => ({ ...row, source: `${row.source} — ${COMPUTED_SOURCE}` })),
+    ...identityInventoryRows(payload?.files, payload?.metadata || {}),
+  ];
   if (!computed.length) return;
   const owned = new Set(COMPUTED_ITEMS.map((item) => item.toLowerCase()));
   const isOwned = (row) => {
@@ -11651,12 +11659,32 @@ function mergeComputedIdentityRows(normalized, payload) {
   };
   const fromModel = (Array.isArray(normalized.infoConsistency) ? normalized.infoConsistency : [])
     .filter((row) => !isOwned(row));
-  normalized.infoConsistency = [
-    ...computed.map((row) => ({ ...row, source: `${row.source} — ${COMPUTED_SOURCE}` })),
-    ...fromModel,
-  ];
+  normalized.infoConsistency = [...computed, ...fromModel];
   const mismatches = computed.filter((row) => row.status === "MISMATCH").length;
   console.log(`[Review] ${computed.length} identity row(s) computed in code (${mismatches} mismatch), replacing the model's own.`);
+}
+
+/**
+ * Las casillas que el codigo puede leer — las preguntas Si/No y las casillas marcadas — se
+ * comparan contra el año anterior en lib/checkbox-inventory.js. Los cambios van primero, y la
+ * fila del modelo sobre la misma pregunta sale para no repetirla; la fila de alcance del codigo
+ * va al final, despues de la del modelo.
+ */
+function mergeComputedCheckboxRows(normalized, payload) {
+  const computed = checkboxInventoryRows(payload?.files, payload?.metadata || {});
+  if (!computed.length) return;
+  const isScope = (row) => /boxes verified|verified as correct/i.test(String(row?.box || ""));
+  const changes = computed.filter((row) => !isScope(row));
+  const scope = computed.filter(isScope);
+  const keys = changes.map((row) => checkboxQuestionKey(row.box)).filter((key) => key.length >= 15);
+  const sameQuestion = (box) => {
+    const key = checkboxQuestionKey(box);
+    return key.length >= 15 && keys.some((other) => other.includes(key) || key.includes(other));
+  };
+  const fromModel = (Array.isArray(normalized.checkboxReview) ? normalized.checkboxReview : [])
+    .filter((row) => !sameQuestion(row?.box));
+  normalized.checkboxReview = [...changes, ...fromModel, ...scope];
+  console.log(`[Review] ${changes.length} checkbox change(s) vs the prior year and ${scope.length ? scope[0].currentState : 0} unchanged box(es) computed in code.`);
 }
 
 // The model has repeatedly written a MISMATCH explanation in the note field ("Client fact

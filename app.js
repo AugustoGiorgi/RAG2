@@ -10577,6 +10577,9 @@ function dxTable(headers, rows, statusCol = -1) {
 // as correct" with the count in currentState, "Identifiers verified as matching" with the count
 // at the start of its note — instead of a row per item (see the review prompt and
 // lib/review-merge.js). The counters read that number, so 22 verified boxes count as 22, not 1.
+// Each table can carry two scope rows, the model's and the one the code computes
+// (lib/identity-inventory.js, lib/checkbox-inventory.js). What they count overlaps, so the
+// counters take the larger one and never add them up.
 const REVIEW_SCOPE_ROW = /verified as correct|verified as matching|boxes verified|identifiers verified/i;
 
 function reviewScopeCount(...values) {
@@ -10598,7 +10601,7 @@ function reviewInfoMatchLabel(rows) {
   let unverified = 0;
   let scope = 0;
   list.forEach((row) => {
-    if (REVIEW_SCOPE_ROW.test(safeText(row?.item))) { scope += reviewScopeCount(row?.note, row?.returnValue, row?.sourceValue); return; }
+    if (REVIEW_SCOPE_ROW.test(safeText(row?.item))) { scope = Math.max(scope, reviewScopeCount(row?.note, row?.returnValue, row?.sourceValue)); return; }
     const status = safeText(row?.status).trim().toUpperCase();
     if (/NOT\s*VERIFIED/.test(status)) unverified += 1;
     else if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(status)) listed += 1;
@@ -10634,7 +10637,7 @@ function reviewCheckboxSummary(rows) {
   const listed = list.filter((row) => !REVIEW_SCOPE_ROW.test(safeText(row?.box)));
   const toFix = listed.filter((row) => checkboxNeedsChange(row?.currentState, row?.shouldBe));
   const right = listed.filter((row) => !checkboxNeedsChange(row?.currentState, row?.shouldBe));
-  const scope = scopeRows.reduce((sum, row) => sum + reviewScopeCount(row?.currentState, row?.shouldBe, row?.explanation), 0);
+  const scope = scopeRows.reduce((most, row) => Math.max(most, reviewScopeCount(row?.currentState, row?.shouldBe, row?.explanation)), 0);
   const correct = Math.max(scope, right.length);
   const reviewed = correct + toFix.length;
   return { reviewed, correct, toFix, right, scopeRows, pct: reviewed ? Math.round((correct / reviewed) * 100) : 0 };

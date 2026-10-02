@@ -67,6 +67,17 @@ test("checkbox: la fila 'Boxes verified as correct' cuenta su numero", () => {
   assert.strictEqual(checkboxLabel(rows), "23 reviewed · 1 to change · 96% correct");
 });
 
+test("con dos filas de alcance (la del modelo y la del codigo) se toma la mayor, no la suma", () => {
+  const rows = [box("No", "Yes"),
+    { box: "Boxes verified as correct", currentState: "9", shouldBe: "No action", explanation: "Form 1040 page 1" },
+    { box: "Boxes verified by code (same as the prior year)", currentState: "36", shouldBe: "No action", explanation: "Same as the prior-year return." }];
+  assert.strictEqual(checkboxLabel(rows), "37 reviewed · 1 to change · 97% correct");
+  const data = [...info(["MISMATCH"]),
+    { item: "Identifiers verified as matching", status: "MATCH", note: "8 — address, occupation" },
+    { item: "Identifiers verified by code", status: "MATCH", note: "59 — SSNs matching the prior-year return: 4" }];
+  assert.strictEqual(infoLabel(data), "98% match (59 of 60)");
+});
+
 test("datos: la fila 'Identifiers verified as matching' cuenta el numero de su nota", () => {
   const rows = [...info(["MATCH", "MATCH", "MISMATCH"]), { item: "Identifiers verified as matching", returnValue: "N/A", sourceValue: "N/A", status: "MATCH", note: "14 — names, SSNs, address, dependents" }];
   assert.strictEqual(infoLabel(rows), "93% match (14 of 15)");
