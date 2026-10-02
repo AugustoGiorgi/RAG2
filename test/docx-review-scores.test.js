@@ -21,6 +21,8 @@ const { build, infoLabel, checkboxLabel } = eval(`(() => {
   ${grab("dxH")}
   ${grab("dxLabel")}
   ${grab("dxTable")}
+  ${src.match(/^const REVIEW_SCOPE_ROW = .*$/m)[0]}
+  ${grab("reviewScopeCount")}
   ${grab("reviewInfoMatchLabel")}
   ${grab("checkboxNeedsChange")}
   ${grab("reviewCheckboxLabel")}
@@ -51,6 +53,29 @@ test("checkbox: Yes, Checked y X son lo mismo; No, Unchecked y vacio tambien", (
 
 test("checkbox: sin un 'should be' no se cuenta como cambio", () => {
   assert.strictEqual(checkboxLabel([box("No", ""), box("No", "Yes")]), "2 reviewed · 1 to change · 50% correct");
+});
+
+// La review resume lo que esta bien en una fila final de alcance, con la cantidad: esa fila
+// cuenta por lo que dice, no como una casilla mas. Su cantidad ya incluye las casillas correctas
+// listadas arriba, asi que no se suman dos veces.
+test("checkbox: la fila 'Boxes verified as correct' cuenta su numero", () => {
+  const rows = [box("No", "No"), box("Unchecked", "Unchecked"), box("Checked", "Checked"), box("No", "No"), box("Unchecked", "Checked"), box("No", "No"),
+    { box: "Boxes verified as correct", currentState: "22", shouldBe: "No action", explanation: "Form 1040 page 1; Schedule B Part III" }];
+  assert.strictEqual(checkboxLabel(rows), "23 reviewed · 1 to change · 96% correct");
+});
+
+test("datos: la fila 'Identifiers verified as matching' cuenta el numero de su nota", () => {
+  const rows = [...info(["MATCH", "MATCH", "MISMATCH"]), { item: "Identifiers verified as matching", returnValue: "N/A", sourceValue: "N/A", status: "MATCH", note: "14 — names, SSNs, address, dependents" }];
+  assert.strictEqual(infoLabel(rows), "93% match (14 of 15)");
+  const sinNumero = [...info(["MATCH", "MISMATCH"]), { item: "Identifiers verified as matching", status: "MATCH", note: "names and SSNs" }];
+  assert.strictEqual(infoLabel(sinNumero), "50% match (1 of 2)", "una fila de alcance sin cantidad no inventa una");
+});
+
+test("el Word muestra la nota de cada dato, donde la fila de alcance lista lo verificado", () => {
+  const xml = build({ issues: [], tieOutResults: [], checkboxReview: [], missingDocuments: [],
+    infoConsistency: [{ item: "Identifiers verified as matching", returnValue: "N/A", sourceValue: "N/A", status: "MATCH", note: "14 — names, SSNs, address" }] });
+  assert.match(xml, /Note/);
+  assert.match(xml, /14 — names, SSNs, address/);
 });
 
 test("las dos secciones van primero, con su puntaje, antes del resumen y de los issues", () => {

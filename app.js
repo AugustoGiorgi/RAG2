@@ -10573,21 +10573,42 @@ function dxTable(headers, rows, statusCol = -1) {
   return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr>${headRow}${bodyRows}</w:tbl><w:p/>`;
 }
 
+// The review condenses what checks out into one final "scope row" per table — "Boxes verified
+// as correct" with the count in currentState, "Identifiers verified as matching" with the count
+// at the start of its note — instead of a row per item (see the review prompt and
+// lib/review-merge.js). The counters read that number, so 22 verified boxes count as 22, not 1.
+const REVIEW_SCOPE_ROW = /verified as correct|verified as matching|boxes verified|identifiers verified/i;
+
+function reviewScopeCount(...values) {
+  for (const value of values) {
+    const found = safeText(value).match(/^\s*(\d{1,4})\b/);
+    if (found) return Number(found[1]);
+  }
+  return 0;
+}
+
 // Counter next to "Informational Data Consistency": the items that match, as a share of every
-// item reviewed. A status counts as a match when the table paints it green (see dxTable), so
-// the number and the colors never disagree.
+// item reviewed. A listed status counts as a match when the table paints it green (see
+// dxTable). The scope row's count covers every match found, so the listed matches are not added
+// to it a second time.
 function reviewInfoMatchLabel(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  if (!list.length) return "";
-  let match = 0;
+  let listed = 0;
+  let other = 0;
   let unverified = 0;
+  let scope = 0;
   list.forEach((row) => {
+    if (REVIEW_SCOPE_ROW.test(safeText(row?.item))) { scope += reviewScopeCount(row?.note, row?.returnValue, row?.sourceValue); return; }
     const status = safeText(row?.status).trim().toUpperCase();
     if (/NOT\s*VERIFIED/.test(status)) unverified += 1;
-    else if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(status)) match += 1;
+    else if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(status)) listed += 1;
+    else other += 1;
   });
-  const pct = Math.round((match / list.length) * 100);
-  return `${pct}% match (${match} of ${list.length}${unverified ? `; ${unverified} not verified` : ""})`;
+  const match = Math.max(scope, listed);
+  const total = match + other + unverified;
+  if (!total) return "";
+  const pct = Math.round((match / total) * 100);
+  return `${pct}% match (${match} of ${total}${unverified ? `; ${unverified} not verified` : ""})`;
 }
 
 // Whether a checkbox has to change: its current state differs from what it should be.
@@ -10605,13 +10626,22 @@ function checkboxNeedsChange(currentState, shouldBe) {
 }
 
 // Counter next to "Checkbox Review": boxes reviewed, how many should change, and the share
-// that is already right.
+// that is already right. The scope row's count covers every box found correct.
 function reviewCheckboxLabel(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  if (!list.length) return "";
-  const toChange = list.filter((row) => checkboxNeedsChange(row?.currentState, row?.shouldBe)).length;
-  const pct = Math.round(((list.length - toChange) / list.length) * 100);
-  return `${list.length} reviewed · ${toChange} to change · ${pct}% correct`;
+  let listedCorrect = 0;
+  let toChange = 0;
+  let scope = 0;
+  list.forEach((row) => {
+    if (REVIEW_SCOPE_ROW.test(safeText(row?.box))) { scope += reviewScopeCount(row?.currentState, row?.shouldBe, row?.explanation); return; }
+    if (checkboxNeedsChange(row?.currentState, row?.shouldBe)) toChange += 1;
+    else listedCorrect += 1;
+  });
+  const correct = Math.max(scope, listedCorrect);
+  const reviewed = correct + toChange;
+  if (!reviewed) return "";
+  const pct = Math.round((correct / reviewed) * 100);
+  return `${reviewed} reviewed · ${toChange} to change · ${pct}% correct`;
 }
 
 function buildStructuredReviewDocxXml(structured, metadata = {}) {
@@ -10625,8 +10655,8 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
   // and checkboxes before anything else.
   if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
     parts.push(dxH(`Informational Data Consistency — ${reviewInfoMatchLabel(structured.infoConsistency)}`));
-    parts.push(dxTable(["Item", "Return Value", "Source Value", "Status"],
-      structured.infoConsistency.map((r) => [r.item, r.returnValue, r.sourceValue, r.status]), 3));
+    parts.push(dxTable(["Item", "Return Value", "Source Value", "Status", "Note"],
+      structured.infoConsistency.map((r) => [r.item, r.returnValue, r.sourceValue, r.status, r.note]), 3));
   }
   if (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) {
     parts.push(dxH(`Checkbox Review — ${reviewCheckboxLabel(structured.checkboxReview)}`));
