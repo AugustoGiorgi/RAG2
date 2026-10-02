@@ -10573,6 +10573,47 @@ function dxTable(headers, rows, statusCol = -1) {
   return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr>${headRow}${bodyRows}</w:tbl><w:p/>`;
 }
 
+// Counter next to "Informational Data Consistency": the items that match, as a share of every
+// item reviewed. A status counts as a match when the table paints it green (see dxTable), so
+// the number and the colors never disagree.
+function reviewInfoMatchLabel(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return "";
+  let match = 0;
+  let unverified = 0;
+  list.forEach((row) => {
+    const status = safeText(row?.status).trim().toUpperCase();
+    if (/NOT\s*VERIFIED/.test(status)) unverified += 1;
+    else if (/^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(status)) match += 1;
+  });
+  const pct = Math.round((match / list.length) * 100);
+  return `${pct}% match (${match} of ${list.length}${unverified ? `; ${unverified} not verified` : ""})`;
+}
+
+// Whether a checkbox has to change: its current state differs from what it should be.
+// "Yes", "Checked" or "X" all read as checked, and "No", "Unchecked" or blank as unchecked.
+// A row without a "should be" value is not counted as a change.
+function checkboxNeedsChange(currentState, shouldBe) {
+  const norm = (value) => {
+    const s = safeText(value).trim().toLowerCase().replace(/\s+/g, " ").replace(/[.;:,]+$/, "");
+    if (/^(yes|checked|x|true|marked)\b/.test(s) || /^[\u2713\u2714]/.test(s)) return "checked";
+    if (!s || /^(no|unchecked|not checked|blank|empty|false|unmarked)\b/.test(s)) return "unchecked";
+    return s;
+  };
+  if (!safeText(shouldBe).trim()) return false;
+  return norm(currentState) !== norm(shouldBe);
+}
+
+// Counter next to "Checkbox Review": boxes reviewed, how many should change, and the share
+// that is already right.
+function reviewCheckboxLabel(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return "";
+  const toChange = list.filter((row) => checkboxNeedsChange(row?.currentState, row?.shouldBe)).length;
+  const pct = Math.round(((list.length - toChange) / list.length) * 100);
+  return `${list.length} reviewed · ${toChange} to change · ${pct}% correct`;
+}
+
 function buildStructuredReviewDocxXml(structured, metadata = {}) {
   const parts = [];
   parts.push(dxP("RAG Tax AI — Senior Tax Return Review", { bold: true, size: 34, color: "1F3864", after: 40 }));
@@ -10580,6 +10621,18 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
   const readiness = safeText(structured.filingReadiness);
   const readinessBad = /not\s*ready/i.test(readiness);
   parts.push(dxP(`FILING READINESS: ${readiness || "Review complete"}`, { bold: true, size: 24, color: readinessBad ? "B3261E" : "1D6F42", shd: readinessBad ? "FDECEA" : "E7F4EC", after: 220 }));
+  // These two go first, each with its score next to the title: the client reads identity data
+  // and checkboxes before anything else.
+  if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
+    parts.push(dxH(`Informational Data Consistency — ${reviewInfoMatchLabel(structured.infoConsistency)}`));
+    parts.push(dxTable(["Item", "Return Value", "Source Value", "Status"],
+      structured.infoConsistency.map((r) => [r.item, r.returnValue, r.sourceValue, r.status]), 3));
+  }
+  if (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) {
+    parts.push(dxH(`Checkbox Review — ${reviewCheckboxLabel(structured.checkboxReview)}`));
+    parts.push(dxTable(["Box", "Current State", "Should Be", "Explanation"],
+      structured.checkboxReview.map((r) => [r.box, r.currentState, r.shouldBe, r.explanation])));
+  }
   if (safeText(structured.executiveSummary || structured.summary)) {
     parts.push(dxH("Executive Summary"));
     parts.push(dxP(structured.executiveSummary || structured.summary));
@@ -10608,16 +10661,6 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
     // evidenced…", "Not verified…"), so it has to travel into the deliverable.
     parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"],
       structured.tieOutResults.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status, r.note]), 4));
-  }
-  if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
-    parts.push(dxH("Informational Data Consistency"));
-    parts.push(dxTable(["Item", "Return Value", "Source Value", "Status"],
-      structured.infoConsistency.map((r) => [r.item, r.returnValue, r.sourceValue, r.status]), 3));
-  }
-  if (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) {
-    parts.push(dxH("Checkbox Review"));
-    parts.push(dxTable(["Box", "Current State", "Should Be", "Explanation"],
-      structured.checkboxReview.map((r) => [r.box, r.currentState, r.shouldBe, r.explanation])));
   }
   if (structured.balanceSheetCheck) {
     const check = structured.balanceSheetCheck;
