@@ -10625,23 +10625,48 @@ function checkboxNeedsChange(currentState, shouldBe) {
   return norm(currentState) !== norm(shouldBe);
 }
 
-// Counter next to "Checkbox Review": boxes reviewed, how many should change, and the share
-// that is already right. The scope row's count covers every box found correct.
-function reviewCheckboxLabel(rows) {
+// The checkbox review in numbers: the listed boxes split into those to fix and those that are
+// right, and the scope row's count of every box found correct — which already includes the
+// listed correct ones, so they are not added twice.
+function reviewCheckboxSummary(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  let listedCorrect = 0;
-  let toChange = 0;
-  let scope = 0;
-  list.forEach((row) => {
-    if (REVIEW_SCOPE_ROW.test(safeText(row?.box))) { scope += reviewScopeCount(row?.currentState, row?.shouldBe, row?.explanation); return; }
-    if (checkboxNeedsChange(row?.currentState, row?.shouldBe)) toChange += 1;
-    else listedCorrect += 1;
-  });
-  const correct = Math.max(scope, listedCorrect);
-  const reviewed = correct + toChange;
-  if (!reviewed) return "";
-  const pct = Math.round((correct / reviewed) * 100);
-  return `${reviewed} reviewed · ${toChange} to change · ${pct}% correct`;
+  const scopeRows = list.filter((row) => REVIEW_SCOPE_ROW.test(safeText(row?.box)));
+  const listed = list.filter((row) => !REVIEW_SCOPE_ROW.test(safeText(row?.box)));
+  const toFix = listed.filter((row) => checkboxNeedsChange(row?.currentState, row?.shouldBe));
+  const right = listed.filter((row) => !checkboxNeedsChange(row?.currentState, row?.shouldBe));
+  const scope = scopeRows.reduce((sum, row) => sum + reviewScopeCount(row?.currentState, row?.shouldBe, row?.explanation), 0);
+  const correct = Math.max(scope, right.length);
+  const reviewed = correct + toFix.length;
+  return { reviewed, correct, toFix, right, scopeRows, pct: reviewed ? Math.round((correct / reviewed) * 100) : 0 };
+}
+
+// Counter next to "Checkbox Review": boxes reviewed, how many should change, and the share
+// that is already right.
+function reviewCheckboxLabel(rows) {
+  const s = reviewCheckboxSummary(rows);
+  if (!s.reviewed) return "";
+  return `${s.reviewed} reviewed · ${s.toFix.length} to change · ${s.pct}% correct`;
+}
+
+// The Word lists at most 10 boxes: every box to fix — always, even past 10 — then boxes that
+// are right until the table holds 10. A last row counts everything: boxes reviewed, boxes to
+// fix, and the correct ones that are counted but not listed, with the forms examined.
+const REVIEW_CHECKBOX_ROWS_SHOWN = 10;
+function reviewCheckboxDocxRows(rows) {
+  const s = reviewCheckboxSummary(rows);
+  const shownRight = s.right.slice(0, Math.max(0, REVIEW_CHECKBOX_ROWS_SHOWN - s.toFix.length));
+  const out = [...s.toFix, ...shownRight].map((r) => [r.box, r.currentState, r.shouldBe, r.explanation]);
+  if (s.reviewed) {
+    const notListed = s.correct - shownRight.length;
+    const examined = s.scopeRows.map((r) => safeText(r.explanation)).filter(Boolean).join(" ");
+    out.push([
+      "Total boxes reviewed",
+      `${s.reviewed} reviewed`,
+      `${s.toFix.length} to fix`,
+      `${s.correct} correct${notListed > 0 ? ` (${notListed} counted, not listed above)` : ""}.${examined ? ` ${examined}` : ""}`,
+    ]);
+  }
+  return out;
 }
 
 function buildStructuredReviewDocxXml(structured, metadata = {}) {
@@ -10661,7 +10686,7 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
   if (Array.isArray(structured.checkboxReview) && structured.checkboxReview.length) {
     parts.push(dxH(`Checkbox Review — ${reviewCheckboxLabel(structured.checkboxReview)}`));
     parts.push(dxTable(["Box", "Current State", "Should Be", "Explanation"],
-      structured.checkboxReview.map((r) => [r.box, r.currentState, r.shouldBe, r.explanation])));
+      reviewCheckboxDocxRows(structured.checkboxReview)));
   }
   if (safeText(structured.executiveSummary || structured.summary)) {
     parts.push(dxH("Executive Summary"));

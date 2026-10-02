@@ -14,7 +14,7 @@ const grab = (name) => {
   return src.slice(start, src.indexOf("\n}", start) + 2);
 };
 // eslint-disable-next-line no-eval
-const { build, infoLabel, checkboxLabel } = eval(`(() => {
+const { build, infoLabel, checkboxLabel, checkboxRows } = eval(`(() => {
   const safeText = (v) => String(v == null ? "" : v);
   const escapeXml = (v) => String(v == null ? "" : v);
   ${grab("dxP")}
@@ -25,9 +25,12 @@ const { build, infoLabel, checkboxLabel } = eval(`(() => {
   ${grab("reviewScopeCount")}
   ${grab("reviewInfoMatchLabel")}
   ${grab("checkboxNeedsChange")}
+  ${grab("reviewCheckboxSummary")}
   ${grab("reviewCheckboxLabel")}
+  ${src.match(/^const REVIEW_CHECKBOX_ROWS_SHOWN = .*$/m)[0]}
+  ${grab("reviewCheckboxDocxRows")}
   ${grab("buildStructuredReviewDocxXml")}
-  return { build: buildStructuredReviewDocxXml, infoLabel: reviewInfoMatchLabel, checkboxLabel: reviewCheckboxLabel };
+  return { build: buildStructuredReviewDocxXml, infoLabel: reviewInfoMatchLabel, checkboxLabel: reviewCheckboxLabel, checkboxRows: reviewCheckboxDocxRows };
 })()`);
 
 const info = (statuses) => statuses.map((status, i) => ({ item: `Item ${i + 1}`, returnValue: "A", sourceValue: "A", status }));
@@ -76,6 +79,30 @@ test("el Word muestra la nota de cada dato, donde la fila de alcance lista lo ve
     infoConsistency: [{ item: "Identifiers verified as matching", returnValue: "N/A", sourceValue: "N/A", status: "MATCH", note: "14 — names, SSNs, address" }] });
   assert.match(xml, /Note/);
   assert.match(xml, /14 — names, SSNs, address/);
+});
+
+// El cuadro de casillas muestra a lo sumo 10: las que hay que corregir siempre y primero, despues
+// las correctas hasta completar, y una fila final que cuenta todo.
+test("el cuadro muestra primero las que hay que corregir y completa hasta 10 con las correctas", () => {
+  const rows = [...Array.from({ length: 12 }, (_, i) => box("No", "No")), box("No", "Yes"), box("Unchecked", "Checked"),
+    { box: "Boxes verified as correct", currentState: "30", shouldBe: "No action", explanation: "Examined: Form 1040 page 1; Schedule B." }];
+  const shown = checkboxRows(rows);
+  assert.strictEqual(shown.length, 11, "10 casillas y la fila de total");
+  assert.deepStrictEqual(shown.slice(0, 2).map((r) => [r[1], r[2]]), [["No", "Yes"], ["Unchecked", "Checked"]], "las que hay que corregir van primero");
+  assert.deepStrictEqual(shown[10], ["Total boxes reviewed", "32 reviewed", "2 to fix", "30 correct (22 counted, not listed above). Examined: Form 1040 page 1; Schedule B."]);
+});
+
+test("si hay mas de 10 para corregir, se muestran todas", () => {
+  const rows = [...Array.from({ length: 11 }, () => box("No", "Yes")), box("No", "No")];
+  const shown = checkboxRows(rows);
+  assert.strictEqual(shown.length, 12, "11 para corregir y la fila de total; ninguna correcta");
+  assert.strictEqual(shown[11][2], "11 to fix");
+});
+
+test("con pocas casillas listadas se muestran todas y el total igual", () => {
+  const shown = checkboxRows([box("No", "No"), box("No", "Yes")]);
+  assert.deepStrictEqual(shown.map((r) => r[0]), ["Form 1040 box", "Form 1040 box", "Total boxes reviewed"]);
+  assert.deepStrictEqual(shown[2].slice(1, 3), ["2 reviewed", "1 to fix"]);
 });
 
 test("las dos secciones van primero, con su puntaje, antes del resumen y de los issues", () => {
