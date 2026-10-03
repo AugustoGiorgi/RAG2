@@ -4376,9 +4376,16 @@ async function openAdminDashboard() {
   if (!isGlobalAdmin && currentUser.role !== "firm_admin") return;
   els.adminDashboard.hidden = false;
   // Global-only panels/fields stay hidden for a firm administrator: system health,
-  // budget groups, role selection and Firm ID (their users always join their own firm).
-  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField"];
+  // budget groups, role selection, Firm ID (their users always join their own firm) and
+  // every money field — what the app costs is for its owners only.
+  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField"];
   globalOnly.forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isGlobalAdmin; });
+  // A firm administrator also sees their firm's usage by tab (never costs) and its Google Drive.
+  const isFirmAdmin = currentUser.role === "firm_admin";
+  ["adminFirmUsageShell", "adminFirmDriveShell"].forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isFirmAdmin; });
+  const intro = document.getElementById("adminDashboardIntro");
+  if (intro && isFirmAdmin) intro.textContent = "Create your firm's users, see how much each tab is used, and manage access.";
+  if (isFirmAdmin) wireFirmAdminPanels();
   await Promise.all([
     ...(isGlobalAdmin ? [
       loadBudgetGroups().catch((error) => showAdminGroupMessage(error.message || "Could not load groups.", "error")),
@@ -4387,6 +4394,7 @@ async function openAdminDashboard() {
     loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
     // Usage comes from the cost log, which only a global admin can read.
     ...(isGlobalAdmin ? [loadAdminUsage().catch(() => {})] : []),
+    ...(isFirmAdmin ? [loadFirmUsage().catch(() => {}), loadFirmDrive().catch(() => {})] : []),
   ]);
 }
 
@@ -4568,6 +4576,8 @@ function renderAdminUsers(users) {
   const groupOptions = `<option value="">— No group (individual budget) —</option>` +
     _cachedBudgetGroups.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)} (${formatUsd(g.limitUsd || 0)} shared)</option>`).join("");
 
+  // Spend and budgets are for the app's owners only; a firm administrator never gets them.
+  const showSpend = currentUser.role === "admin";
   els.adminUsersList.innerHTML = users.map((user) => {
     const username = user.username || "";
     const limit = user.spendLimitUsd ?? "";
@@ -4598,8 +4608,8 @@ function renderAdminUsers(users) {
           <strong>${escapeHtml(username)}</strong>
           <span>${escapeHtml(user.displayName || "")}</span>
           <span class="admin-user-spend">Firm: ${escapeHtml(user.tenantId || "")}</span>
-          <div class="admin-user-figures">${figures}</div>
-          ${meter}
+          ${showSpend ? `<div class="admin-user-figures">${figures}</div>
+          ${meter}` : ""}
         </div>
         <label>
           <span>Display</span>
@@ -4626,10 +4636,11 @@ function renderAdminUsers(users) {
           <span>Budget group</span>
           <select data-admin-group="${escapeHtml(username)}" data-admin-group-current="${escapeHtml(user.budgetGroupId || "")}">${groupSelectOptions}</select>
         </label>` : ""}
+        ${showSpend ? `
         <label>
           <span>Individual budget USD</span>
           <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" ${user.budgetGroupId ? 'title="Overridden by group budget"' : ""} />
-        </label>
+        </label>` : ""}
         <div class="admin-user-actions">
           <button class="ghost-button small-button" type="button" data-admin-save="${escapeHtml(username)}">Save</button>
           <button class="ghost-button small-button" type="button" data-admin-password="${escapeHtml(username)}">Password</button>
@@ -4694,14 +4705,15 @@ async function updateAdminUser(username) {
   const roleSelect = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`);
   const groupSelect = els.adminUsersList?.querySelector(`[data-admin-group="${cssEscape(username)}"]`);
   const active = els.adminUsersList?.querySelector(`[data-admin-active="${cssEscape(username)}"]`)?.value !== "false";
-  const spendLimitUsd = els.adminUsersList?.querySelector(`[data-admin-limit="${cssEscape(username)}"]`)?.value ?? "";
+  const limitInput = els.adminUsersList?.querySelector(`[data-admin-limit="${cssEscape(username)}"]`);
   const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    // role/budgetGroupId only travel when their controls exist (global admin view);
-    // a firm admin's payload omits them and the server ignores them anyway.
+    // role/budgetGroupId/spendLimitUsd only travel when their controls exist (global admin
+    // view); a firm admin's payload omits them and the server ignores them anyway.
     body: JSON.stringify({
-      displayName, active, spendLimitUsd,
+      displayName, active,
+      ...(limitInput ? { spendLimitUsd: limitInput.value } : {}),
       ...(roleSelect ? { role: roleSelect.value } : {}),
       ...(groupSelect ? { budgetGroupId: groupSelect.value || null } : {}),
     }),
@@ -10218,14 +10230,187 @@ async function downloadReview(type) {
       try {
         const blob = await createDocxBlob("", buildStructuredReviewDocxXml(structured, metadata));
         downloadBlob(`${baseName}.docx`, blob, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        saveReviewToDrive(blob, baseName);
         return;
       } catch (error) {
         console.warn("Styled review docx failed, using plain build:", error);
       }
     }
-    await downloadWordDocument(`${baseName}.docx`, toCleanWrittenReview(lastReview.response, metadata));
+    const plainBlob = await downloadWordDocument(`${baseName}.docx`, toCleanWrittenReview(lastReview.response, metadata));
+    if (plainBlob) saveReviewToDrive(plainBlob, baseName);
   } else if (type === "text") {
     downloadBlob(`${baseName}.txt`, toCleanWrittenReview(lastReview.response, metadata), "text/plain;charset=utf-8");
+  }
+}
+
+// ---- Firm administrator: usage by tab (never costs) and the firm's Google Drive ----------
+// A firm administrator works in the app like any user of their firm. On top of that they see
+// how many times each person used each tab (one count per run of the tab's main action, from
+// /api/usage/summary — the cost log stays visible to the app owners only), and they can
+// connect their Google account so every review Word their users download is also saved in a
+// folder of their Drive.
+
+let firmAdminPanelsWired = false;
+
+function wireFirmAdminPanels() {
+  if (firmAdminPanelsWired) return;
+  firmAdminPanelsWired = true;
+  document.getElementById("adminFirmUsagePeriod")?.addEventListener("change", () => loadFirmUsage().catch(() => {}));
+  document.getElementById("adminRefreshFirmUsage")?.addEventListener("click", () => loadFirmUsage().catch(() => {}));
+}
+
+function usageRuns(count) {
+  return `${count}${count === 1 ? " run" : " runs"}`;
+}
+
+async function loadFirmUsage() {
+  const body = document.getElementById("adminFirmUsageBody");
+  if (!body) return;
+  const totals = document.getElementById("adminFirmUsageTotals");
+  const period = document.getElementById("adminFirmUsagePeriod")?.value || "month";
+  body.innerHTML = `<div class="admin-usage-empty">Loading usage…</div>`;
+  if (totals) totals.innerHTML = "";
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/usage/summary?period=${encodeURIComponent(period)}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not load usage.");
+    renderFirmUsage(payload);
+  } catch (error) {
+    body.innerHTML = `<div class="admin-usage-empty">${escapeHtml(error.message || "Could not load usage.")}</div>`;
+  }
+}
+
+function renderFirmUsage(summary) {
+  const body = document.getElementById("adminFirmUsageBody");
+  const totals = document.getElementById("adminFirmUsageTotals");
+  if (!body) return;
+  const tabs = Array.isArray(summary?.tabs) ? summary.tabs : [];
+  const users = Array.isArray(summary?.users) ? summary.users : [];
+  const reviews = tabs.find((t) => t.tab === "Review")?.actions?.find((a) => a.action === "Run review")?.count || 0;
+  if (totals) {
+    totals.innerHTML = [
+      ["Runs", String(summary?.total || 0)],
+      ["Reviews run", String(reviews)],
+      ["Tabs used", String(tabs.length)],
+      ["People", String(users.length)],
+    ].map(([label, value]) => `<div class="admin-usage-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
+  }
+  if (!summary?.total) {
+    body.innerHTML = `<div class="admin-usage-empty">Nobody in your firm ran anything in this period.</div>`;
+    return;
+  }
+  const row = (name, count, busiest, details) => `
+      <details class="admin-usage-user">
+        <summary>
+          <span class="admin-usage-name">${escapeHtml(name)}</span>
+          <span class="admin-usage-bar"><span style="width:${Math.round((count / Math.max(busiest, 1)) * 100)}%"></span></span>
+          <span class="admin-usage-calls">${usageRuns(count)}</span>
+        </summary>
+        <div class="admin-usage-features">${details.map(([label, n]) => `
+          <div class="admin-usage-feature">
+            <span class="admin-usage-feature-name">${escapeHtml(label)}</span>
+            <span class="admin-usage-feature-calls">${usageRuns(n)}</span>
+          </div>`).join("") || `<div class="admin-usage-feature"><span class="admin-usage-feature-name">No runs in this period</span></div>`}</div>
+      </details>`;
+  const busiestTab = Math.max(...tabs.map((t) => t.count), 1);
+  const busiestUser = Math.max(...users.map((u) => u.total), 1);
+  body.innerHTML = [
+    `<p class="admin-usage-note"><strong>By tab</strong></p>`,
+    ...tabs.map((t) => row(t.tab, t.count, busiestTab, (t.actions || []).map((a) => [a.action, a.count]))),
+    `<p class="admin-usage-note"><strong>By person</strong></p>`,
+    ...users.map((u) => row(u.displayName || u.username, u.total, busiestUser, Object.entries(u.byTab || {}))),
+  ].join("");
+}
+
+async function loadFirmDrive() {
+  const body = document.getElementById("adminFirmDriveBody");
+  if (!body) return;
+  body.innerHTML = `<div class="admin-usage-empty">Loading…</div>`;
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/firm-drive`);
+    const status = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(status.error || "Could not load the Google Drive status.");
+    renderFirmDrive(status);
+  } catch (error) {
+    body.innerHTML = `<div class="admin-usage-empty">${escapeHtml(error.message || "Could not load the Google Drive status.")}</div>`;
+  }
+}
+
+function renderFirmDrive(status) {
+  const body = document.getElementById("adminFirmDriveBody");
+  if (!body) return;
+  if (!status.enabled) {
+    body.innerHTML = `<div class="admin-usage-empty">Google is not configured on this server. Ask RAG Tax AI support to enable it.</div>`;
+    return;
+  }
+  const parts = [];
+  const buttons = [];
+  if (status.configured) {
+    const folder = status.folderUrl
+      ? `<a href="${escapeHtml(status.folderUrl)}" target="_blank" rel="noopener">${escapeHtml(status.folderName || "your Drive folder")}</a>`
+      : escapeHtml(status.folderName || "your Drive folder");
+    parts.push(`<p>Every review your users download is also saved to ${folder}${status.connectedBy ? `, in the Google Drive of ${escapeHtml(status.connectedBy)}` : ""}.</p>`);
+    if (status.lastUploadAt) parts.push(`<p class="admin-usage-note">Last review saved: ${escapeHtml(new Date(status.lastUploadAt).toLocaleString())}</p>`);
+    if (status.lastError) parts.push(`<p class="admin-usage-note">Last problem: ${escapeHtml(status.lastError)}</p>`);
+    if (status.isOwner && !status.googleConnected) buttons.push(`<button type="button" class="ghost-button small-button" data-firm-drive="connect">Reconnect Google</button>`);
+    buttons.push(`<button type="button" class="ghost-button small-button" data-firm-drive="disconnect">Stop saving to Drive</button>`);
+  } else if (!status.googleConnected) {
+    parts.push(`<p>Connect your Google account. The app creates a folder named "RAG Tax AI - Reviews" in your Drive and saves there every review your users download. Their download to the computer does not change.</p>`);
+    buttons.push(`<button type="button" class="primary-button small-button" data-firm-drive="connect">Connect Google</button>`);
+  } else {
+    parts.push(`<p>Your Google account is connected. Create the folder where your firm's reviews will be saved.</p>`);
+    buttons.push(`<button type="button" class="primary-button small-button" data-firm-drive="setup">Create the reviews folder</button>`);
+  }
+  if (!status.canManage) buttons.length = 0;
+  body.innerHTML = `${parts.join("")}${buttons.length ? `<div class="admin-drive-actions">${buttons.join("")}</div>` : ""}`;
+  body.querySelector('[data-firm-drive="connect"]')?.addEventListener("click", connectFirmDrive);
+  body.querySelector('[data-firm-drive="setup"]')?.addEventListener("click", () => setupFirmDrive().catch(() => {}));
+  body.querySelector('[data-firm-drive="disconnect"]')?.addEventListener("click", () => disconnectFirmDrive().catch(() => {}));
+}
+
+function connectFirmDrive() {
+  // Same Google sign-in as the rest of the app; when it finishes, this panel reloads. The
+  // popup has to open inside the click, or the browser blocks it.
+  pendingGoogleAction = { capability: "drive", action: () => loadFirmDrive() };
+  connectGoogleDrive();
+}
+
+async function setupFirmDrive() {
+  const response = await fetch(`${API_BASE_URL}/api/firm-drive/setup`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) showToast(result.error || "Could not create the Drive folder.", "error");
+  else showToast("Done: your firm's reviews will be saved to your Google Drive.", "success");
+  await loadFirmDrive();
+}
+
+async function disconnectFirmDrive() {
+  if (!window.confirm("Stop saving reviews to Google Drive? The folder and the files already saved stay in your Drive.")) return;
+  const response = await fetch(`${API_BASE_URL}/api/firm-drive/disconnect`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) showToast(result.error || "Could not change the Drive setting.", "error");
+  await loadFirmDrive();
+}
+
+// The review Word is also saved to the firm's Google Drive folder, when its firm
+// administrator set one up. The local download already happened, so a Drive failure only
+// gets a notice: the file is never lost.
+async function saveReviewToDrive(blob, baseName) {
+  try {
+    const contentBase64 = await readAsBase64(blob);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const localStamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}${pad(now.getMinutes())}`;
+    const response = await fetch(`${API_BASE_URL}/api/review/drive-upload`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseName, localStamp, contentBase64 }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (result.skipped) return;
+    if (response.ok && result.ok) showToast("Also saved to your firm's Google Drive.", "success");
+    else showToast(`Downloaded to this computer, but not saved to Google Drive: ${result.error || "the upload failed"}.`, "warning");
+  } catch (_) {
+    showToast("Downloaded to this computer, but not saved to Google Drive (connection problem).", "warning");
   }
 }
 
@@ -10415,6 +10600,7 @@ function priorityRank(issue) {
 async function downloadWordDocument(fileName, reviewText) {
   const blob = await createDocxBlob(cleanDocumentDownloadText(reviewText));
   downloadBlob(fileName, blob, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  return blob;
 }
 
 function cleanDocumentDownloadText(text) {

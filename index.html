@@ -41,7 +41,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=20261001-planning-rules" />
+    <link rel="stylesheet" href="styles.css?v=20261003-firm-admin" />
     <style>
       .step-list {
         display: grid !important;
@@ -100,7 +100,7 @@
         <div class="admin-dashboard-header">
           <div>
             <h2>User Administration</h2>
-            <p>Create users, assign token budgets, increase limits, and remove access.</p>
+            <p id="adminDashboardIntro">Create users, assign token budgets, increase limits, and remove access.</p>
           </div>
           <button id="closeAdminDashboardButton" type="button">Logout</button>
         </div>
@@ -116,8 +116,8 @@
               <label><span>Username</span><input id="adminNewUsername" autocomplete="off" required /></label>
               <label><span>Display name</span><input id="adminNewDisplayName" autocomplete="off" /></label>
               <label><span>Password</span><input id="adminNewPassword" type="text" autocomplete="off" minlength="12" required /></label>
-              <label><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
-              <label><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
+              <label id="adminSpendLimitField"><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
+              <label id="adminBudgetGroupField"><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
               <label id="adminRoleField"><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="firm_admin">Firm administrator</option><option value="admin">Administrator (global)</option></select></label>
               <label id="adminFirmIdField"><span>Firm ID</span><input id="adminNewTenantId" autocomplete="off" placeholder="Empty = your firm" /><small>Users sharing the same Firm ID see each other's clients, sessions, tracker and deadlines. Use a distinct ID (e.g. "smithcpa") for each external client firm. A "Firm administrator" can manage the users of their own firm only.</small></label>
               <button class="primary-button small-button" type="submit">Create User</button>
@@ -150,6 +150,40 @@
             </div>
             <div id="adminUsageTotals" class="admin-usage-totals"></div>
             <div id="adminUsageBody" class="admin-usage-body">Loading usage…</div>
+          </section>
+        </div>
+
+        <div class="admin-usage-shell" id="adminFirmUsageShell" hidden>
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <div>
+                <h3>Usage by tab</h3>
+                <p class="admin-usage-note">How many times each person in your firm used each tab. Each run of a tab's main action counts once.</p>
+              </div>
+              <div class="admin-usage-controls">
+                <select id="adminFirmUsagePeriod" aria-label="Period">
+                  <option value="month" selected>This month</option>
+                  <option value="last_month">Last month</option>
+                  <option value="year">This year</option>
+                  <option value="all">All time</option>
+                </select>
+                <button id="adminRefreshFirmUsage" class="ghost-button small-button" type="button">Refresh</button>
+              </div>
+            </div>
+            <div id="adminFirmUsageTotals" class="admin-usage-totals"></div>
+            <div id="adminFirmUsageBody" class="admin-usage-body">Loading usage…</div>
+          </section>
+        </div>
+
+        <div class="admin-usage-shell" id="adminFirmDriveShell" hidden>
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <div>
+                <h3>Google Drive for reviews</h3>
+                <p class="admin-usage-note">Save every review Word your users download to a folder in your Google Drive, besides their own computer.</p>
+              </div>
+            </div>
+            <div id="adminFirmDriveBody" class="admin-usage-body">Loading…</div>
           </section>
         </div>
 
@@ -2236,6 +2270,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20261002d"></script>
+    <script src="app.js?v=20261003c"></script>
   </body>
 </html>

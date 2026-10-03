@@ -12,3 +12,5 @@ data/accounting_tokens.json
 data/cost_log.json
 data/audit_log.json
 data/users.json
+data/usage_counts.json
+data/firm_drive.json

@@ -35,6 +35,8 @@ const { runCorporateReturnChecks } = require("./lib/corporate-return-checks");
 const { runIdentityChecks, identityRows, COMPUTED_ITEMS, COMPUTED_SOURCE } = require("./lib/identity-consistency");
 const { identityInventoryRows } = require("./lib/identity-inventory");
 const { checkboxInventoryRows, questionKey: checkboxQuestionKey } = require("./lib/checkbox-inventory");
+const { usageActionFor, addUsage, summarizeUsage } = require("./lib/usage-log");
+const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, driveMultipartBody } = require("./lib/firm-drive");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -255,6 +257,8 @@ const AUDIT_LOG_PATH = path.join(DATA_DIR, "audit_log.json");
 const INCIDENTS_PATH = path.join(DATA_DIR, "incidents.json");
 const ALERT_WEBHOOK_URL = String(process.env.ALERT_WEBHOOK_URL || "").trim();
 const USER_CREDITS_PATH = path.join(DATA_DIR, "user_credits.json");
+const USAGE_COUNTS_PATH = path.join(DATA_DIR, "usage_counts.json");
+const FIRM_DRIVE_PATH = path.join(DATA_DIR, "firm_drive.json");
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const ACCESS_REQUESTS_PATH = path.join(DATA_DIR, "access_requests.json");
@@ -908,6 +912,8 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
+    // Cuenta la accion principal de cada tab, ya pasados los controles (lib/usage-log.js).
+    recordUsage(req, requestUrl);
     // Reserve a bounded global slot and release both reservations exactly once.
     if (req._concurrencyUsername) {
       const abortController = new AbortController();
@@ -941,6 +947,9 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     }
     if (requestUrl.pathname.startsWith("/api/credits")) { await handleCreditsApi(req, res, requestUrl); return; }
     if (requestUrl.pathname.startsWith("/api/cost")) { await handleCostApi(req, res, requestUrl); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/api/usage/summary") { await handleUsageSummary(req, res, requestUrl); return; }
+    if (requestUrl.pathname === "/api/firm-drive" || requestUrl.pathname.startsWith("/api/firm-drive/")) { await handleFirmDriveApi(req, res, requestUrl); return; }
+    if (req.method === "POST" && requestUrl.pathname === "/api/review/drive-upload") { await handleReviewDriveUpload(req, res); return; }
     if (req.method === "POST" && req.url === "/api/research/chat") { await handleResearchChat(req, res); return; }
     if (req.method === "DELETE" && req.url === "/api/research/chat") { await handleResearchClear(req, res); return; }
     if (req.method === "POST" && req.url === "/api/review") { await handleReview(req, res); return; }
@@ -4780,15 +4789,18 @@ async function handleAdminUsersApi(req, res, requestUrl) {
   // A firm_admin can only touch non-admin users of their OWN firm.
   const canManageUser = (user) => isGlobalAdmin
     || (user && user.role !== "admin" && String(user.tenantId || DEFAULT_TENANT_ID) === managerTenant);
+  // What the app costs is for its owners only: a firm_admin manages their users but never
+  // sees what they spent or their budgets, nor sets them.
+  const shownUser = (user, preloaded) => (isGlobalAdmin ? publicUser(user, preloaded) : publicUserIdentity(user));
 
   // GET is read-only — no lock needed.
   if (parts.length === 3 && req.method === "GET") {
     const store = readUserStore();
-    const costEntries = readCostLog().entries || [];
+    const costEntries = isGlobalAdmin ? readCostLog().entries || [] : [];
     const preloaded = { store, costEntries };
     const visible = isGlobalAdmin ? store.users
       : store.users.filter((u) => String(u.tenantId || DEFAULT_TENANT_ID) === managerTenant);
-    sendJson(res, 200, { users: visible.map((u) => publicUser(u, preloaded)) });
+    sendJson(res, 200, { users: visible.map((u) => shownUser(u, preloaded)) });
     return;
   }
 
@@ -4814,7 +4826,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
         tenantId: isGlobalAdmin ? String(payload.tenantId || DEFAULT_TENANT_ID).trim().toLowerCase() || DEFAULT_TENANT_ID : managerTenant,
         role: isGlobalAdmin ? (payload.role === "admin" ? "admin" : payload.role === "firm_admin" ? "firm_admin" : "user") : "user",
         displayName: String(payload.displayName || username).trim(),
-        spendLimitUsd: sanitizeSpendLimit(payload.spendLimitUsd),
+        spendLimitUsd: isGlobalAdmin ? sanitizeSpendLimit(payload.spendLimitUsd) : null,
         budgetGroupId: isGlobalAdmin && groupExists ? bgId : null,
         active: payload.active !== false,
         createdAt: now,
@@ -4825,7 +4837,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       writeUserStore(store);
       await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_created", { username, role: user.role });
-      sendJson(res, 200, { user: publicUser(user) });
+      sendJson(res, 200, { user: shownUser(user) });
       return;
     }
     if (parts.length === 4 && req.method === "PUT") {
@@ -4838,7 +4850,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       if (payload.role !== undefined && isGlobalAdmin) user.role = payload.role === "admin" ? "admin" : payload.role === "firm_admin" ? "firm_admin" : "user";
       if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
       if (payload.active !== undefined) user.active = Boolean(payload.active);
-      if (payload.spendLimitUsd !== undefined) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
+      if (payload.spendLimitUsd !== undefined && isGlobalAdmin) user.spendLimitUsd = sanitizeSpendLimit(payload.spendLimitUsd);
       if (payload.budgetGroupId !== undefined && isGlobalAdmin) {
         const bgId = payload.budgetGroupId || null;
         const groupExists = bgId && (store.budgetGroups || []).some((g) => g.id === bgId);
@@ -4848,7 +4860,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       writeUserStore(store);
       await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_updated", { username, role: user.role, active: user.active !== false, spendLimitUsd: user.spendLimitUsd, budgetGroupId: user.budgetGroupId || null });
-      sendJson(res, 200, { user: publicUser(user) });
+      sendJson(res, 200, { user: shownUser(user) });
       return;
     }
     if (parts.length === 4 && req.method === "DELETE") {
@@ -4879,7 +4891,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       writeUserStore(store);
       await flushDatabaseSyncQueue();
       appendAuditLog(req, "admin.user_password_reset", { username });
-      sendJson(res, 200, { ok: true, user: publicUser(user) });
+      sendJson(res, 200, { ok: true, user: shownUser(user) });
       return;
     }
     sendJson(res, 404, { error: "User admin route not found." });
@@ -5172,6 +5184,20 @@ function parseAuthUsersJson() {
   } catch (_) {
     return [];
   }
+}
+
+// A user without any money field: what a firm_admin gets about the users of their firm.
+function publicUserIdentity(user) {
+  return {
+    username: user.username,
+    role: normalizeUserRole(user.role, user.username),
+    displayName: user.displayName || user.username,
+    tenantId: String(user.tenantId || DEFAULT_TENANT_ID),
+    active: user.active !== false,
+    createdAt: user.createdAt || "",
+    updatedAt: user.updatedAt || "",
+    lastPasswordChangeAt: user.lastPasswordChangeAt || "",
+  };
 }
 
 function publicUser(user, preloaded = {}) {
@@ -7387,6 +7413,221 @@ async function googleApiFetch(url, options = {}, username = "default") {
   return fetch(url, { ...options, headers: { ...(options.headers || {}), authorization: `Bearer ${token}` } });
 }
 
+// ---------------------------------------------------------------------------
+// Uso por tab y Drive de la firma.
+//
+// El administrador de una firma (firm_admin) ve cuantas veces se uso cada tab, por usuario y
+// por mes, sin costos (lib/usage-log.js). Y puede conectar su Google para que cada Word de
+// revision que descarga cualquier usuario de su firma se guarde tambien en una carpeta de su
+// Drive (lib/firm-drive.js). La descarga local no cambia: si Drive falla, el informe ya esta.
+// ---------------------------------------------------------------------------
+
+/** Cuenta una accion principal de una tab. Se llama despues de los controles de acceso. */
+function recordUsage(req, requestUrl) {
+  const hit = usageActionFor(req.method, requestUrl.pathname);
+  if (!hit) return;
+  const session = req.user || getSession(req);
+  // Los administradores de la app no corren acciones (requireUserSpendBudget los frena).
+  if (!session?.username || session.role === "admin") return;
+  try {
+    const store = readJsonFile(USAGE_COUNTS_PATH, { months: {} });
+    addUsage(store, { at: new Date(), tenantId: session.tenantId || DEFAULT_TENANT_ID, username: session.username, ...hit });
+    writeJsonFile(USAGE_COUNTS_PATH, store);
+  } catch (error) {
+    console.warn(`[Usage] could not record ${requestUrl.pathname}: ${error.message}`);
+  }
+}
+
+/**
+ * GET /api/usage/summary?period=month|last_month|year|all
+ * El administrador de una firma ve su firma; un administrador de la app, todas. Nunca costos.
+ */
+async function handleUsageSummary(req, res, requestUrl) {
+  const session = req.user || getSession(req);
+  if (session?.role !== "admin" && session?.role !== "firm_admin") {
+    sendJson(res, 403, { error: "Only the firm administrator can see usage." });
+    return;
+  }
+  const tenantId = session.role === "admin"
+    ? (String(requestUrl.searchParams.get("tenant") || "").trim().toLowerCase() || null)
+    : String(session.tenantId || DEFAULT_TENANT_ID);
+  const users = readUserStore().users
+    .filter((u) => u && u.username && normalizeUserRole(u.role, u.username) !== "admin")
+    .map((u) => ({ username: u.username, displayName: u.displayName || u.username, tenantId: String(u.tenantId || DEFAULT_TENANT_ID) }));
+  const store = readJsonFile(USAGE_COUNTS_PATH, { months: {} });
+  const summary = summarizeUsage(store, { tenantId, period: requestUrl.searchParams.get("period") || "month", users });
+  sendJson(res, 200, { ...summary, tenantId });
+}
+
+const FIRM_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
+
+function readFirmDriveStore() {
+  const store = readJsonFile(FIRM_DRIVE_PATH, { firms: {} });
+  return store && typeof store.firms === "object" && store.firms ? store : { firms: {} };
+}
+
+function firmDriveFor(tenantId) {
+  return readFirmDriveStore().firms[String(tenantId || DEFAULT_TENANT_ID)] || null;
+}
+
+function saveFirmDrive(tenantId, config) {
+  const store = readFirmDriveStore();
+  const key = String(tenantId || DEFAULT_TENANT_ID);
+  if (config) store.firms[key] = config;
+  else delete store.firms[key];
+  writeJsonFile(FIRM_DRIVE_PATH, store);
+}
+
+function driveError(res, data, fallback) {
+  return Object.assign(new Error(data?.error?.message || fallback), { statusCode: res.status });
+}
+
+async function createDriveFolder(username, name) {
+  const res = await googleApiFetch("https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink&supportsAllDrives=true", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, mimeType: FIRM_DRIVE_FOLDER_MIME }),
+  }, username);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) throw driveError(res, data, "Google Drive could not create the folder.");
+  return { id: data.id, name: data.name || name, url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}` };
+}
+
+async function driveFolderUsable(username, folderId) {
+  const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id,trashed&supportsAllDrives=true`, {}, username);
+  if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  return Boolean(data.id) && !data.trashed;
+}
+
+async function uploadFileToDrive(username, folderId, fileName, buffer, mimeType) {
+  const { body, contentType } = driveMultipartBody({ name: fileName, parents: [folderId], mimeType }, buffer, mimeType);
+  const res = await googleApiFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink", {
+    method: "POST",
+    headers: { "content-type": contentType },
+    body,
+  }, username);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) throw driveError(res, data, `Google Drive upload failed (HTTP ${res.status}).`);
+  return { id: data.id, name: data.name || fileName, url: data.webViewLink || "" };
+}
+
+/**
+ * GET  /api/firm-drive            estado de la carpeta de la firma
+ * POST /api/firm-drive/setup      el firm_admin crea (o reutiliza) la carpeta en su Drive
+ * POST /api/firm-drive/disconnect deja de guardar en Drive (no borra la carpeta ni los archivos)
+ */
+async function handleFirmDriveApi(req, res, requestUrl) {
+  const session = req.user || getSession(req);
+  const tenantId = String(session?.tenantId || DEFAULT_TENANT_ID);
+  const isFirmAdmin = session?.role === "firm_admin";
+  const route = requestUrl.pathname;
+
+  if (req.method === "GET" && route === "/api/firm-drive") {
+    const config = firmDriveFor(tenantId);
+    const tokens = session?.username ? readGoogleTokens(session.username) : null;
+    sendJson(res, 200, {
+      enabled: isGoogleDriveEnabled(),
+      configured: Boolean(config?.folderId),
+      folderName: config?.folderName || "",
+      folderUrl: config?.folderUrl || "",
+      connectedBy: config?.ownerDisplayName || "",
+      isOwner: Boolean(config && config.ownerUsername === session?.username),
+      canManage: isFirmAdmin,
+      googleConnected: Boolean(tokens && googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE)),
+      lastUploadAt: config?.lastUploadAt || null,
+      lastError: isFirmAdmin ? (config?.lastError || "") : "",
+    });
+    return;
+  }
+
+  if (req.method === "POST" && route === "/api/firm-drive/setup") {
+    if (!isFirmAdmin) { sendJson(res, 403, { error: "Only the firm administrator can set up the firm's Google Drive folder." }); return; }
+    if (!isGoogleDriveEnabled()) { sendJson(res, 503, { error: "Google is not configured on this server." }); return; }
+    const tokens = readGoogleTokens(session.username);
+    if (!tokens || !googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE)) {
+      sendJson(res, 409, { code: "GOOGLE_NOT_CONNECTED", error: "Connect your Google account first." });
+      return;
+    }
+    try {
+      const existing = firmDriveFor(tenantId);
+      const reuse = existing?.folderId && existing.ownerUsername === session.username
+        && await driveFolderUsable(session.username, existing.folderId).catch(() => false);
+      const folder = reuse
+        ? { id: existing.folderId, name: existing.folderName, url: existing.folderUrl }
+        : await createDriveFolder(session.username, REVIEW_FOLDER_NAME);
+      const now = new Date().toISOString();
+      saveFirmDrive(tenantId, {
+        folderId: folder.id,
+        folderName: folder.name,
+        folderUrl: folder.url,
+        ownerUsername: session.username,
+        ownerDisplayName: session.displayName || session.username,
+        configuredAt: existing?.configuredAt || now,
+        updatedAt: now,
+        lastUploadAt: existing?.lastUploadAt || null,
+        lastError: "",
+      });
+      appendAuditLog(req, "firm_drive.configured", { tenantId, folderId: folder.id, reused: Boolean(reuse) });
+      sendJson(res, 200, { ok: true, folderName: folder.name, folderUrl: folder.url });
+    } catch (error) {
+      sendJson(res, error.statusCode === 401 ? 409 : 502, { error: error.message || "Google Drive could not be set up." });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && route === "/api/firm-drive/disconnect") {
+    if (!isFirmAdmin && session?.role !== "admin") { sendJson(res, 403, { error: "Only the firm administrator can change this." }); return; }
+    saveFirmDrive(tenantId, null);
+    appendAuditLog(req, "firm_drive.disconnected", { tenantId });
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  sendJson(res, 405, { error: "Method not allowed." });
+}
+
+/**
+ * POST /api/review/drive-upload { baseName, localStamp, contentBase64 }
+ * Guarda el Word de una revision en la carpeta de Drive de la firma del usuario, con la cuenta
+ * de Google del firm_admin que la configuro. Siempre responde 200: el navegador ya descargo la
+ * copia local, y lo unico que tiene que saber es si tambien quedo en Drive.
+ */
+async function handleReviewDriveUpload(req, res) {
+  const session = req.user || getSession(req);
+  const tenantId = String(session?.tenantId || DEFAULT_TENANT_ID);
+  const config = firmDriveFor(tenantId);
+  if (!config?.folderId) { sendJson(res, 200, { ok: false, skipped: true }); return; }
+  const payload = await readJsonBody(req);
+  const buffer = Buffer.from(String(payload.contentBase64 || ""), "base64");
+  if (!buffer.length) { sendJson(res, 400, { ok: false, error: "The review file is empty." }); return; }
+  if (buffer.length > MAX_UPLOAD_BYTES) { sendJson(res, 413, { ok: false, error: "The review file is too large to save to Google Drive." }); return; }
+  const fileName = reviewDriveFileName(payload.baseName, session.displayName || session.username, payload.localStamp);
+  let current = { ...config };
+  try {
+    let file;
+    try {
+      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME);
+    } catch (error) {
+      // La carpeta se borro: se crea otra en el mismo Drive y se reintenta una vez.
+      if (error.statusCode !== 404) throw error;
+      const folder = await createDriveFolder(current.ownerUsername, REVIEW_FOLDER_NAME);
+      current = { ...current, folderId: folder.id, folderName: folder.name, folderUrl: folder.url };
+      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME);
+    }
+    saveFirmDrive(tenantId, { ...current, lastUploadAt: new Date().toISOString(), lastError: "" });
+    appendAuditLog(req, "firm_drive.review_uploaded", { tenantId, fileId: file.id });
+    sendJson(res, 200, { ok: true, fileName, fileUrl: file.url, folderUrl: current.folderUrl });
+  } catch (error) {
+    const message = error.statusCode === 401
+      ? "The firm's Google Drive connection expired. The firm administrator has to reconnect Google."
+      : (error.message || "Google Drive upload failed.");
+    saveFirmDrive(tenantId, { ...current, lastError: `${new Date().toISOString().slice(0, 10)}: ${message}` });
+    console.warn(`[FirmDrive] upload for ${tenantId} failed: ${message}`);
+    sendJson(res, 200, { ok: false, error: message });
+  }
+}
+
 function parseDriveFileTypes(value) {
   return String(value || "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
 }
@@ -7933,9 +8174,6 @@ function requireUserSpendBudget(req, res) {
   sendJson(res, 402, {
     code: "USER_SPEND_LIMIT_REACHED",
     error: "Action limit reached for this account. Ask an administrator to increase your token budget before running more AI actions.",
-    spendLimitUsd: budget.limitUsd,
-    spendUsedUsd: budget.usedUsd,
-    remainingUsd: budget.remainingUsd,
   });
   return false;
 }
@@ -8169,6 +8407,9 @@ async function handleCreditsApi(req, res, requestUrl) {
 }
 
 async function handleCostApi(req, res, requestUrl) {
+  // Costs, estimated ones included, are for the app's owners only.
+  if (!requireAdmin(req, res)) return;
+
   if (req.method === "GET" && requestUrl.pathname === "/api/cost/estimate") {
     sendJson(res, 200, estimateCost({
       action: requestUrl.searchParams.get("action") || "review",
@@ -8179,8 +8420,6 @@ async function handleCostApi(req, res, requestUrl) {
     }));
     return;
   }
-
-  if (!requireAdmin(req, res)) return;
 
   if (req.method === "GET" && requestUrl.pathname === "/api/cost/log") {
     const entries = filterCostEntries(readCostLog().entries || [], requestUrl.searchParams)
