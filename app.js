@@ -4385,6 +4385,9 @@ async function openAdminDashboard() {
   ["adminFirmUsageShell", "adminFirmDriveShell"].forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isFirmAdmin; });
   const intro = document.getElementById("adminDashboardIntro");
   if (intro && isFirmAdmin) intro.textContent = "Create your firm's users, see how much each tab is used, and manage access.";
+  // The header button logs a global admin out (the app is not theirs to use); a firm
+  // administrator works in the app, so for them it goes back to it.
+  if (els.closeAdminDashboardButton) els.closeAdminDashboardButton.textContent = isFirmAdmin ? "Back to app" : "Logout";
   if (isFirmAdmin) wireFirmAdminPanels();
   await Promise.all([
     ...(isGlobalAdmin ? [
@@ -4583,15 +4586,22 @@ function renderAdminUsers(users) {
     const limit = user.spendLimitUsd ?? "";
     const usedUsd = Number(user.spendUsedUsd || 0);
     const grouped = Boolean(user.budgetGroupId && user.budgetGroupName);
-    const limitUsd = grouped ? Number(user.budgetGroupLimitUsd || 0) : Number(user.spendLimitUsd || 0);
+    const limitUsd = grouped ? Number(user.budgetGroupLimitUsd || 0) : Number(user.spendPoolLimitUsd ?? user.spendLimitUsd ?? 0);
     const hasLimit = grouped || user.spendHasLimit;
+    // A budget several people pay from (a group, or a firm admin's budget shared with their
+    // firm) says so, and also shows what this person spent themselves.
+    const sharedLabel = grouped ? user.budgetGroupName
+      : user.budgetSharedFrom ? `firm budget of ${user.budgetSharedFrom}`
+      : Number(user.budgetPoolMembers || 0) > 1 ? `firm budget · ${user.budgetPoolMembers} users`
+      : "";
     // Three amounts run together as one grey sentence took a second read to compare. Split
     // into labelled figures with a bar, "who is close to their limit" is answerable at a glance.
     const figures = hasLimit
-      ? `<span>Used <strong>${escapeHtml(formatUsd(usedUsd))}</strong></span>
+      ? `<span>${sharedLabel ? "Shared used" : "Used"} <strong>${escapeHtml(formatUsd(usedUsd))}</strong></span>
          <span>Limit <strong>${escapeHtml(formatUsd(limitUsd))}</strong></span>
          <span>Left <strong>${escapeHtml(formatUsd(user.spendRemainingUsd || 0))}</strong></span>
-         ${grouped ? `<span class="admin-user-nolimit">shared · ${escapeHtml(user.budgetGroupName)}</span>` : ""}`
+         ${sharedLabel ? `<span>Own <strong>${escapeHtml(formatUsd(Number(user.spendOwnUsedUsd || 0)))}</strong></span>
+         <span class="admin-user-nolimit">shared · ${escapeHtml(sharedLabel)}</span>` : ""}`
       : `<span>Used <strong>${escapeHtml(formatUsd(usedUsd))}</strong></span><span class="admin-user-nolimit">No limit</span>`;
     const ratio = hasLimit && limitUsd > 0 ? Math.min(100, Math.round((usedUsd / limitUsd) * 100)) : 0;
     const meterClass = ratio >= 100 ? " is-over" : ratio >= 80 ? " is-high" : "";
@@ -4639,7 +4649,7 @@ function renderAdminUsers(users) {
         ${showSpend ? `
         <label>
           <span>Individual budget USD</span>
-          <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="No limit" ${user.budgetGroupId ? 'title="Overridden by group budget"' : ""} />
+          <input data-admin-limit="${escapeHtml(username)}" type="number" min="0" step="0.01" value="${escapeHtml(String(limit))}" placeholder="${user.budgetSharedFrom ? "Shared firm budget" : "No limit"}" ${user.budgetGroupId ? 'title="Overridden by group budget"' : user.budgetSharedFrom ? `title="Shares the firm budget of ${escapeHtml(user.budgetSharedFrom)}. An amount here gives this user a budget of their own."` : ""} />
         </label>` : ""}
         <div class="admin-user-actions">
           <button class="ghost-button small-button" type="button" data-admin-save="${escapeHtml(username)}">Save</button>

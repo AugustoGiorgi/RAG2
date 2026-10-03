@@ -37,6 +37,7 @@ const { identityInventoryRows } = require("./lib/identity-inventory");
 const { checkboxInventoryRows, questionKey: checkboxQuestionKey } = require("./lib/checkbox-inventory");
 const { usageActionFor, addUsage, summarizeUsage } = require("./lib/usage-log");
 const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, driveMultipartBody } = require("./lib/firm-drive");
+const { budgetPools } = require("./lib/spend-budget");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -4905,14 +4906,12 @@ async function handleAdminBudgetGroupsApi(req, res, requestUrl) {
   if (parts.length === 3 && req.method === "GET") {
     const store = readUserStore();
     const costEntries = readCostLog().entries || [];
+    // Same totals the limit enforces: they include users sharing a grouped firm admin's budget.
+    const pools = spendBudgetPools({ store, costEntries });
     const groups = (store.budgetGroups || []).map((g) => {
       const members = store.users.filter((u) => u.budgetGroupId === g.id);
       const memberUsernames = members.map((u) => u.username);
-      const usedUsd = roundMoney(costEntries
-        .filter((e) => memberUsernames.includes(e.username))
-        .reduce((sum, e) => sum + entryTotalCost(e), 0));
-      const limitUsd = sanitizeSpendLimit(g.limitUsd);
-      const remainingUsd = limitUsd !== null ? roundMoney(Math.max(0, limitUsd - usedUsd)) : null;
+      const { limitUsd, usedUsd, remainingUsd } = pools.forGroup(g.id);
       return { id: g.id, name: g.name, limitUsd, usedUsd, remainingUsd, memberCount: members.length, memberUsernames, createdAt: g.createdAt || "" };
     });
     sendJson(res, 200, { budgetGroups: groups });
@@ -5212,6 +5211,12 @@ function publicUser(user, preloaded = {}) {
     spendUsedUsd: budget.usedUsd,
     spendRemainingUsd: budget.remainingUsd,
     spendHasLimit: budget.hasLimit,
+    // The limit of whichever budget pays (own, group or the firm's shared one), what this
+    // user spent themselves, whose firm budget they share and how many people pay from it.
+    spendPoolLimitUsd: budget.limitUsd,
+    spendOwnUsedUsd: budget.ownUsedUsd,
+    budgetSharedFrom: budget.sharedFromName || null,
+    budgetPoolMembers: budget.poolMembers,
     budgetGroupId: user.budgetGroupId || null,
     budgetGroupName: budget.budgetGroupName || null,
     budgetGroupLimitUsd: budget.budgetGroupId ? budget.limitUsd : null,
@@ -5255,36 +5260,24 @@ function entryTotalCost(entry = {}) {
 
 // preloaded = { store, costEntries } — pass when computing budgets for multiple users in
 // one request so the caller can read both files once instead of once per user.
-function userSpendBudget(username, preloaded = {}) {
-  const store = preloaded.store || readUserStore();
-  const costEntries = preloaded.costEntries || readCostLog().entries || [];
-  const user = store.users.find((item) => item.username === username);
-
-  // If the user belongs to a budget group, aggregate spending across all members.
-  if (user?.budgetGroupId) {
-    const group = (store.budgetGroups || []).find((g) => g.id === user.budgetGroupId);
-    if (group) {
-      const memberUsernames = store.users
-        .filter((u) => u.budgetGroupId === group.id)
-        .map((u) => u.username);
-      const usedUsd = roundMoney(costEntries
-        .filter((entry) => memberUsernames.includes(entry.username))
-        .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
-      const limitUsd = sanitizeSpendLimit(group.limitUsd);
-      const hasLimit = limitUsd !== null;
-      const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
-      return { hasLimit, limitUsd, usedUsd, remainingUsd, budgetGroupId: group.id, budgetGroupName: group.name };
-    }
+// Group, own limit, or the firm admin's budget shared by the firm (lib/spend-budget.js).
+function spendBudgetPools(preloaded = {}) {
+  if (!preloaded.pools) {
+    const store = preloaded.store || readUserStore();
+    const costEntries = preloaded.costEntries || readCostLog().entries || [];
+    preloaded.pools = budgetPools({ users: store.users, budgetGroups: store.budgetGroups, costEntries }, {
+      costOf: entryTotalCost,
+      round: roundMoney,
+      limitOf: sanitizeSpendLimit,
+      roleOf: (user) => normalizeUserRole(user.role, user.username),
+      defaultTenantId: DEFAULT_TENANT_ID,
+    });
   }
+  return preloaded.pools;
+}
 
-  // Individual budget — original behavior.
-  const limitUsd = user?.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd);
-  const usedUsd = roundMoney(costEntries
-    .filter((entry) => entry.username === username)
-    .reduce((sum, entry) => sum + entryTotalCost(entry), 0));
-  const hasLimit = limitUsd !== null;
-  const remainingUsd = hasLimit ? roundMoney(Math.max(0, Number(limitUsd || 0) - usedUsd)) : null;
-  return { hasLimit, limitUsd, usedUsd, remainingUsd };
+function userSpendBudget(username, preloaded = {}) {
+  return spendBudgetPools(preloaded).forUser(username);
 }
 
 function createPasswordHash(password) {
@@ -5647,8 +5640,15 @@ async function hydrateUsersFromDatabase() {
       order by created_at nulls last, username`,
   );
   if (!result.rows.length) return;
+  // The table has columns for only part of a user. The rest — budget groups and who belongs
+  // to each — lives in the users.json snapshot restored just before: keep it, with the table
+  // winning on its columns, or every boot (so every deploy) would erase it.
+  const snapshot = readUserStore();
+  const previous = new Map(snapshot.users.map((user) => [user.username, user]));
   writeJsonFile(USERS_PATH, {
+    budgetGroups: snapshot.budgetGroups,
     users: result.rows.map((row) => ({
+      ...previous.get(row.username),
       username: row.username,
       passwordHash: row.password_hash,
       tenantId: row.tenant_id || DEFAULT_TENANT_ID,
@@ -8171,9 +8171,13 @@ function requireUserSpendBudget(req, res) {
   const budget = userSpendBudget(session?.username);
   if (!budget.hasLimit) return true;
   if (budget.remainingUsd > 0) return true;
+  // A firm's shared budget is raised by the app's owners, not by the firm admin.
+  const firmShared = Boolean(budget.sharedFromUsername) || (budget.poolMembers > 1 && !budget.budgetGroupId);
   sendJson(res, 402, {
     code: "USER_SPEND_LIMIT_REACHED",
-    error: "Action limit reached for this account. Ask an administrator to increase your token budget before running more AI actions.",
+    error: firmShared
+      ? "Your firm has reached its action limit. Contact RAG Tax AI to increase it."
+      : "Action limit reached for this account. Ask an administrator to increase your token budget before running more AI actions.",
   });
   return false;
 }
