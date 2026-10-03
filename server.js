@@ -5655,12 +5655,22 @@ async function hydrateUsersFromDatabase() {
       role: normalizeUserRole(row.role, row.username),
       displayName: row.display_name || row.username,
       active: row.active !== false,
-      spendLimitUsd: row.spend_limit_usd === null ? null : Number(row.spend_limit_usd),
+      spendLimitUsd: hydratedSpendLimit(row.spend_limit_usd, previous.get(row.username)),
       createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
       updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
       lastPasswordChangeAt: row.last_password_change_at ? new Date(row.last_password_change_at).toISOString() : "",
     })),
   });
+}
+
+// "No limit" used to be saved to the table as 0 (Number(null) is 0), so after a restart those
+// users were blocked at 0 USD. The snapshot is written by the same save just before the
+// table: when it says no limit for a user the table has at 0, the snapshot is right.
+function hydratedSpendLimit(columnValue, previousUser) {
+  if (columnValue === null || columnValue === undefined) return null;
+  const limit = Number(columnValue);
+  if (limit === 0 && previousUser && sanitizeSpendLimit(previousUser.spendLimitUsd) === null) return null;
+  return limit;
 }
 
 async function hydrateCostLogFromDatabase() {
@@ -5787,7 +5797,8 @@ async function syncUsersToDatabase(store) {
         normalizeUserRole(user.role, user.username),
         String(user.displayName || user.username),
         user.active !== false,
-        user.spendLimitUsd === undefined ? null : sqlNumber(user.spendLimitUsd),
+        // null must stay null ("no limit"): sqlNumber(null) is 0, a 0 USD limit.
+        sanitizeSpendLimit(user.spendLimitUsd),
         sqlTimestamp(user.createdAt),
         sqlTimestamp(user.updatedAt),
         sqlTimestamp(user.lastPasswordChangeAt),
