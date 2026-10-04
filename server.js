@@ -38,6 +38,7 @@ const { checkboxInventoryRows, questionKey: checkboxQuestionKey } = require("./l
 const { usageActionFor, addUsage, summarizeUsage } = require("./lib/usage-log");
 const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, driveMultipartBody } = require("./lib/firm-drive");
 const { budgetPools } = require("./lib/spend-budget");
+const { stripCostData } = require("./lib/cost-privacy");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -909,6 +910,8 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (req.method === "GET" && requestUrl.pathname === "/terms") { serveEula(res); return; }
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
+    // Only a global admin's responses keep what a run cost (see costSafePayload).
+    res._costViewer = (req.user || getSession(req))?.role === "admin";
     if (!requireFineGrainedRateLimit(req, res, requestUrl)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
@@ -14146,17 +14149,13 @@ async function handleResearchChat(req, res) {
   const nextHistory = [...history, { role: "user", content: question }, { role: "assistant", content: answer }].slice(-20);
   researchHistories.set(username, nextHistory);
   logClaudeCost(req, result, "research", "research", { context: payload.context || {}, question }, startedAt);
-  const usage = result.data.usage || {};
-  const cost = calculateCost(usage, result.data.model || result.model);
+  // No token counts or cost here: this answer goes to the user's browser, and what a run
+  // costs is in the cost log, for the app's owners.
   sendJson(res, 200, {
     answer,
     thinking,
     sources,
     model: result.data.model || result.model,
-    inputTokens: Number(usage.input_tokens || 0),
-    outputTokens: Number(usage.output_tokens || 0),
-    thinkingTokens: Number(usage.output_tokens || 0),
-    totalCost: cost.totalCost,
     webSearchUsed,
   });
 }
@@ -17625,7 +17624,20 @@ function sendJson(res, statusCode, payload) {
     ...corsHeaders(res),
   };
   res.writeHead(statusCode, headers);
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(costSafePayload(res, payload)));
+}
+
+// What a run cost never leaves for anyone but a global admin (lib/cost-privacy.js); the
+// router marks their responses with _costViewer. If the filter itself ever failed, the
+// response still goes out as it was: a broken app is worse than the leak it had before.
+function costSafePayload(res, payload) {
+  if (res._costViewer) return payload;
+  try {
+    return stripCostData(payload);
+  } catch (error) {
+    console.warn("[Cost privacy] filter failed; response sent unfiltered:", error.message);
+    return payload;
+  }
 }
 
 // Long AI calls (review, workpaper) can run longer than the reverse proxy's read timeout,
@@ -17653,7 +17665,7 @@ function startHeartbeatResponse(res) {
 function endHeartbeatResponse(res, payload) {
   if (res._heartbeatTimer) { clearInterval(res._heartbeatTimer); res._heartbeatTimer = null; }
   res._heartbeatActive = false;
-  try { res.end(JSON.stringify(payload)); } catch (_) {}
+  try { res.end(JSON.stringify(costSafePayload(res, payload))); } catch (_) {}
 }
 
 function sendCorsPreflight(res) {
