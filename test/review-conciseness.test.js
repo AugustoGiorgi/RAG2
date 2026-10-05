@@ -81,3 +81,24 @@ test("un HIGH conserva su riesgo, recortado a una frase", () => {
   assert.match(final.issues[0].riskAnalysis, /The deduction was never reduced/);
   assert.doesNotMatch(final.issues[0].riskAnalysis, /a third one/);
 });
+
+// Un hallazgo real quedo cortado en el "CORP." del nombre de una empresa y perdio de que se trataba:
+// el recorte por largo tomaba el punto de la abreviatura como fin de oracion. Nombres ficticios.
+test("el recorte por largo no corta en el punto de una abreviatura", () => {
+  const text = "Schedule E Part II reports SAMPLE HOLDINGS LLC (S corporation, EIN 00-1111111); EXAMPLE ADVISORY LLC (S corporation, EIN 00-2222222); "
+    + "SAMPLE TRANSPORT CORP. (S corporation, EIN 00-3333333); EXAMPLE ADVISORY LLC (S corporation, EIN 00-4444444), but no Schedule K-1 from them is in the package, "
+    + "so every figure carried from those K-1s — income, W-2 wages for the QBI deduction, credits, distributions and basis — cannot be tied to its source.";
+  const review = { issues: [issue({ issueDescription: text })] };
+  enforceReviewConciseness(review);
+  const out = review.issues[0].issueDescription;
+  assert.match(out, /but no Schedule K-1 from them is in the package/, "lo que el hallazgo dice tiene que quedar");
+  assert.doesNotMatch(out, /CORP\.$/);
+  assert.ok(out.length <= 321, "y sigue respetando el largo maximo");
+});
+
+test("el recorte por largo sigue cortando en un fin de oracion de verdad", () => {
+  const first = `The return reports the full amount on line 12 and the workpaper shows a different figure for the same account, which leaves the line out of balance by the difference between them and has to be corrected before filing the return with the agency.`;
+  const review = { issues: [issue({ issueDescription: `${first} ${"Then a long tail that goes past the limit and should be dropped entirely ".repeat(3)}.` })] };
+  enforceReviewConciseness(review);
+  assert.strictEqual(review.issues[0].issueDescription, first);
+});

@@ -58,6 +58,25 @@ test("checkbox: sin un 'should be' no se cuenta como cambio", () => {
   assert.strictEqual(checkboxLabel([box("No", ""), box("No", "Yes")]), "2 reviewed · 1 to change · 50% correct");
 });
 
+// Una review real marco "1 to change" sin que hubiera nada que cambiar: la misma casilla
+// descripta con mas palabras de un lado que del otro.
+test("checkbox: el mismo estado dicho con mas palabras no es un cambio", () => {
+  const rows = [box("Standard deduction $15,750 elected", "Standard deduction"), box("Single", "Single (confirm still accurate)"), box("No", "No")];
+  assert.strictEqual(checkboxLabel(rows), "3 reviewed · 0 to change · 100% correct");
+});
+
+test("checkbox: un estado distinto sigue siendo un cambio aunque comparta palabras", () => {
+  const rows = [
+    box("Itemized deductions elected instead of standard deduction", "Standard deduction"),
+    box("Cash", "Accrual"),
+    box("Married filing jointly", "Married filing separately"),
+    box("A", "Accrual"),
+    box("Cash", "Cashier's check"),
+    box("No", "Yes (prior year) — confirm"),
+  ];
+  assert.strictEqual(checkboxLabel(rows), "6 reviewed · 6 to change · 0% correct");
+});
+
 // La review resume lo que esta bien en una fila final de alcance, con la cantidad: esa fila
 // cuenta por lo que dice, no como una casilla mas. Su cantidad ya incluye las casillas correctas
 // listadas arriba, asi que no se suman dos veces.

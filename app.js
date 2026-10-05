@@ -9056,15 +9056,26 @@ const REQUIRED_CLARITY = 0.6;
  * column heading answers every question below it, and there the tick often lands on its own
  * text line, several lines away from the sentence it answers.
  *
+ * A third shape turned up on two-column state forms (NY IT-201, items B, C and D1). There the
+ * box is drawn a few units higher than the words beside it, which is enough for the tick to
+ * land on the text line ABOVE — next to the other column's sentence — leaving its own
+ * question reading "Yes No" with no answer. A review read one of those as Yes and reported a
+ * box to change that was marked No. Such a tick answers the question just below it when it
+ * sits within MAX_TICK_RISE of that question's own Yes/No and clearly beside one of them.
+ *
  * Purely additive: no line is removed, reordered or rewritten, so every other reader of this
  * text sees exactly what it saw before plus the answer.
  */
+const MAX_TICK_RISE = 7;
 function annotateYesNoAnswers(lines, rendered) {
+  const itemOf = (line, word) => line.items.find((item) => item.str.trim().toLowerCase() === word) || null;
   const columnOf = (line, word) => {
-    const hit = line.items.find((item) => item.str.trim().toLowerCase() === word);
+    const hit = itemOf(line, word);
     return hit ? hit.transform[4] : null;
   };
   const ticksOn = (line) => line.items.filter((item) => CHECK_MARK.test(item.str.trim()));
+  // The ticks that already answered a question, so that none answers two.
+  const used = new Set();
   const answer = (x, yesX, noX) => {
     const spacing = Math.abs(noX - yesX);
     if (!spacing) return null;
@@ -9078,6 +9089,24 @@ function annotateYesNoAnswers(lines, rendered) {
     return toYes <= toNo ? "Yes" : "No";
   };
 
+  // The tick a hair above a question's own "Yes No", on one of the two text lines before it.
+  const answerFromAbove = (index) => {
+    if (!rendered[index].includes("?")) return;
+    const yes = itemOf(lines[index], "yes");
+    const no = itemOf(lines[index], "no");
+    for (let back = index - 1; back >= 0 && back >= index - 2; back -= 1) {
+      for (const tick of ticksOn(lines[back])) {
+        const rise = tick.transform[5] - yes.transform[5];
+        if (used.has(tick) || rise <= 0 || rise > MAX_TICK_RISE) continue;
+        const said = answer(tick.transform[4], yes.transform[4], no.transform[4]);
+        if (!said) continue;
+        used.add(tick);
+        rendered[index] += ` [ANSWER: ${said}]`;
+        return;
+      }
+    }
+  };
+
   let heading = null;
   lines.forEach((line, index) => {
     const yesX = columnOf(line, "yes");
@@ -9087,8 +9116,10 @@ function annotateYesNoAnswers(lines, rendered) {
       // A tick under a column heading. It may sit on the question's own line or, when the
       // form prints the box a hair lower than the sentence, on a line all of its own.
       if (!heading || !ticks.length) return;
-      const said = ticks.map((tick) => answer(tick.transform[4], heading.yesX, heading.noX)).find(Boolean);
-      if (!said) return;
+      const hit = ticks.find((tick) => answer(tick.transform[4], heading.yesX, heading.noX));
+      if (!hit) return;
+      const said = answer(hit.transform[4], heading.yesX, heading.noX);
+      used.add(hit);
       const hasWords = /[A-Za-z]{3}/.test(rendered[index]);
       const target = hasWords ? index : lastIndexWithWords(rendered, index);
       if (target !== -1) rendered[target] += ` [ANSWER: ${said}]`;
@@ -9096,10 +9127,16 @@ function annotateYesNoAnswers(lines, rendered) {
     }
     if (ticks.length) {
       // Inline "Yes X No": the question and its answer on one line, no heading involved.
-      const said = ticks.map((tick) => answer(tick.transform[4], yesX, noX)).find(Boolean);
-      if (said) rendered[index] += ` [ANSWER: ${said}]`;
+      const hit = ticks.find((tick) => answer(tick.transform[4], yesX, noX));
+      if (hit) {
+        used.add(hit);
+        rendered[index] += ` [ANSWER: ${answer(hit.transform[4], yesX, noX)}]`;
+      } else {
+        answerFromAbove(index);
+      }
       return;
     }
+    answerFromAbove(index);
     heading = { yesX, noX };
   });
 }
@@ -10813,6 +10850,10 @@ function reviewInfoMatchLabel(rows) {
 // Whether a checkbox has to change: its current state differs from what it should be.
 // "Yes", "Checked" or "X" all read as checked, and "No", "Unchecked" or blank as unchecked.
 // A row without a "should be" value is not counted as a change.
+// Two wordings of the same state are not a change either: "Standard deduction $15,750 elected"
+// against "Standard deduction" was counted as a box to fix on a return that had none. It only
+// holds when one wording begins with the other, whole words: "Itemized instead of standard"
+// against "Standard" is still a change.
 function checkboxNeedsChange(currentState, shouldBe) {
   const norm = (value) => {
     const s = safeText(value).trim().toLowerCase().replace(/\s+/g, " ").replace(/[.;:,]+$/, "");
@@ -10821,7 +10862,13 @@ function checkboxNeedsChange(currentState, shouldBe) {
     return s;
   };
   if (!safeText(shouldBe).trim()) return false;
-  return norm(currentState) !== norm(shouldBe);
+  const now = norm(currentState);
+  const want = norm(shouldBe);
+  if (now === want) return false;
+  const worded = (s) => s !== "checked" && s !== "unchecked";
+  const beginsWith = (long, short) => short.length >= 3 && long.startsWith(short) && !/[a-z0-9]/.test(long.charAt(short.length));
+  if (worded(now) && worded(want) && (beginsWith(now, want) || beginsWith(want, now))) return false;
+  return true;
 }
 
 // The checkbox review in numbers: the listed boxes split into those to fix and those that are

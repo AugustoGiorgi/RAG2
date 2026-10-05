@@ -135,3 +135,87 @@ test("la tilde que cae en el medio no se responde", () => {
   ] };
   assert.deepStrictEqual(pdfPageLines(content), ["Yes X No Email: SOMEONE@EXAMPLE.COM"]);
 });
+
+/* --- La tilde que queda un renglon ARRIBA de su propio "Yes No" -----------------
+ * Formularios estatales a dos columnas: la casilla se dibuja unas unidades mas alta que las
+ * palabras y la tilde cae en el renglon de arriba, junto al texto de la otra columna. Una
+ * revision real leyo una de esas como Yes y pidio cambiar una casilla que estaba en No. */
+
+test("dos columnas: la tilde un pelo arriba de su Yes/No responde esa pregunta", () => {
+  const content = { items: [
+    // Columna derecha, pregunta D1; su tilde cae en el renglon del estado civil (izquierda).
+    item("D1 Did you have a financial account located", 329, 527),
+    item("A", 36, 523), item("Filing", 51, 523), item("X", 118, 520), item("Single", 132, 520), item("X", 565, 521),
+    item("in a foreign country?", 329, 519), item("Yes", 503, 518), item("No", 547, 518),
+    // Columna izquierda, pregunta B; su tilde queda sola en un renglon propio.
+    item("B Did you itemize your deductions on", 36, 405),
+    item("X", 280, 400),
+    item("your federal income tax return?", 54, 396), item("Yes", 218, 396), item("No", 261, 396),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), [
+    "D1 Did you have a financial account located",
+    "A Filing X Single X",
+    "in a foreign country? Yes No [ANSWER: No]",
+    "B Did you itemize your deductions on",
+    "X",
+    "your federal income tax return? Yes No [ANSWER: No]",
+  ]);
+});
+
+test("dos columnas: la tilde de otra pregunta no se toma prestada", () => {
+  const content = { items: [
+    // La X es de la casilla del estado civil (columna izquierda): cae en el renglon de esta
+    // pregunta, lejos de su Yes/No, y no la contesta.
+    item("Married filing joint return", 132, 500), item("X", 118, 496),
+    item("quarters in Sampletown for any part of the year?", 329, 493), item("Yes", 503, 493), item("No", 547, 493),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), [
+    "Married filing joint return",
+    "X quarters in Sampletown for any part of the year? Yes No",
+  ]);
+});
+
+test("dos columnas: mas arriba de unas pocas unidades ya es otro renglon del formulario", () => {
+  const content = { items: [
+    item("Some other line of the form", 54, 412), item("X", 280, 412),
+    item("your federal income tax return?", 54, 396), item("Yes", 218, 396), item("No", 261, 396),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), [
+    "Some other line of the form X",
+    "your federal income tax return? Yes No",
+  ]);
+});
+
+test("dos columnas: una tilde a mitad de camino sigue sin responderse", () => {
+  const content = { items: [
+    item("X", 240, 400),
+    item("your federal income tax return?", 54, 396), item("Yes", 218, 396), item("No", 261, 396),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), ["X", "your federal income tax return? Yes No"]);
+});
+
+test("dos columnas: una tilde contesta una sola pregunta", () => {
+  // La tilde ya respondio la pregunta de su propio renglon; la de abajo, con las mismas
+  // columnas, no la vuelve a usar.
+  const content = { items: [
+    item("Did you live there all year?", 54, 400), item("Yes", 218, 400), item("No", 261, 400), item("X", 280, 400),
+    item("Did you work there too?", 54, 396), item("Yes", 218, 396), item("No", 261, 396),
+  ] };
+  const lines = pdfPageLines(content);
+  assert.strictEqual(lines.filter((l) => l.includes("[ANSWER:")).length, 1);
+});
+
+test("el encabezado Yes/No de una columna no se responde con la tilde de arriba", () => {
+  // Sin signo de pregunta es un encabezado: sigue sirviendo para las tildes de abajo, igual
+  // que antes, y no se le pega la respuesta de un renglon anterior.
+  const content = { items: [
+    item("X", 562, 738),
+    item("Schedule B Other Information", 60, 734.9), item("Yes", 536.6, 734.9), item("No", 560.5, 734.9),
+    item("7a Did the partnership have a foreign account?", 60, 600), item("X", 562.8, 600),
+  ] };
+  assert.deepStrictEqual(pdfPageLines(content), [
+    "X",
+    "Schedule B Other Information Yes No",
+    "7a Did the partnership have a foreign account? X [ANSWER: No]",
+  ]);
+});

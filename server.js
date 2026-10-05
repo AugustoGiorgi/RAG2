@@ -12038,7 +12038,13 @@ function limitSentences(text, maxSentences, maxChars) {
   let out = sentences.slice(0, maxSentences).join(" ").replace(/\s+/g, " ").trim();
   if (maxChars && out.length > maxChars) {
     const clipped = out.slice(0, maxChars);
-    const lastStop = Math.max(clipped.lastIndexOf(". "), clipped.lastIndexOf("! "), clipped.lastIndexOf("? "));
+    // The last real sentence end inside the clip. The period of an abbreviation is not one:
+    // a finding listing "... ; SAMPLE TRANSPORT CORP. (S corporation, EIN ...), but no K-1
+    // from them is in the package" was cut at "CORP." and lost what the finding was about.
+    let lastStop = -1;
+    for (const stop of clipped.matchAll(/[.!?](?= )/g)) {
+      if (!abbrev.test(clipped.slice(0, stop.index + 1))) lastStop = stop.index;
+    }
     out = lastStop > maxChars * 0.5 ? clipped.slice(0, lastStop + 1) : clipped.replace(/\s+\S*$/, "") + "…";
   }
   return out;

@@ -240,6 +240,17 @@ test("ganancia de Schedule C sin Schedule SE ni deduccion QBI", () => {
   assert.deepStrictEqual(run(withForms, ic.checkQbiDeduction), []);
 });
 
+test("despues de un año negativo: el NOL de la linea 8a se lee con su punto final, y solo sin NOL avisa", () => {
+  const prior = prior1040({ l11: "-116,000." });
+  const s1 = (line8a) => ["SCHEDULE 1 Additional Income and Adjustments to Income", "8 Other income: SEE STMT 1", `a Net operating loss . . . . . . . . . . . . . 8a ${line8a}`];
+  assert.strictEqual(rf.schedule1(f1040({ extra: s1("( 180,000. )") })).nol, 180000, "con el punto que imprime el software");
+  assert.strictEqual(rf.schedule1(f1040({ extra: s1("( 180,000 )") })).nol, 180000, "y sin el");
+  assert.strictEqual(rf.schedule1(f1040({ extra: s1("( )") })).nol, null, "el renglon en blanco no es un importe");
+  assert.deepStrictEqual(run(pkg(f1040({ extra: s1("( 180,000. )") }), prior), ic.checkNolCarryover), [], "la declaracion que arrastra su NOL no se reporta");
+  const [missing] = run(pkg(f1040({ extra: s1("( )") }), prior), ic.checkNolCarryover);
+  assert.match(missing.title, /no net operating loss after a negative year/);
+});
+
 test("mayor de 65 sin la deduccion para seniors del Schedule 1-A", () => {
   const text = f1040({ boxes: "d You: X Were born before January 2, 1961 Are blind", l12: "33,100.", l11: "120,000." });
   const [f] = run(pkg(text), ic.checkSeniorDeduction);

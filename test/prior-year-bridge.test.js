@@ -155,6 +155,64 @@ test("sin W-2 de esa entidad, o sin sección pasiva, no inventa el hallazgo", ()
   assert.strictEqual(checkWagesFromPassiveEntity(text, []), null);
 });
 
+/* Una revision real informo una entidad con el EIN de otra y el sueldo de una tercera. Tres
+ * causas juntas: la declaracion se leia como si fuera un W-2 (trae un resumen estatal de W-2
+ * con el mismo rotulo), el ZIP entero se leia como un solo W-2, y el EIN se emparejaba con el
+ * nombre del renglon de al lado. Entidades y cifras ficticias. */
+const SCHEDULE_E_TWO_ENTITIES = `
+28                    (a) Name                                    for S    identification number
+A NORTHGATE HOLDINGS LLC                                           S           22-1111111               X
+B HARBORLINE ADVISORS LLC                                          S           47-3310582               X
+`;
+const w2Text = (ein, wages, label = "1 Wages, tips, other compensation    2 Federal income tax withheld") => `
+Form W-2 Wage and Tax Statement 2025
+  b Employer identification number (EIN)        ${label}
+                                                     ${wages}                            9000.00
+${ein}
+`;
+
+test("la declaracion no es un W-2 aunque traiga un resumen de W-2 con el mismo rotulo", () => {
+  const body = `U.S. Individual Income Tax Return\nYour first name and middle initial\n${CURRENT_8582_PASSIVE_ENTITY}\n${SCHEDULE_E_TWO_ENTITIES}\nSummary of W-2 Statements\nBox 1 Wages, tips, other compensation\n95000.00`;
+  const filed = currentReturn(body);
+  assert.strictEqual(checkWagesFromPassiveEntity(filed.text, [filed], new Set([filed])), null);
+  assert.strictEqual(checkWagesFromPassiveEntity(filed.text, [filed]), null, "ni siquiera sin que le digan cual es la declaracion");
+});
+
+test("el EIN de un W-2 se empareja con el nombre de su propio renglon, no con el del vecino", () => {
+  const text = `${CURRENT_8582_PASSIVE_ENTITY}\n${SCHEDULE_E_TWO_ENTITIES}`;
+  // El sueldo viene de NORTHGATE, que no es la pasiva: HARBORLINE esta en el renglon de abajo.
+  const fromNeighbour = { name: "W2 Northgate.pdf", reviewRole: "supporting_document", text: w2Text("22-1111111", "64000.00") };
+  assert.strictEqual(checkWagesFromPassiveEntity(text, [fromNeighbour]), null);
+});
+
+test("en un ZIP cada W-2 es un documento: cada EIN con su propio sueldo", () => {
+  const text = `${CURRENT_8582_PASSIVE_ENTITY}\n${SCHEDULE_E_TWO_ENTITIES}`;
+  const zip = {
+    name: "Client documents.zip",
+    reviewRole: "supporting_document",
+    text: `--- ZIP ENTRY: W2 Northgate.pdf ---${w2Text("22-1111111", "64000.00")}\n--- ZIP ENTRY: W2 Harborline.pdf ---${w2Text("47-3310582", "288400.00", "1 Wages, Tips, Other Comp. 2 Federal Income Tax Withheld")}`,
+  };
+  const finding = checkWagesFromPassiveEntity(text, [zip]);
+  assert.ok(finding, "el W-2 de la entidad pasiva esta en el ZIP");
+  assert.match(finding.detail, /HARBORLINE ADVISORS LLC \(EIN 47-3310582\)/);
+  assert.match(finding.detail, /\$288,400\.00/, "con su sueldo, leido del rotulo abreviado, y no el del primer W-2 del ZIP");
+  assert.strictEqual(finding.severity, "HIGH");
+});
+
+test("dos entidades con el mismo nombre: lo dice y deja la decision al revisor", () => {
+  const scheduleE = `${SCHEDULE_E_TWO_ENTITIES}C HARBORLINE ADVISORS LLC                                          S           55-7777777               X\n`;
+  const text = `${CURRENT_8582_PASSIVE_ENTITY}\n${scheduleE}`;
+  const finding = checkWagesFromPassiveEntity(text, [W2_FROM_ENTITY]);
+  assert.strictEqual(finding.severity, "MEDIUM", "no se puede afirmar que la pasiva sea la que paga el sueldo");
+  assert.match(finding.detail, /^2 entities named HARBORLINE ADVISORS LLC are on the return \(EINs 47-3310582, 55-7777777\)\./, "la duda va primero");
+  assert.match(finding.detail, /EIN 47-3310582 appears on a Form W-2 in this package paying \$288,400\.00 of wages/);
+  assert.match(finding.detail, /confirm it is not the one paying the salary/);
+  // El informe se queda con el comienzo de cada hallazgo (dos oraciones, 320 caracteres): la
+  // duda tiene que entrar entera.
+  const shown = finding.detail.split(/(?<=[.!?])\s+(?=[A-Z0-9])/).slice(0, 2).join(" ");
+  assert.ok(shown.length <= 320 && /confirm it is not the one paying the salary\.$/.test(shown), `${shown.length} caracteres`);
+});
+
 test("w2BoxOneWages lee la casilla 1, no el número de casilla", () => {
   // La etiqueta dice "1 Wages, tips, other compensation   2 Federal income tax withheld";
   // leer el importe de esa linea devuelve 2. Un hallazgo que dice "$2.00 de sueldo" se

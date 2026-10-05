@@ -160,6 +160,20 @@ test("el return no cuenta como respaldo de si mismo", () => {
   assert.strictEqual(out.rows[0].status, "NOT VERIFIED");
 });
 
+// Un 1099-B imprime el precio y el costo, no la ganancia. Una fila real que ataba exacto quedo
+// "not found in any supporting document" con la resta escrita en su nota.
+test("evidencia: una ganancia mostrada como precio menos costo queda verificada si los dos estan en el soporte", () => {
+  const broker = support("Broker 1099-B 2025.pdf", "2025 FORM 1099-B\nProceeds Cost basis\nTotals 2,300.50 1,900.25");
+  const files = [broker, ...PACKAGE];
+  const line = "Schedule D Line 7 — Net short-term capital gain (loss)";
+  const status = (amount, note) => verifyTieOutEvidence([row(line, amount, note)], "1040", files).rows[0].status;
+  assert.strictEqual(status("400.25", "1099-B del broker: proceeds 2,300.50 - cost basis 1,900.25 = 400.25."), "TIE");
+  assert.strictEqual(status("400.25", "1099-B del broker: proceeds $2,300.50 less cost basis $1,900.25 = $400.25."), "TIE");
+  assert.strictEqual(status("400.25", "1099-B del broker: proceeds 2,300.50 - cost basis 1,800.25 = 400.25."), "NOT VERIFIED", "la resta no da");
+  assert.strictEqual(status("400.25", "1099-B del broker: proceeds 2,400.50 - cost basis 2,000.25 = 400.25."), "NOT VERIFIED", "esos importes no estan en el soporte");
+  assert.strictEqual(status("500.00", "1099-B del broker: proceeds 2,300.50 - cost basis 1,900.25 = 400.25."), "NOT VERIFIED", "el resultado no es la cifra de la fila");
+});
+
 test("cobertura: un archivo ausente de documentsRead se reporta como no leido", () => {
   const review = {
     documentsRead: [
@@ -185,6 +199,24 @@ test("cobertura: un nombre contenido en otro NO cuenta como leido", () => {
 
 test("cobertura: sin archivos no devuelve nada", () => {
   assert.deepStrictEqual(auditDocumentCoverage({ documentsRead: [] }, []), { coverage: [], unreviewed: [] });
+});
+
+// Una revision real cito cada W-2 y cada 1099 de un ZIP y aun asi aviso que el ZIP "no figuraba
+// como leido": el modelo lista los documentos de adentro, no el nombre del paquete.
+test("cobertura: un ZIP se da por leido cuando figura alguno de sus documentos", () => {
+  const zip = {
+    name: "Client documents.zip",
+    reviewRole: "supporting_document",
+    text: "--- ZIP ENTRY: Employer W2.pdf ---\n1 Wages, tips, other compensation\n88400.00\n\n--- ZIP ENTRY: folder/Broker 1099.pdf ---\n1a Total ordinary dividends 612.40",
+    scannedPdfs: [{ name: "Scanned W2.pdf", data: "" }],
+  };
+  const status = (documentsRead) => auditDocumentCoverage({ documentsRead }, [zip]).coverage[0].status;
+  assert.strictEqual(status([{ filename: "Client documents/Employer W2.pdf" }]), "REVIEWED", "con la carpeta del paquete delante");
+  assert.strictEqual(status([{ filename: "Broker 1099.pdf" }]), "REVIEWED", "o con el nombre solo");
+  assert.strictEqual(status([{ filename: "Client documents/Scanned W2.pdf" }]), "REVIEWED", "o un escaneado que salio de el");
+  assert.strictEqual(status([{ filename: "Client documents.zip" }]), "REVIEWED", "o el paquete mismo, como antes");
+  assert.strictEqual(status([{ filename: "Client 1040 2025.pdf" }]), "NOT_REVIEWED", "si no figura ninguno, se avisa");
+  assert.strictEqual(status([{ filename: "Employer W2 corrected.pdf" }]), "NOT_REVIEWED", "y un nombre parecido no alcanza");
 });
 
 test("enforceNumericVerdicts encadena la verificacion de evidencia", () => {
