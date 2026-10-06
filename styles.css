@@ -8680,10 +8680,25 @@ body {
 
 /* App owners: sections by firm */
 .admin-access-firm { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
-.admin-access-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
-.admin-access-head strong { display: block; font-size: 1rem; }
 .admin-access-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
 .admin-access-group { border: 0; padding: 0; margin: 0; min-width: 0; }
 .admin-access-group legend { padding: 0; margin-bottom: 6px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .admin-access-option { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.9rem; cursor: pointer; }
 .admin-access-option input { width: 16px; height: 16px; margin: 0; }
+.admin-access-picker { position: relative; max-width: 560px; margin-top: 6px; }
+.admin-access-picker-btn { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff; color: #0f172a; font: inherit; text-align: left; cursor: pointer; }
+.admin-access-picker-btn:hover, .admin-access-picker-btn:focus-visible { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12); outline: 0; }
+.admin-access-picker-placeholder { flex: 1; color: var(--muted); }
+.admin-access-picker-info { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.admin-access-picker-info strong { overflow: hidden; font-size: 0.95rem; text-overflow: ellipsis; white-space: nowrap; }
+.admin-access-picker-info span { overflow: hidden; color: #64748b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.admin-access-picker-panel { display: none; position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 80; padding: 8px; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; box-shadow: 0 18px 45px rgba(15, 23, 42, 0.16); }
+.admin-access-picker-panel.open { display: block; }
+.admin-access-picker-search { width: 100%; padding: 8px 12px; border: 1px solid #dbe7f5; border-radius: 8px; font: inherit; font-size: 14px; }
+.admin-access-picker-search:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); outline: none; }
+.admin-access-picker-list { max-height: 280px; margin-top: 8px; overflow-y: auto; }
+.admin-access-picker-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px; border: 0; border-radius: 9px; background: #fff; color: #0f172a; font: inherit; text-align: left; cursor: pointer; }
+.admin-access-picker-option:hover, .admin-access-picker-option.active { background: #eff6ff; }
+.admin-access-picker-option.selected strong { color: var(--accent); }
+.admin-access-picker-empty, .admin-access-hint { margin: 0; padding: 10px 2px; color: #64748b; font-size: 13px; }
+.admin-access-picker + .admin-access-firm { margin-top: 4px; }

@@ -10335,11 +10335,13 @@ async function downloadReview(type) {
 }
 
 // ---- App owners: which sections each client firm can use ----------------------------------
-// One card per firm with a tick per section. Saving sends the ticked ones; every section
-// ticked means no limit. The server is what enforces it (lib/firm-access.js); this is only
-// where the owners choose.
+// A dropdown with a search picks the firm; below it, a tick per section. Saving sends the
+// ticked ones; every section ticked means no limit. The server is what enforces it
+// (lib/firm-access.js); this is only where the owners choose.
 
 let firmAccessWired = false;
+let firmAccessData = { sections: [], firms: [] };
+let firmAccessSelected = "";
 
 function showFirmAccessMessage(message, type = "success") {
   const box = document.getElementById("adminFirmAccessMessage");
@@ -10360,6 +10362,11 @@ async function loadFirmAccess() {
       if (box) box.hidden = true;
       loadFirmAccess().catch(() => {});
     });
+    // The list of firms closes on a click anywhere else.
+    document.addEventListener("click", (event) => {
+      const picker = document.querySelector("[data-access-picker]");
+      if (picker && !picker.contains(event.target)) toggleFirmAccessPicker(false);
+    });
   }
   const response = await fetch(`${API_BASE_URL}/api/admin/firm-access`);
   const payload = await response.json().catch(() => ({}));
@@ -10367,29 +10374,48 @@ async function loadFirmAccess() {
     body.textContent = payload.error || "Could not load firms.";
     return;
   }
-  renderFirmAccess(payload);
+  firmAccessData = { sections: payload.sections || [], firms: payload.firms || [] };
+  renderFirmAccess();
 }
 
-function renderFirmAccess({ sections = [], firms = [] }) {
+function firmAccessSummary(firm) {
+  return `${firm.users} user${firm.users === 1 ? "" : "s"}${firm.admins?.length ? ` · firm admin: ${firm.admins.join(", ")}` : ""}`;
+}
+
+function firmAccessTag(firm) {
+  return Array.isArray(firm.sections) ? `${firm.sections.length} of ${firmAccessData.sections.length} sections` : "All sections";
+}
+
+function renderFirmAccess() {
   const body = document.getElementById("adminFirmAccessBody");
   if (!body) return;
+  const { sections, firms } = firmAccessData;
   if (!firms.length) {
     body.innerHTML = `<p class="admin-usage-note">No client firms yet. Create a user with a Firm ID and the firm shows up here.</p>`;
     return;
   }
+  // The firm being edited stays chosen through a save or a refresh; a single firm needs no choosing.
+  if (!firms.some((item) => item.tenantId === firmAccessSelected)) firmAccessSelected = firms.length === 1 ? firms[0].tenantId : "";
+  const firm = firms.find((item) => item.tenantId === firmAccessSelected);
+  const limited = firms.filter((item) => Array.isArray(item.sections)).length;
   const groups = [...new Set(sections.map((section) => section.group))];
-  body.innerHTML = firms.map((firm) => {
-    const limited = Array.isArray(firm.sections);
-    const allowed = limited ? firm.sections : sections.map((section) => section.id);
-    return `
+  const allowed = firm && Array.isArray(firm.sections) ? firm.sections : sections.map((section) => section.id);
+  body.innerHTML = `
+    <div class="admin-access-picker" data-access-picker>
+      <button class="admin-access-picker-btn" type="button" aria-haspopup="listbox" aria-expanded="false" data-access-picker-toggle>
+        ${firm ? `
+          <span class="admin-access-picker-info"><strong>${escapeHtml(firm.tenantId)}</strong><span>${escapeHtml(firmAccessSummary(firm))}</span></span>
+          <span class="tag neutral">${escapeHtml(firmAccessTag(firm))}</span>` : `
+          <span class="admin-access-picker-placeholder">Select a firm...</span>`}
+        <span class="dropdown-arrow" aria-hidden="true">v</span>
+      </button>
+      <div class="admin-access-picker-panel">
+        <input class="admin-access-picker-search" type="search" placeholder="Search firms..." aria-label="Search firms" autocomplete="off" />
+        <div class="admin-access-picker-list" role="listbox" aria-label="Firms"></div>
+      </div>
+    </div>
+    ${firm ? `
       <article class="admin-access-firm" data-access-firm="${escapeHtml(firm.tenantId)}">
-        <div class="admin-access-head">
-          <div>
-            <strong>${escapeHtml(firm.tenantId)}</strong>
-            <span class="admin-usage-note">${firm.users} user${firm.users === 1 ? "" : "s"}${firm.admins?.length ? ` · firm admin: ${escapeHtml(firm.admins.join(", "))}` : ""}</span>
-          </div>
-          <span class="tag neutral">${limited ? `${allowed.length} of ${sections.length} sections` : "All sections"}</span>
-        </div>
         <div class="admin-access-groups">
           ${groups.map((group) => `
             <fieldset class="admin-access-group">
@@ -10402,15 +10428,88 @@ function renderFirmAccess({ sections = [], firms = [] }) {
           <button class="primary-button small-button" type="button" data-access-save>Save</button>
           <button class="ghost-button small-button" type="button" data-access-all>Tick all sections</button>
         </div>
-      </article>`;
-  }).join("");
-  body.querySelectorAll("[data-access-firm]").forEach((card) => {
-    const boxes = () => [...card.querySelectorAll('input[type="checkbox"]')];
-    card.querySelector("[data-access-all]")?.addEventListener("click", () => boxes().forEach((box) => { box.checked = true; }));
-    card.querySelector("[data-access-save]")?.addEventListener("click", () => {
-      saveFirmAccess(card.dataset.accessFirm, boxes().filter((box) => box.checked).map((box) => box.value));
-    });
+      </article>` : `
+      <p class="admin-access-hint">Choose a firm to see and change its sections. ${firms.length} firms, ${limited} with a limit.</p>`}`;
+
+  const search = body.querySelector(".admin-access-picker-search");
+  body.querySelector("[data-access-picker-toggle]").addEventListener("click", () => toggleFirmAccessPicker());
+  search.addEventListener("input", () => renderFirmAccessOptions(search.value));
+  search.addEventListener("keydown", (event) => {
+    const options = [...body.querySelectorAll("[data-access-pick]")];
+    const at = options.findIndex((option) => option.classList.contains("active"));
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!options.length) return;
+      const next = (at + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+      options.forEach((option, index) => option.classList.toggle("active", index === next));
+      options[next].scrollIntoView({ block: "nearest" });
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const pick = options[at] || options[0];
+      if (pick) selectFirmAccess(pick.dataset.accessPick);
+    } else if (event.key === "Escape") {
+      toggleFirmAccessPicker(false);
+      body.querySelector("[data-access-picker-toggle]")?.focus();
+    }
   });
+
+  const card = body.querySelector("[data-access-firm]");
+  if (!card) return;
+  const boxes = () => [...card.querySelectorAll('input[type="checkbox"]')];
+  card.querySelector("[data-access-all]")?.addEventListener("click", () => boxes().forEach((box) => { box.checked = true; }));
+  card.querySelector("[data-access-save]")?.addEventListener("click", () => {
+    saveFirmAccess(card.dataset.accessFirm, boxes().filter((box) => box.checked).map((box) => box.value));
+  });
+}
+
+/** The firms in the dropdown, narrowed to the ones whose id or firm admin matches the search. */
+function renderFirmAccessOptions(query = "") {
+  const list = document.querySelector("[data-access-picker] .admin-access-picker-list");
+  if (!list) return;
+  const needle = query.trim().toLowerCase();
+  const matches = firmAccessData.firms.filter((firm) => !needle || `${firm.tenantId} ${(firm.admins || []).join(" ")}`.toLowerCase().includes(needle));
+  list.innerHTML = matches.length ? matches.map((firm) => `
+    <button class="admin-access-picker-option${firm.tenantId === firmAccessSelected ? " selected" : ""}" type="button" role="option" aria-selected="${firm.tenantId === firmAccessSelected}" data-access-pick="${escapeHtml(firm.tenantId)}">
+      <span class="admin-access-picker-info"><strong>${escapeHtml(firm.tenantId)}</strong><span>${escapeHtml(firmAccessSummary(firm))}</span></span>
+      <span class="tag neutral">${escapeHtml(firmAccessTag(firm))}</span>
+    </button>`).join("") : `<p class="admin-access-picker-empty">No firm matches "${escapeHtml(query.trim())}".</p>`;
+  list.querySelectorAll("[data-access-pick]").forEach((option) => option.addEventListener("click", () => selectFirmAccess(option.dataset.accessPick)));
+}
+
+function toggleFirmAccessPicker(open) {
+  const picker = document.querySelector("[data-access-picker]");
+  if (!picker) return;
+  const panel = picker.querySelector(".admin-access-picker-panel");
+  const show = open ?? !panel.classList.contains("open");
+  panel.classList.toggle("open", show);
+  picker.querySelector("[data-access-picker-toggle]").setAttribute("aria-expanded", String(show));
+  if (!show) return;
+  const search = picker.querySelector(".admin-access-picker-search");
+  search.value = "";
+  renderFirmAccessOptions();
+  search.focus();
+}
+
+/** Whether the ticks on screen differ from what the chosen firm has saved. */
+function firmAccessUnsaved() {
+  const firm = firmAccessData.firms.find((item) => item.tenantId === firmAccessSelected);
+  const card = document.querySelector("#adminFirmAccessBody [data-access-firm]");
+  if (!firm || !card) return false;
+  const saved = Array.isArray(firm.sections) ? firm.sections : firmAccessData.sections.map((section) => section.id);
+  const ticked = [...card.querySelectorAll('input[type="checkbox"]:checked')].map((box) => box.value);
+  return ticked.length !== saved.length || ticked.some((id) => !saved.includes(id));
+}
+
+function selectFirmAccess(tenantId) {
+  // Picking the firm already on screen, or keeping its unsaved ticks, leaves the card as it is.
+  if (tenantId === firmAccessSelected
+    || (firmAccessUnsaved() && !window.confirm(`Discard the changes you have not saved for ${firmAccessSelected}?`))) {
+    toggleFirmAccessPicker(false);
+    return;
+  }
+  firmAccessSelected = tenantId;
+  renderFirmAccess();
+  document.querySelector("[data-access-picker-toggle]")?.focus();
 }
 
 async function saveFirmAccess(tenantId, sections) {
