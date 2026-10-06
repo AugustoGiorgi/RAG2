@@ -14,3 +14,4 @@ data/audit_log.json
 data/users.json
 data/usage_counts.json
 data/firm_drive.json
+data/firm_access.json

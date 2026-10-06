@@ -8677,3 +8677,13 @@ body {
 
 /* Firm administrator: Google Drive for reviews */
 .admin-drive-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* App owners: sections by firm */
+.admin-access-firm { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fff; }
+.admin-access-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.admin-access-head strong { display: block; font-size: 1rem; }
+.admin-access-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+.admin-access-group { border: 0; padding: 0; margin: 0; min-width: 0; }
+.admin-access-group legend { padding: 0; margin-bottom: 6px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.admin-access-option { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.9rem; cursor: pointer; }
+.admin-access-option input { width: 16px; height: 16px; margin: 0; }

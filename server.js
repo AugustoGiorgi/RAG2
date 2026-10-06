@@ -39,6 +39,7 @@ const { usageActionFor, addUsage, summarizeUsage } = require("./lib/usage-log");
 const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, driveMultipartBody } = require("./lib/firm-drive");
 const { budgetPools } = require("./lib/spend-budget");
 const { stripCostData } = require("./lib/cost-privacy");
+const { SECTIONS, firmKey, sectionsForRoute, normalizeSections, allowedSections, setFirmSections } = require("./lib/firm-access");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -261,6 +262,7 @@ const ALERT_WEBHOOK_URL = String(process.env.ALERT_WEBHOOK_URL || "").trim();
 const USER_CREDITS_PATH = path.join(DATA_DIR, "user_credits.json");
 const USAGE_COUNTS_PATH = path.join(DATA_DIR, "usage_counts.json");
 const FIRM_DRIVE_PATH = path.join(DATA_DIR, "firm_drive.json");
+const FIRM_ACCESS_PATH = path.join(DATA_DIR, "firm_access.json");
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const TRACKER_PATH = path.join(DATA_DIR, "tracker.json");
 const ACCESS_REQUESTS_PATH = path.join(DATA_DIR, "access_requests.json");
@@ -912,6 +914,9 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (!requireAuthenticated(req, res)) return;
     // Only a global admin's responses keep what a run cost (see costSafePayload).
     res._costViewer = (req.user || getSession(req))?.role === "admin";
+    // A firm limited to some sections of the app cannot call the routes of the others. Before
+    // the budget, the credits and the usage count: a refused call spends and counts nothing.
+    if (!requireSectionAccess(req, res, requestUrl)) return;
     if (!requireFineGrainedRateLimit(req, res, requestUrl)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
@@ -1059,6 +1064,11 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (requestUrl.pathname.startsWith("/api/admin/users")) {
       if (!requireUserManager(req, res)) return;
       await handleAdminUsersApi(req, res, requestUrl);
+      return;
+    }
+    if (requestUrl.pathname === "/api/admin/firm-access" || requestUrl.pathname.startsWith("/api/admin/firm-access/")) {
+      if (!requireAdmin(req, res)) return;
+      await handleAdminFirmAccessApi(req, res, requestUrl);
       return;
     }
     if (requestUrl.pathname.startsWith("/api/tracker")) {
@@ -4756,7 +4766,81 @@ async function handleAuthStatus(req, res) {
     role: session?.role || "",
     displayName: session?.displayName || session?.username || "",
     authRequired: AUTH_REQUIRED,
+    // The sections this user's firm may use, for the page to hide the rest; null is all.
+    sections: session ? firmSectionsFor(session) : null,
   });
+}
+
+/* ---------------------------------------------------------------------------
+ * Sections of the app by firm (lib/firm-access.js).
+ *
+ * The app's owners choose which sections each client firm gets. The limit is the firm's: it
+ * covers its firm admin, its users and whoever the firm admin creates later. A firm with
+ * nothing configured keeps everything.
+ * ------------------------------------------------------------------------- */
+
+function readFirmAccess() {
+  const store = readJsonFile(FIRM_ACCESS_PATH, { firms: {} });
+  return store && typeof store === "object" && store.firms && typeof store.firms === "object" ? store : { firms: {} };
+}
+
+/** The sections a signed-in user may use, or null for all of them. */
+function firmSectionsFor(user) {
+  return allowedSections(readFirmAccess(), user, DEFAULT_TENANT_ID);
+}
+
+function requireSectionAccess(req, res, requestUrl) {
+  const sections = sectionsForRoute(requestUrl.pathname);
+  if (!sections) return true;
+  const allowed = firmSectionsFor(req.user || getSession(req));
+  if (!allowed || sections.some((section) => allowed.includes(section))) return true;
+  sendJson(res, 403, { code: "SECTION_NOT_AVAILABLE", section: sections[0], error: "This section is not available for your firm." });
+  return false;
+}
+
+const _firmAccessLocks = new Map();
+
+// GET  /api/admin/firm-access            every client firm with the sections it has
+// PUT  /api/admin/firm-access/:tenantId   { sections: [...] } — empty or all of them lifts the limit
+async function handleAdminFirmAccessApi(req, res, requestUrl) {
+  const parts = requestUrl.pathname.split("/").filter(Boolean);
+  if (parts.length === 3 && req.method === "GET") {
+    const store = readFirmAccess();
+    const users = readUserStore().users;
+    const firms = new Map();
+    const firm = (tenantId) => {
+      if (!firms.has(tenantId)) firms.set(tenantId, { tenantId, users: 0, admins: [], sections: null });
+      return firms.get(tenantId);
+    };
+    const ownersFirm = firmKey(DEFAULT_TENANT_ID);
+    for (const user of users) {
+      const tenantId = firmKey(user.tenantId || DEFAULT_TENANT_ID);
+      if (tenantId === ownersFirm || normalizeUserRole(user.role, user.username) === "admin") continue;
+      const entry = firm(tenantId);
+      entry.users += 1;
+      if (normalizeUserRole(user.role, user.username) === "firm_admin") entry.admins.push(user.displayName || user.username);
+    }
+    for (const tenantId of Object.keys(store.firms)) if (tenantId !== ownersFirm) firm(tenantId);
+    for (const entry of firms.values()) entry.sections = allowedSections(store, { role: "user", tenantId: entry.tenantId }, DEFAULT_TENANT_ID);
+    sendJson(res, 200, { sections: SECTIONS, firms: [...firms.values()].sort((a, b) => a.tenantId.localeCompare(b.tenantId)) });
+    return;
+  }
+  if (parts.length === 4 && req.method === "PUT") {
+    const tenantId = firmKey(decodeURIComponent(parts[3]));
+    if (!tenantId || tenantId === firmKey(DEFAULT_TENANT_ID)) { sendJson(res, 400, { error: "This firm cannot be limited." }); return; }
+    const payload = await readJsonBody(req);
+    // An empty list is a mistake, not "no limit": lifting the limit is sending every section.
+    if (!normalizeSections(payload.sections).length) { sendJson(res, 400, { error: "Choose at least one section." }); return; }
+    await withWriteLock(_firmAccessLocks, "firm-access", () => {
+      const store = setFirmSections(readFirmAccess(), tenantId, payload.sections, { by: req.user?.username || "" });
+      writeJsonFile(FIRM_ACCESS_PATH, store);
+      const sections = allowedSections(store, { role: "user", tenantId }, DEFAULT_TENANT_ID);
+      appendAuditLog(req, "admin.firm_access_updated", { tenantId, sections: sections || "all" });
+      sendJson(res, 200, { tenantId, sections });
+    });
+    return;
+  }
+  sendJson(res, 404, { error: "Firm access route not found." });
 }
 
 async function handleChangePassword(req, res) {

@@ -41,7 +41,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="styles.css?v=20261003-firm-admin" />
+    <link rel="stylesheet" href="styles.css?v=20261006-access" />
     <style>
       .step-list {
         display: grid !important;
@@ -184,6 +184,22 @@
               </div>
             </div>
             <div id="adminFirmDriveBody" class="admin-usage-body">Loading…</div>
+          </section>
+        </div>
+
+        <div class="admin-usage-shell" id="adminFirmAccessShell" hidden>
+          <section class="admin-users-panel">
+            <div class="admin-users-list-header">
+              <div>
+                <h3>Sections by firm</h3>
+                <p class="admin-usage-note">Choose which sections of the app each client firm can use. It applies to the firm administrator, to every user of the firm and to the users they create later. A firm with every section ticked has no limit.</p>
+              </div>
+              <div class="admin-usage-controls">
+                <button id="adminRefreshFirmAccess" class="ghost-button small-button" type="button">Refresh</button>
+              </div>
+            </div>
+            <div id="adminFirmAccessMessage" class="admin-user-message" hidden></div>
+            <div id="adminFirmAccessBody" class="admin-usage-body">Loading firms…</div>
           </section>
         </div>
 
@@ -2270,6 +2286,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=20261005b"></script>
+    <script src="app.js?v=20261006-access"></script>
   </body>
 </html>

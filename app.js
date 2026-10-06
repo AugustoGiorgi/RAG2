@@ -556,6 +556,9 @@ let organizerCurrentView = "preparer";
 let qboReportsForReview = [];
 let currentUsername = "";
 let currentUser = { username: "", role: "user", displayName: "" };
+// The sections this user's firm may use (null: all of them) and the one on screen.
+let allowedSections = null;
+let currentWorkspaceMode = "preparation";
 let sendingDeliverableGmail = false;
 let googleOauthPopup = null;
 let googleOauthPollTimer = null;
@@ -761,7 +764,43 @@ function init() {
   initQBOSection();
 }
 
+/* --- Sections by firm ---------------------------------------------------------
+ * The app's owners choose which sections each client firm can use; the server says which
+ * (/api/auth/status) and refuses the routes of the rest. Here the page only stops showing
+ * what the firm does not have. */
+const SECTION_BUTTONS = {
+  preparation: "preparationModeButton", review: "reviewModeButton", deliverable: "deliverableModeButton",
+  estimated: "estimatedTaxesModeButton", planning: "planningModeButton",
+  tracker: "trackerModeButton", research: "researchModeButton", notices: "noticesModeButton",
+  diagnostics: "diagnosticsModeButton", organizer: "organizerModeButton",
+  presentations: "presentationsModeButton", calculations: "calculationsModeButton",
+};
+
+function sectionAllowed(mode) {
+  return !allowedSections || allowedSections.includes(mode);
+}
+
+function firstAllowedSection() {
+  return Object.keys(SECTION_BUTTONS).find(sectionAllowed) || "preparation";
+}
+
+function applySectionAccess() {
+  Object.entries(SECTION_BUTTONS).forEach(([mode, id]) => {
+    const button = document.getElementById(id);
+    if (button) button.hidden = !sectionAllowed(mode);
+  });
+  // A group left without sections goes away with its heading.
+  document.querySelectorAll("#workspaceNavPanel .workspace-nav-card").forEach((card) => {
+    const buttons = [...card.querySelectorAll(".mode-button")];
+    if (buttons.length) card.hidden = buttons.every((button) => button.hidden);
+  });
+  if (!sectionAllowed(currentWorkspaceMode)) setWorkspaceMode(firstAllowedSection());
+}
+
 function setWorkspaceMode(mode) {
+  // A shortcut or a saved session may ask for a section this firm does not have.
+  if (!sectionAllowed(mode)) mode = firstAllowedSection();
+  currentWorkspaceMode = mode;
   const isPreparation = mode === "preparation";
   const isReview = mode === "review";
   const isDeliverable = mode === "deliverable";
@@ -2815,6 +2854,7 @@ function setupDiagnosticsShortcut() {
     const isMac = navigator.platform.toLowerCase().includes("mac");
     const modifier = isMac ? event.metaKey : event.ctrlKey;
     if (modifier && event.shiftKey && event.key.toLowerCase() === "d") {
+      if (!sectionAllowed("diagnostics")) return;
       event.preventDefault();
       setWorkspaceMode("diagnostics");
       els.diagnosticsErrorText.focus();
@@ -4335,6 +4375,8 @@ async function loadAuthStatus() {
       role: payload.role || "user",
       displayName: payload.displayName || payload.username || "",
     };
+    allowedSections = Array.isArray(payload.sections) && payload.sections.length ? payload.sections : null;
+    applySectionAccess();
     document.body.classList.toggle("admin-mode", currentUser.role === "admin");
     document.querySelectorAll(".admin-only").forEach((element) => {
       element.hidden = currentUser.role !== "admin";
@@ -4378,7 +4420,7 @@ async function openAdminDashboard() {
   // Global-only panels/fields stay hidden for a firm administrator: system health,
   // budget groups, role selection, Firm ID (their users always join their own firm) and
   // every money field — what the app costs is for its owners only.
-  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField"];
+  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField", "adminFirmAccessShell"];
   globalOnly.forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isGlobalAdmin; });
   // A firm administrator also sees their firm's usage by tab (never costs) and its Google Drive.
   const isFirmAdmin = currentUser.role === "firm_admin";
@@ -4396,7 +4438,7 @@ async function openAdminDashboard() {
     ] : []),
     loadAdminUsers().catch((error) => showAdminUserMessage(error.message || "Could not load users.", "error")),
     // Usage comes from the cost log, which only a global admin can read.
-    ...(isGlobalAdmin ? [loadAdminUsage().catch(() => {})] : []),
+    ...(isGlobalAdmin ? [loadAdminUsage().catch(() => {}), loadFirmAccess().catch(() => {})] : []),
     ...(isFirmAdmin ? [loadFirmUsage().catch(() => {}), loadFirmDrive().catch(() => {})] : []),
   ]);
 }
@@ -10009,6 +10051,8 @@ function renderIssueEvaluation(evaluation) {
 }
 
 function renderEfileDiagnosticsCta(structured, metadata) {
+  // The button opens Diagnostics: a firm without that section does not get it.
+  if (!sectionAllowed("diagnostics")) return "";
   const issues = getEfileIssues(structured);
   if (!issues.length) return "";
   return `
@@ -10288,6 +10332,106 @@ async function downloadReview(type) {
   } else if (type === "text") {
     downloadBlob(`${baseName}.txt`, toCleanWrittenReview(lastReview.response, metadata), "text/plain;charset=utf-8");
   }
+}
+
+// ---- App owners: which sections each client firm can use ----------------------------------
+// One card per firm with a tick per section. Saving sends the ticked ones; every section
+// ticked means no limit. The server is what enforces it (lib/firm-access.js); this is only
+// where the owners choose.
+
+let firmAccessWired = false;
+
+function showFirmAccessMessage(message, type = "success") {
+  const box = document.getElementById("adminFirmAccessMessage");
+  if (!box) return;
+  box.hidden = false;
+  box.textContent = message;
+  box.classList.toggle("success", type !== "error");
+  box.classList.toggle("error", type === "error");
+}
+
+async function loadFirmAccess() {
+  const body = document.getElementById("adminFirmAccessBody");
+  if (!body) return;
+  if (!firmAccessWired) {
+    firmAccessWired = true;
+    document.getElementById("adminRefreshFirmAccess")?.addEventListener("click", () => {
+      const box = document.getElementById("adminFirmAccessMessage");
+      if (box) box.hidden = true;
+      loadFirmAccess().catch(() => {});
+    });
+  }
+  const response = await fetch(`${API_BASE_URL}/api/admin/firm-access`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    body.textContent = payload.error || "Could not load firms.";
+    return;
+  }
+  renderFirmAccess(payload);
+}
+
+function renderFirmAccess({ sections = [], firms = [] }) {
+  const body = document.getElementById("adminFirmAccessBody");
+  if (!body) return;
+  if (!firms.length) {
+    body.innerHTML = `<p class="admin-usage-note">No client firms yet. Create a user with a Firm ID and the firm shows up here.</p>`;
+    return;
+  }
+  const groups = [...new Set(sections.map((section) => section.group))];
+  body.innerHTML = firms.map((firm) => {
+    const limited = Array.isArray(firm.sections);
+    const allowed = limited ? firm.sections : sections.map((section) => section.id);
+    return `
+      <article class="admin-access-firm" data-access-firm="${escapeHtml(firm.tenantId)}">
+        <div class="admin-access-head">
+          <div>
+            <strong>${escapeHtml(firm.tenantId)}</strong>
+            <span class="admin-usage-note">${firm.users} user${firm.users === 1 ? "" : "s"}${firm.admins?.length ? ` · firm admin: ${escapeHtml(firm.admins.join(", "))}` : ""}</span>
+          </div>
+          <span class="tag neutral">${limited ? `${allowed.length} of ${sections.length} sections` : "All sections"}</span>
+        </div>
+        <div class="admin-access-groups">
+          ${groups.map((group) => `
+            <fieldset class="admin-access-group">
+              <legend>${escapeHtml(group)}</legend>
+              ${sections.filter((section) => section.group === group).map((section) => `
+                <label class="admin-access-option"><input type="checkbox" value="${escapeHtml(section.id)}"${allowed.includes(section.id) ? " checked" : ""} /><span>${escapeHtml(section.label)}</span></label>`).join("")}
+            </fieldset>`).join("")}
+        </div>
+        <div class="admin-drive-actions">
+          <button class="primary-button small-button" type="button" data-access-save>Save</button>
+          <button class="ghost-button small-button" type="button" data-access-all>Tick all sections</button>
+        </div>
+      </article>`;
+  }).join("");
+  body.querySelectorAll("[data-access-firm]").forEach((card) => {
+    const boxes = () => [...card.querySelectorAll('input[type="checkbox"]')];
+    card.querySelector("[data-access-all]")?.addEventListener("click", () => boxes().forEach((box) => { box.checked = true; }));
+    card.querySelector("[data-access-save]")?.addEventListener("click", () => {
+      saveFirmAccess(card.dataset.accessFirm, boxes().filter((box) => box.checked).map((box) => box.value));
+    });
+  });
+}
+
+async function saveFirmAccess(tenantId, sections) {
+  if (!sections.length) {
+    showFirmAccessMessage("Tick at least one section. To remove the limit, tick all of them.", "error");
+    return;
+  }
+  const response = await fetch(`${API_BASE_URL}/api/admin/firm-access/${encodeURIComponent(tenantId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sections }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showFirmAccessMessage(payload.error || "Could not save.", "error");
+    return;
+  }
+  showFirmAccessMessage(payload.sections
+    ? `${tenantId}: ${payload.sections.length} section(s) enabled. Its users see the change the next time they open the app.`
+    : `${tenantId}: every section is enabled.`);
+  await loadFirmAccess();
 }
 
 // ---- Firm administrator: usage by tab (never costs) and the firm's Google Drive ----------
