@@ -117,9 +117,65 @@ test("un digito distinto o dos vecinos intercambiados; nada mas", () => {
 });
 
 test("el nombre de una persona es el que la declaracion imprime delante de su SSN", () => {
-  assert.deepStrictEqual(nameFor(fakeReturn(2025), TP), { first: "JOHN", last: "SAMPLE" });
-  assert.deepStrictEqual(nameFor(fakeReturn(2025), SP), { first: "JANE", last: "SAMPLE" });
+  assert.deepStrictEqual(nameFor(fakeReturn(2025), TP), { first: "JOHN", last: "SAMPLE", lasts: ["SAMPLE"] });
+  assert.deepStrictEqual(nameFor(fakeReturn(2025), SP), { first: "JANE", last: "SAMPLE", lasts: ["SAMPLE"] });
   assert.strictEqual(nameFor("UNA SOLA VEZ 400-00-9999", "400-00-9999"), null, "con una sola aparicion no se decide");
+});
+
+/* --- Un matrimonio con apellidos distintos --------------------------------- */
+//
+// El encabezado de cada pagina de una declaracion conjunta es "ANA LOPEZ AND LUIS R SAMPLE"
+// delante del SSN de Ana. Se tomaba el ultimo apellido del renglon, que es el del conyuge, y
+// cada documento de ella salia como "nombre distinto": diecinueve filas falsas en un paquete
+// real, apenas el ZIP empezo a cruzarse documento por documento.
+
+function jointReturn({ solo = true } = {}) {
+  const out = ["Form 1040 2025 U.S. Individual Income Tax Return"];
+  for (let page = 1; page <= 6; page += 1) out.push(`--- Page ${page} ---`, `ANA LOPEZ AND LUIS R SAMPLE ${TP}`);
+  if (solo) out.push(`ANA LOPEZ ${TP}`, `ANA LOPEZ ${TP}`);
+  out.push(`LUIS R SAMPLE ${SP}`, `LUIS R SAMPLE ${SP}`, `LUIS R SAMPLE ${SP}`);
+  // Una declaracion de menos de 500 caracteres no se toma por una declaracion.
+  out.push(...Array(8).fill("Statement of the items reported on this return, with nothing a name check reads."));
+  return out.join("\n");
+}
+const W2 = (name, tin) => `Form W-2 Wage and Tax Statement 2025\n1 Wages, tips, other compensation 50,000.00\na Employee's SSN ${tin}\n${name}`;
+
+test("en una declaracion conjunta cada conyuge conserva su apellido", () => {
+  assert.deepStrictEqual(nameFor(jointReturn(), TP), { first: "ANA", last: "LOPEZ", lasts: ["SAMPLE", "LOPEZ"] });
+  assert.deepStrictEqual(nameFor(jointReturn(), SP), { first: "LUIS", last: "SAMPLE", lasts: ["SAMPLE"] });
+  const docs = [file("W-2 Ana.pdf", W2("ANA LOPEZ", TP)), file("W-2 Luis.pdf", W2("LUIS R SAMPLE", "XXX-XX-2222"))];
+  for (const current of [jointReturn(), jointReturn({ solo: false })]) {
+    const rows = identityInventoryRows(pack(current, "", docs), { taxYear: "2025" });
+    assert.deepStrictEqual(rows.filter((r) => r.status === "MISMATCH"), [], "el W-2 de cada uno lleva su propio apellido");
+    assert.match(rows[rows.length - 1].note, /documents whose SSN is on the return: 2; documents carrying the name the return prints: 2;/);
+  }
+});
+
+test("y un apellido que no es de ninguno de los dos sigue siendo una diferencia", () => {
+  const rows = identityInventoryRows(pack(jointReturn(), "", [file("W-2 Ana.pdf", W2("ANA GOMEZ", TP))]), { taxYear: "2025" });
+  const row = rows.find((r) => r.item === "Name on W-2 Ana.pdf");
+  assert.strictEqual(row.status, "MISMATCH");
+  assert.strictEqual(row.returnValue, "LOPEZ", "se muestra el apellido de ella, no el del conyuge");
+  assert.strictEqual(row.sourceValue, "ANA GOMEZ");
+});
+
+test("un transcript del IRS recorta los nombres: no hay apellido que comparar", () => {
+  const transcript = `This Product Contains Sensitive Taxpayer Data\nForm 1040 Account Transcript\nTaxpayer Identification Number: XXX-XX-1111\nJOHN SAMP\n100 MA`;
+  const rows = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("IRS account transcript.pdf", transcript)]), { taxYear: "2025" });
+  assert.ok(!rows.some((r) => r.status === "MISMATCH"));
+  assert.match(rows[rows.length - 1].note, /documents whose SSN is on the return: 1; documents carrying the name the return prints: 0;/);
+});
+
+test("una pagina que trae el SSN y ningun nombre no es un nombre distinto", () => {
+  // La captura de la pagina del estado: SSN enmascarado y nada mas.
+  const page = "View Your 1099-G Information\nTaxpayer ID: XXX-XX-2222\nOur records indicate that you have no amount to report.";
+  const rows = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("state page.pdf", page)]), { taxYear: "2025" });
+  assert.ok(!rows.some((r) => r.status === "MISMATCH"));
+  // Un formulario informativo a nombre de otra persona con ese SSN si: ahi hay un nombre.
+  const rows2 = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("W-2 other.pdf", W2("ROBERT OTHER", SP))]), { taxYear: "2025" });
+  const row = rows2.find((r) => r.item === "Name on W-2 other.pdf");
+  assert.strictEqual(row.status, "MISMATCH");
+  assert.strictEqual(row.sourceValue, 'No "SAMPLE" in the document');
 });
 
 // Asi llega un ZIP desde el navegador: un solo archivo con una seccion por documento. Cada

@@ -308,8 +308,10 @@ test("el 1098 sin deducir trae el interes, el tope de deuda y el formulario, no 
   const transcript = doc("irs transcript.pdf", "This Product Contains Sensitive Taxpayer Data\nWage and Income Transcript\nForm 1098 Mortgage Interest Statement\nMortgage Interest Received from Payer(s)/Borrower(s): $60,000.00");
   const [f] = run(pkg(itemized, null, [lender, transcript]), ic.moreDocumentChecks).filter((x) => /Form 1098/.test(x.title));
   assert.strictEqual(f.severity, "HIGH");
-  assert.match(f.detail, /Box 1 reports \$60,000 of interest/);
-  assert.match(f.detail, /above the \$750,000 acquisition-debt limit, so about \$45,000/);
+  assert.strictEqual(f.detail, "The return itemizes and Schedule A line 8a is blank, but 1098 lender.pdf reports $60,000 of mortgage interest in box 1 and Schedule E carries none. The principal of $1,000,000 is above the $750,000 acquisition-debt limit, so about $45,000 of it is deductible.");
+  // Dos oraciones: el informe corta en la segunda, y el tope de deuda no puede quedar afuera.
+  assert.strictEqual(f.detail.split(/(?<=[.!?])\s+(?=[A-Z0-9])/).length, 2);
+  assert.ok(f.detail.length <= 320);
   assert.doesNotMatch(f.detail, /irs transcript/, "el transcript no es el formulario");
   const small = doc("1098 small.pdf", "Form 1098 Mortgage Interest Statement 2025\n1 Mortgage interest received from payer(s)/borrower(s)* $ 4,200.00\n2 Outstanding mortgage principal $ 180,000.00");
   const [g] = run(pkg(itemized, null, [small]), ic.moreDocumentChecks).filter((x) => /Form 1098/.test(x.title));

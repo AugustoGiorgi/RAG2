@@ -750,6 +750,28 @@ test("un hallazgo determinista no se pliega a si mismo", () => {
   assert.strictEqual(foldFindingsRepeatedBy([propio], [DETERMINISTA]).folded, 0);
 });
 
+// El modelo copia los importes del documento con centavos y el cruce del codigo los escribe en
+// dolares enteros. Comparados con centavos no coincidia ninguno: el mismo sueldo de otro estado
+// sin declaracion salio dos veces como HIGH en un informe real.
+test("las cifras se comparan en dolares enteros: los centavos no hacen dos hallazgos de uno", () => {
+  const delCodigo = {
+    severity: "HIGH", category: "State returns", title: "Form W-2 — Indiana wages with no Indiana return",
+    detail: "A W-2 in the package reports $20,480 of Indiana wages and $1,311 of Indiana income tax withheld (w2.pdf), and the package has no Indiana return.",
+  };
+  const delModelo = {
+    priority: "HIGH", formOrSchedule: "Form W-2 / state returns", source: "w2.pdf",
+    issueDescription: "The W-2 reports $20,479.62 of Indiana wages and $1,310.70 of Indiana withholding, but no Indiana nonresident return appears in the package.",
+    evidence: "w2.pdf boxes 15-17.",
+  };
+  const out = foldFindingsRepeatedBy([delModelo], [delCodigo]);
+  assert.strictEqual(out.folded, 1);
+  assert.strictEqual(out.issues[0].priority, "LOW");
+  assert.match(out.issues[0].riskAnalysis, /REPEATS AN AUTOMATED FINDING: this says the same thing as "Form W-2 — Indiana wages with no Indiana return"/);
+  // Dos importes distintos de verdad siguen siendo dos hallazgos.
+  const otro = { ...delModelo, issueDescription: "The W-2 reports $31,200.00 of Indiana wages and $1,902.15 of Indiana withholding, but no Indiana return appears." };
+  assert.strictEqual(foldFindingsRepeatedBy([otro], [delCodigo]).folded, 0);
+});
+
 /* --- Un ZIP son cuarenta documentos, no uno ---------------------------- */
 
 // La carpeta de soporte de un cliente se sube como un archivo y llega a la revision como un
