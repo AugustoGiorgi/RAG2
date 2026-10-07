@@ -379,3 +379,77 @@ test("la lectura se atribuye al archivo que nombra", () => {
   assert.strictEqual(lectura.name, "Client W2.pdf");
   assert.deepStrictEqual(scannedReadings(["Form 1040 line 11 ties."]), [], "solo cuentan las lineas SCANNED");
 });
+
+const tieOut = require("../lib/tie-out");
+
+test("un renglon del tie-out que no cierra se escribe como hallazgo, salvo que ya haya uno", () => {
+  const rows = [
+    { lineItem: "Form 1040 Line 26 — Estimated tax payments", returnAmount: "50000", workpaperAmount: "80000", difference: -30000, status: "OUT_OF_BALANCE", note: "IRS transcript: 20,000 + 60,000 = 80,000." },
+    { lineItem: "Form 1040 Line 2b — Taxable interest", returnAmount: "1200", workpaperAmount: "1450", difference: -250, status: "OUT_OF_BALANCE", note: "1099-INT 1,450." },
+    { lineItem: "Form 1040 Line 3b — Ordinary dividends", returnAmount: "300", workpaperAmount: "340", difference: -40, status: "OUT_OF_BALANCE", note: "" },
+    // Un total marcado por sus componentes no tiene diferencia propia.
+    { lineItem: "Form 1040 Line 33 — Total payments", returnAmount: "90000", workpaperAmount: "90000", difference: 0, status: "OUT_OF_BALANCE", note: "Cannot tie." },
+    { lineItem: "Form 1040 Line 1a — Wages", returnAmount: "85000", workpaperAmount: "85000", difference: 0, status: "TIE", note: "W-2." },
+    { lineItem: "Form 1040 Line 25d — Total withholding", returnAmount: "9000", workpaperAmount: "", difference: "", status: "NOT VERIFIED", note: "" },
+  ];
+  const issues = tieOut.issuesFromOutOfBalanceRows(rows, []);
+  assert.deepStrictEqual(issues.map((i) => [i.priority, i.formOrSchedule]), [
+    ["HIGH", "Form 1040 Line 26 — Estimated tax payments"],
+    ["MEDIUM", "Form 1040 Line 2b — Taxable interest"],
+  ]);
+  assert.match(issues[0].issueDescription, /reports \$50,000 on this line and the supporting documents add to \$80,000: the return is \$30,000 lower/);
+  assert.strictEqual(issues[0].source, tieOut.TIE_OUT_ISSUE_SOURCE);
+  assert.doesNotMatch(issues[0].source, /^automated/i, "la guarda de repetidos lee ese comienzo como un eco del modelo");
+  assert.match(issues[0].evidence, /IRS transcript/);
+  // Ya hay un hallazgo que dice la diferencia: no se repite. Alcanza con que sea de ese renglon
+  // y nombre lo que suman los documentos o lo que falta, o con que traiga las dos cifras.
+  const otherOnly = ["Form 1040 Line 2b — Taxable interest"];
+  const bySupport = tieOut.issuesFromOutOfBalanceRows(rows, [{ formOrSchedule: "Form 1040, line 26", issueDescription: "Estimated payments are short: the IRS transcripts show $80,000." }]);
+  assert.deepStrictEqual(bySupport.map((i) => i.formOrSchedule), otherOnly);
+  const byDifference = tieOut.issuesFromOutOfBalanceRows(rows, [{ formOrSchedule: "Form 1040 Line 26", issueDescription: "Estimated payments are understated by $30,000." }]);
+  assert.deepStrictEqual(byDifference.map((i) => i.formOrSchedule), otherOnly);
+  const byFigures = tieOut.issuesFromOutOfBalanceRows(rows, [{ formOrSchedule: "Payments", issueDescription: "The return claims $50,000 of estimates; the transcripts show $80,000." }]);
+  assert.deepStrictEqual(byFigures.map((i) => i.formOrSchedule), otherOnly);
+  // Un hallazgo que solo cae en el mismo renglon no lo cubre: puede hablar de otra cosa, y
+  // entonces el descuadre — lo unico que el revisor necesitaba leer — no quedaba escrito.
+  const sameLineOnly = tieOut.issuesFromOutOfBalanceRows(rows, [{ formOrSchedule: "Form 1040, line 26", issueDescription: "The fourth-quarter payment was entered as paid with the extension." }]);
+  assert.deepStrictEqual(sameLineOnly.map((i) => i.formOrSchedule), ["Form 1040 Line 26 — Estimated tax payments", "Form 1040 Line 2b — Taxable interest"]);
+});
+
+test("despues de unir dos pasadas, un hallazgo de tie-out vale solo si su renglon sigue sin cerrar", () => {
+  const issue = (line) => ({ formOrSchedule: line, source: tieOut.TIE_OUT_ISSUE_SOURCE });
+  const kept = tieOut.keepTieOutIssuesInTable(
+    [issue("Form 1040 Line 26 — Estimated tax payments"), issue("Form 1040 Line 2b — Taxable interest"), { formOrSchedule: "Schedule A", source: "Client email" }],
+    [{ lineItem: "Form 1040 Line 26 — Estimated tax payments", status: "OUT_OF_BALANCE" }, { lineItem: "Form 1040 Line 2b — Taxable interest", status: "TIE" }],
+  );
+  assert.deepStrictEqual(kept.map((i) => i.formOrSchedule), ["Form 1040 Line 26 — Estimated tax payments", "Schedule A"]);
+});
+
+test("renglones estatales: con una declaracion de Nueva York el checklist suma sus dos renglones", () => {
+  const ny = { name: "return.pdf", reviewRole: "current_return", text: [
+    "Form 1040 U.S. Individual Income Tax Return 2025",
+    "Your first name and middle initial Last name Your social security number",
+    "JANE EXAMPLE 000-11-1111",
+    "IT-201 Resident Income Tax Return",
+    "72 Total New York State tax withheld 72 28000 .00",
+    "75 Total estimated tax payments and amount paid with Form IT-370 . 75 .00",
+    "filler ".repeat(120),
+  ].join("\n") };
+  const keys = (files) => tieOut.requiredTieOutsFor("1040", files).map((r) => r.key);
+  assert.deepStrictEqual(keys([ny]).slice(-2), ["it201l72", "it201l75"]);
+  assert.strictEqual(keys([{ ...ny, text: ny.text.replace(/IT-201|Total New York State tax withheld/g, "x") }]).length, 14, "sin la declaracion estatal no se piden");
+  assert.strictEqual(keys().length, 14, "sin archivos, el checklist federal de siempre");
+  // La misma fila aunque la revision la rotule sin "Form"; y un renglon federal que la menciona no cambia de clave.
+  assert.strictEqual(tieOut.canonicalLineKey("IT-201 line 75 (estimated payments)"), "it201l75");
+  assert.strictEqual(tieOut.canonicalLineKey("Form 1040 Line 26 — Estimated tax payments (see IT-201 line 75)"), "form1040l26");
+  assert.ok(tieOut.tieOutChecklistPromptLines("1040", [ny]).some((l) => /Form IT-201 Line 75/.test(l)));
+  // El lado de la declaracion lo lee el codigo: la linea 75 en blanco es un cero.
+  const rows = tieOut.ensureRequiredTieOutRows([{ lineItem: "Form IT-201 Line 75 — Estimated tax payments and amount paid with Form IT-370", returnAmount: "", workpaperAmount: "60000", note: "Payment confirmations: 20,000 + 40,000 = 60,000." }], "1040", [ny]).rows;
+  const out = tieOut.enforceNumericVerdicts({ tieOutResults: rows }, "1040", [ny]).review.tieOutResults;
+  const row = out.find((r) => /Line 75/.test(r.lineItem));
+  assert.strictEqual(row.returnAmount, 0);
+  assert.strictEqual(row.status, "OUT_OF_BALANCE");
+  assert.ok(out.some((r) => /Line 72/.test(r.lineItem) && r.status === "NOT VERIFIED"), "el renglon que la revision no hizo se agrega sin verificar");
+  const [issue] = tieOut.issuesFromOutOfBalanceRows(out, []);
+  assert.match(issue.issueDescription, /reports \$0 on this line and the supporting documents add to \$60,000/);
+});

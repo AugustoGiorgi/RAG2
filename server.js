@@ -27,7 +27,7 @@ const planningStrategies = require("./lib/planning-strategies");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage, issuesFromOutOfBalanceRows, keepTieOutIssuesInTable } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
@@ -40,7 +40,8 @@ const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, dr
 const { budgetPools } = require("./lib/spend-budget");
 const { stripCostData } = require("./lib/cost-privacy");
 const { SECTIONS, firmKey, sectionsForRoute, normalizeSections, allowedSections, setFirmSections } = require("./lib/firm-access");
-const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice } = require("./lib/package-trim");
+const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice, returnStates, omittedFiles, omissionNote } = require("./lib/package-trim");
+const { collectImages, unreadFilesOf, unreadNote } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
 const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
@@ -50,6 +51,7 @@ const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
 const { runPackageChecks } = require("./lib/package-checks");
 const { runIndividualChecks } = require("./lib/individual-checks");
+const { runK1Checks } = require("./lib/k1-checks");
 const { runEntityExtraChecks } = require("./lib/entity-extra-checks");
 const { buildSecondLookInstructions } = require("./lib/second-look");
 const { mergeReviews } = require("./lib/review-merge");
@@ -10860,6 +10862,8 @@ async function handleReview(req, res) {
       const united = mergeReviews([review, ...extraReviews]);
       const before = Array.isArray(review.issues) ? review.issues.length : 0;
       review = united.review;
+      // Un hallazgo de tie-out vale mientras su renglon siga sin cerrar en la tabla que quedo.
+      review.issues = keepTieOutIssuesInTable(review.issues, review.tieOutResults);
       const after = Array.isArray(review.issues) ? review.issues.length : 0;
       console.log(`[Review] ${united.passes} pasadas unidas: ${before} hallazgos en la primera, ${after} en total, ${united.merged} reconocidos como repetidos.`);
     }
@@ -10950,8 +10954,10 @@ function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
     meta,
     documents,
     documentsRead: documents.map((file) => ({ name: file.name, filename: file.name, role: file.role })),
+    // Para el informe: lo que el paquete trae y nadie leyo. Ver unreadFilesOf.
+    unreadFiles: unreadFilesOf(payload, collectScannedPdfDocuments(payload).skippedScans),
     feedbackApplied: feedback.map((entry) => entry.text).filter(Boolean),
-    systemPrompt: buildDirectReviewSystemPrompt(returnType, state),
+    systemPrompt: buildDirectReviewSystemPrompt(returnType, state, payload.files),
     userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata, payload),
   };
 }
@@ -11048,17 +11054,33 @@ function compactReviewDocuments(documents = [], limits = {}) {
   // Se mide sobre el texto YA limpio, porque el presupuesto existe para acotar lo que el modelo
   // recibe y el modelo recibe el limpio. Medir sobre el crudo pediria presupuesto para guias de
   // puntos y recortaria paginas para pagarlas.
+  //
+  // Un ZIP de soporte agrega un escalon por debajo de lo estatal: los contratos y las paginas
+  // del Schedule K-3 que trae adentro. `main` es el documento sin eso. En un paquete sin ZIP
+  // `main` y `full` son el mismo numero y todo lo de abajo hace exactamente lo que hacia.
+  //
+  // Los estados por los que el paquete presenta declaracion se leen de las declaraciones: si
+  // hay que sacar K-1 estatales del ZIP, los de esos estados son los ultimos en irse.
+  const homeStates = returnStates(modelText);
   const need = modelText.map((text) => {
-    if (!text) return { core: 0, full: 0 };
-    const measured = sizes(text);
-    return { core: Math.min(maxCharsPerFile, measured.core), full: Math.min(maxCharsPerFile, measured.full) };
+    if (!text) return { core: 0, main: 0, full: 0 };
+    const measured = sizes(text, { homeStates });
+    return {
+      core: Math.min(maxCharsPerFile, measured.core),
+      main: Math.min(maxCharsPerFile, measured.main),
+      full: Math.min(maxCharsPerFile, measured.full),
+    };
   });
   const totalFull = need.reduce((sum, n) => sum + n.full, 0);
+  const totalMain = need.reduce((sum, n) => sum + n.main, 0);
   const totalCore = need.reduce((sum, n) => sum + n.core, 0);
   const fitsWhole = totalFull <= maxTotalChars;
+  // Lo que sobra despues de asegurar todo menos contratos y K-3, y cuanto de eso pediria cada uno.
+  const afterMain = Math.max(0, maxTotalChars - totalMain);
+  const lowWanted = need.reduce((sum, n) => sum + Math.max(0, n.full - n.main), 0);
   // Lo que sobra despues de asegurar el nucleo, y cuanto mas pediria cada documento.
   const afterCore = Math.max(0, maxTotalChars - totalCore);
-  const extraWanted = need.reduce((sum, n) => sum + Math.max(0, n.full - n.core), 0);
+  const extraWanted = need.reduce((sum, n) => sum + Math.max(0, n.main - n.core), 0);
 
   return documents.map((file, index) => {
     const originalText = String(file.extractedText || "");
@@ -11074,11 +11096,20 @@ function compactReviewDocuments(documents = [], limits = {}) {
     if (fitsWhole) {
       // Entra todo: nadie recorta nada.
       budget = Math.min(maxCharsPerFile, Math.max(minBudget, need[index].full));
+    } else if (totalMain <= maxTotalChars) {
+      // Solo se llega aca con un ZIP de soporte que trae contratos o paginas K-3. Entra todo
+      // lo demas de todos los documentos — lo estatal de las declaraciones incluido —, y lo
+      // que sobra se reparte entre esos contratos y esos K-3. Sin este escalon una declaracion
+      // perdia paginas de su estado para que el ZIP conservara un acuerdo de accionistas.
+      const share = lowWanted > 0
+        ? Math.floor(afterMain * (Math.max(0, need[index].full - need[index].main) / lowWanted))
+        : 0;
+      budget = Math.max(minBudget, Math.min(maxCharsPerFile, need[index].main + share));
     } else if (totalCore <= maxTotalChars) {
       // No entra todo, pero si el nucleo federal de todos. Se asegura, y lo que sobra se
       // reparte en proporcion a lo que cada documento todavia querria.
       const share = extraWanted > 0
-        ? Math.floor(afterCore * (Math.max(0, need[index].full - need[index].core) / extraWanted))
+        ? Math.floor(afterCore * (Math.max(0, need[index].main - need[index].core) / extraWanted))
         : 0;
       budget = Math.max(minBudget, Math.min(maxCharsPerFile, need[index].core + share));
     } else {
@@ -11094,7 +11125,7 @@ function compactReviewDocuments(documents = [], limits = {}) {
     // modelo recibia el 4% del nucleo federal — ni el 1040, ni un Schedule, ni un K-1. Medido
     // sobre los siete paquetes de prueba, el nucleo federal que llega pasa del 45% al 82%.
     // Ver lib/package-trim.js.
-    const selection = selectPages(sourceText, budget);
+    const selection = selectPages(sourceText, budget, { homeStates });
     let compactedText;
     let note;
     if (selection.pageCount) {
@@ -11122,6 +11153,9 @@ function compactReviewDocuments(documents = [], limits = {}) {
       originalText,
       originalTextLength: originalText.length,
       compacted,
+      // Lo que no entro, archivo por archivo, para decirselo al que lee el informe: sin esto
+      // una revision de media carpeta se lee igual que una de la carpeta entera.
+      omitted: selection.pageCount ? omittedFiles(selection.removed, selection.pageCount, file.name) : [],
     };
   });
 }
@@ -11133,10 +11167,11 @@ function reviewDocumentWeight(role) {
   return 1;
 }
 
-function buildDirectReviewSystemPrompt(returnType, state) {
+function buildDirectReviewSystemPrompt(returnType, state, files) {
   // The checklist is fixed in code (lib/tie-out.js) so two reviews of the same package
   // always compare the same lines instead of each run picking its own set.
-  const checklist = tieOutChecklistPromptLines(returnType);
+  // With the package's files, so the state return's lines are on the list when it carries one.
+  const checklist = tieOutChecklistPromptLines(returnType, files);
   const checklistBlock = checklist.length ? `\n\n${checklist.join("\n")}` : "";
   return `You are a senior tax return reviewer at a CPA firm with 20+ years of experience reviewing ${returnType || "US tax"} returns. You review with meticulous attention to detail - you catch errors a partner would catch and the ones they would miss.
 
@@ -11240,7 +11275,18 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // The browser already ships their bytes (prepareFileForReview -> scannedPdfBase64) and
   // the Preparation tab already attached them; Review was the one tab that did not, which
   // is why scanned uploads kept coming back reported as "not provided".
-  const { scannedDocs, skippedScans } = collectScannedPdfDocuments(scanSource);
+  const { scannedDocs, skippedScans, scannedImages } = collectScannedPdfDocuments(scanSource);
+  // Las imagenes de un ZIP se anuncian junto con los PDF escaneados y con las mismas reglas:
+  // son lo mismo para el modelo, algo que tiene que mirar porque no hay texto que leer. Sin
+  // imagenes, cada frase de abajo queda letra por letra como estaba.
+  const attachedNames = [...scannedDocs, ...scannedImages].map((d) => d.name);
+  const attachedWhat = scannedImages.length
+    ? [scannedDocs.length ? `${scannedDocs.length} scanned PDF(s)` : "", `${scannedImages.length} image file(s)`].filter(Boolean).join(" and ")
+    : `${scannedDocs.length} scanned PDF(s)`;
+  const eachAttached = scannedImages.length ? "attached file" : "attached PDF";
+  // Los archivos del paquete de los que no viaja nada: un formato que no se lee, o un adjunto
+  // que paso los limites. Se le nombran al modelo para que no los de por faltantes.
+  const unreadFiles = unreadFilesOf(scanSource, skippedScans);
   // Named once more in the LAST block the model reads before the schema.
   //
   // The attachments sit behind ~90k tokens of document text, and whether the model opens
@@ -11249,9 +11295,9 @@ function buildDirectReviewUserContent(meta, documents, feedback, metadata = {}, 
   // request did not change between them — a timeout did, which decides only which prompt
   // gets answered, and both of those runs answered the same one. Recency is the cheap lever
   // against a long prompt: the last instruction is the one that survives it.
-  const scanReminder = scannedDocs.length
-    ? `BEFORE YOU CONCLUDE: ${scannedDocs.length} scanned PDF(s) are attached to this message (${scannedDocs.map((d) => d.name).join("; ")}). They are images, so nothing printed inside them appears in the document text above. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.
-REQUIRED, and do this before writing any issue: for EACH attached PDF, add ONE line to verifiedItems, prefixed "SCANNED:", naming the file and then every form on every page of it with its key figures — e.g. "SCANNED: taxes.pdf — p1 1099-INT Capital One $1,699.30; p2 1098 First National $35,048.14 (610 Piedmont); p3 1098 CMG $37,513.99 (26350 Cat Tail Dr); p4 Fort Bend 2025 tax bill $23,055.92; p5 Galveston 2025 tax bill $9,445.41". Number the pages you actually saw and never skip one: if page 2 holds a form, page 2 must appear in that line. One scanned file routinely holds several unrelated forms and its filename names at most one of them, so page 1 is never the whole story. Keep each line to figures, no commentary.
+  const scanReminder = attachedNames.length
+    ? `BEFORE YOU CONCLUDE: ${attachedWhat} are attached to this message (${attachedNames.join("; ")}). They are images, so nothing printed inside them appears in the document text above. A form found inside an attachment is support that WAS provided: reporting it as missing is a false finding, and so is a tie-out that leaves it out of the total.
+REQUIRED, and do this before writing any issue: for EACH ${eachAttached}, add ONE line to verifiedItems, prefixed "SCANNED:", naming the file and then every form on every page of it with its key figures — e.g. "SCANNED: taxes.pdf — p1 1099-INT Capital One $1,699.30; p2 1098 First National $35,048.14 (610 Piedmont); p3 1098 CMG $37,513.99 (26350 Cat Tail Dr); p4 Fort Bend 2025 tax bill $23,055.92; p5 Galveston 2025 tax bill $9,445.41". Number the pages you actually saw and never skip one: if page 2 holds a form, page 2 must appear in that line. One scanned file routinely holds several unrelated forms and its filename names at most one of them, so page 1 is never the whole story. Keep each line to figures, no commentary.
 TRANSCRIBE, DO NOT INFER. Copy each figure digit by digit from the image and copy the form type from its printed title. Do not guess a document's contents from its filename: a file called "Health Benefits" turned out to hold a W-2, and a review that assumed otherwise reported dollar amounts that appear nowhere in it. If a figure is not legible, write "illegible" rather than a number.
 A figure you read off an image is NOT verified support. Reading scans is error-prone — real runs have turned $1,699.30 into $699.70, $37,513.99 into $0, and $9,445.41 into $99,445.41 — and a misread number silently becomes a false finding. So: any tie-out line whose support comes from a scanned attachment must be reported with status NOT VERIFIED and a note naming the file and page, however confident you feel. State the figure, cite where it came from, and let the reviewer confirm it against the document.\n`
     : "";
@@ -11267,7 +11313,7 @@ A figure you read off an image is NOT verified support. Reading scans is error-p
   // scanned documents had been read, and the output alone could not tell "the model ignored
   // the attachments" from "the attachments never left the browser".
   const withText = (scanSource.files || []).filter((f) => String(f.text || "").trim().length > 40).length;
-  console.log(`[Review] package: ${(scanSource.files || []).length} file(s), ${withText} with extractable text, ${scannedDocs.length} scan(s) attached as PDF (${Math.round(scannedDocs.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)${skippedScans.length ? `, ${skippedScans.length} skipped for size: ${skippedScans.join("; ")}` : ""}${(metadata.scanDropped || []).length ? `, ${metadata.scanDropped.length} DROPPED IN BROWSER: ${metadata.scanDropped.join("; ")}` : ""}.`);
+  console.log(`[Review] package: ${(scanSource.files || []).length} file(s), ${withText} with extractable text, ${scannedDocs.length} scan(s) attached as PDF (${Math.round(scannedDocs.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)${skippedScans.length ? `, ${skippedScans.length} skipped for size: ${skippedScans.join("; ")}` : ""}${(metadata.scanDropped || []).length ? `, ${metadata.scanDropped.length} DROPPED IN BROWSER: ${metadata.scanDropped.join("; ")}` : ""}${scannedImages.length ? `, ${scannedImages.length} image(s) attached (${Math.round(scannedImages.reduce((n, d) => n + d.bytes, 0) / 1024)} KB)` : ""}${unreadFiles.length ? `, ${unreadFiles.length} file(s) not read` : ""}.`);
   const blocks = [{ type: "text", text: stablePrefix }];
   if (scannedDocs.length) {
     blocks.push({
@@ -11277,6 +11323,29 @@ A figure you read off an image is NOT verified support. Reading scans is error-p
     for (const doc of scannedDocs) {
       blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: doc.data }, title: doc.name.slice(0, 120) });
     }
+  }
+  // Las imagenes van despues de los PDF y cada una detras de una linea con su nombre: un
+  // bloque de imagen no lleva titulo, y sin el nombre el modelo no puede citar de cual salio
+  // una cifra.
+  if (scannedImages.length) {
+    blocks.push({
+      type: "text",
+      text: `IMAGE FILES ATTACHED (${scannedImages.length}): these files from the package are pictures — screenshots, photos or scans saved as images — so nothing printed in them appears in the document text above. Each one follows below, right after a line with its file name. READ THEM VISUALLY and pull every reportable figure exactly as printed — payer or agency, form or document type, dates, amounts, confirmation numbers, withholding. A payment confirmation, a W-2, a 1098 or a 1099 inside one of these is support that WAS provided: do NOT report it as missing, and do include it when you total a tie-out line. Read them; do NOT transcribe them: never spend executiveSummary, finalConclusion or an issue on an inventory of what the package contains. Files: ${scannedImages.map((d) => d.name).join("; ")}.`,
+    });
+    for (const image of scannedImages) {
+      blocks.push({ type: "text", text: `IMAGE FILE: ${image.name}` });
+      blocks.push({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } });
+    }
+  }
+  // Lo que no viajo. Los escaneados que pasaron el limite ya van nombrados en el bloque de
+  // los PDF cuando ese bloque existe; aca va el resto.
+  const notYetNamed = unreadFiles.filter((name) => !(scannedDocs.length && skippedScans.includes(name)));
+  if (notYetNamed.length) {
+    const named = notYetNamed.slice(0, 40);
+    blocks.push({
+      type: "text",
+      text: `FILES IN THE PACKAGE THAT WERE NOT READ (${notYetNamed.length}): ${named.join("; ")}${notYetNamed.length > named.length ? `; and ${notYetNamed.length - named.length} more` : ""}. These files are in the client's package, but nothing of their content was sent to you — a format that cannot be read, or an attachment over the size limits. Do not state or imply anything about their contents, and do not report a document as missing when it may be one of these: say that the file was not read and has to be opened by hand.`,
+    });
   }
   // The cache breakpoint goes on the LAST stable block, so the documents are cached too.
   // Put it on the volatile suffix and the PDFs get re-uploaded at full price every run.
@@ -11596,7 +11665,7 @@ function structureModelCandidates() {
 
 function normalizeDirectReview(review, reviewRequest) {
   if (!review || typeof review !== "object") return null;
-  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, fullText: file.originalText || file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size })) }) || {};
+  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, fullText: file.originalText || file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size, omitted: file.omitted })), unreadFiles: reviewRequest.unreadFiles }) || {};
   normalized.clientName = normalized.clientName || reviewRequest.meta.clientName;
   normalized.returnType = normalized.returnType || reviewRequest.meta.returnType;
   normalized.taxYear = normalized.taxYear || reviewRequest.meta.taxYear;
@@ -11637,6 +11706,7 @@ function automatedFindingsFor(payload) {
     () => runAnswerArithmeticChecks(files, metadata),
     () => runCrossDocumentChecks(files, metadata),
     () => runIndividualChecks(files, metadata),
+    () => runK1Checks(files, metadata),
     () => runEntityExtraChecks(files, metadata),
   ];
   for (const run of modules) {
@@ -11730,7 +11800,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // Every required tie-out line must appear, even when the review skipped it: a silently
   // missing check used to read as "nothing wrong there".
   const reviewReturnType = payload?.metadata?.returnType || payload?.returnType || detectReturnTypeFromFiles(payload?.files);
-  const requiredRows = ensureRequiredTieOutRows(normalized.tieOutResults, reviewReturnType);
+  const requiredRows = ensureRequiredTieOutRows(normalized.tieOutResults, reviewReturnType, payload?.files);
   normalized.tieOutResults = requiredRows.rows;
   if (requiredRows.added) console.log(`[Review] ${requiredRows.added} required tie-out line(s) were missing and added as unverified.`);
   // Arithmetic verdicts, roll-up coherence (a total cannot tie while its components do
@@ -11804,6 +11874,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       : "AUTOMATED GUARDS: ran over every finding and none was contradicted by the return, the package, the workpaper or the share of the support that was actually read.",
   );
 
+  // A tie-out line that is still out of balance and that none of the findings is about: the
+  // reviewer acts on the issue list, and a difference shown only in the table gets missed.
+  const untied = issuesFromOutOfBalanceRows(normalized.tieOutResults, normalized.issues);
+  if (untied.length) {
+    normalized.issues = [...untied, ...(Array.isArray(normalized.issues) ? normalized.issues : [])];
+    console.log(`[Review] ${untied.length} tie-out line(s) out of balance had no finding of their own; written as findings.`);
+  }
+
   const individualChecks = runPriorYearChecks(payload?.files, payload?.metadata || {});
   const entityChecks = runEntityReturnChecks(payload?.files, payload?.metadata || {});
   // Only meaningful when the continuity check actually compared two returns: an empty result
@@ -11847,6 +11925,9 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // (1040); cada socio contra si mismo el año anterior y los K-1 recibidos contra lo cargado
   // (entidades); y que el paquete sea el que se cree que es (todos los tipos).
   const form1040Checks = runIndividualChecks(payload?.files, payload?.metadata || {});
+  // Cada K-1 recibido contra el renglon del 1040 donde cae: el modelo lee una parte de los
+  // K-1 de un paquete grande y no suma casilla por casilla; el codigo los lee todos.
+  const k1Checks = runK1Checks(payload?.files, payload?.metadata || {});
   const entityOwnerChecks = runEntityExtraChecks(payload?.files, payload?.metadata || {});
   const packageChecks = runPackageChecks(payload?.files, { ...(payload?.metadata || {}), returnType: payload?.metadata?.returnType || payload?.returnType || "" });
   const depreciationCheck = checkListedPropertyDepreciation(currentReturnText, payload?.metadata || {});
@@ -11860,7 +11941,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   // El paquete va justo antes de la identidad: un archivo ilegible o un tipo de declaracion
   // equivocado se lee antes que cualquier cruce que dependa de ellos.
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...form1040Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...form1040Checks, ...k1Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -11908,6 +11989,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["answered conditions", answerChecks.length],
     ["cross-document", crossDocChecks.length],
     ["1040 carryovers and documents", form1040Checks.length],
+    ["K-1s received", k1Checks.length],
     ["entity owners and K-1s", entityOwnerChecks.length],
     ["package integrity", packageChecks.length],
   ];
@@ -11941,6 +12023,24 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       normalized.openQuestions.unshift(`${names.length} uploaded document(s) are scanned images with no extractable text and were NOT read by this review: ${names.join("; ")}. Any conclusion that a document is "missing" may simply mean it is inside one of these files — open them by hand before requesting anything from the client.`);
       console.log(`[Review] ${names.length} uploaded file(s) had no extractable text.`);
     }
+  }
+  // Los archivos de los que no viajo nada: un formato que no se lee, una foto de mas, un
+  // escaneado que paso los limites. Antes desaparecian del paquete sin que nadie se enterara.
+  const notRead = unreadNote(payload?.unreadFiles);
+  if (notRead) {
+    normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
+    normalized.openQuestions.unshift(notRead);
+    console.log(`[Review] ${payload.unreadFiles.length} file(s) in the package were not read.`);
+  }
+  // Lo que no se le mando al modelo porque el paquete no entra en una revision. Va primero:
+  // es lo unico de esta lista que cambia cuanto vale todo lo demas del informe. Un paquete real
+  // de 79 archivos salio con los dos W-2 y nueve K-1 afuera, y el informe no decia una palabra.
+  const leftOut = omissionNote((payload?.files || []).flatMap((file) => (Array.isArray(file?.omitted) ? file.omitted : [])));
+  if (leftOut) {
+    normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
+    normalized.openQuestions.unshift(leftOut);
+    const omitted = payload.files.flatMap((file) => (Array.isArray(file?.omitted) ? file.omitted : []));
+    console.log(`[Review] no entro en la revision: ${omitted.reduce((sum, file) => sum + file.pages, 0)} pagina(s) de ${omitted.length} archivo(s), ${omitted.filter((file) => file.whole).length} de ellos entero(s).`);
   }
   if (!normalized.balanceSheetCheck && hasBalanceSheetRelevantFiles(payload)) {
     normalized.balanceSheetCheck = {
@@ -15308,7 +15408,11 @@ function collectScannedPdfDocuments(payload = {}) {
       scannedDocs.push({ name: String(candidate.name || "scanned.pdf"), data, bytes });
     }
   }
-  return { scannedDocs, skippedScans };
+  // Las imagenes que el navegador saco de un ZIP (capturas, fotos). Solo las manda la Review;
+  // en las otras pestañas la lista viene vacia y esto no cambia nada. Ver lib/review-attachments.js.
+  const { images: scannedImages, skipped: skippedImages } = collectImages(payload);
+  skippedScans.push(...skippedImages);
+  return { scannedDocs, skippedScans, scannedImages };
 }
 
 function buildPreparerContent(payload) {

@@ -105,6 +105,22 @@ test("el tipo de cada documento exige numero y frase del cuerpo", () => {
   assert.strictEqual(pd.docYear("Form 1099-B (Rev. 1-2022)\nFor calendar year 2025"), 2025);
 });
 
+test("un 1095-C que nombra al 1095-A en sus instrucciones no es un 1095-A", () => {
+  const employer = "Employer-Provided Health Insurance Offer and Coverage\nForm 1095-C\n1 Name of employee JANE EXAMPLE\nIf you enrolled in a Marketplace plan, the Marketplace will report information about that coverage on Form 1095-A, Health Insurance Marketplace Statement.";
+  assert.deepStrictEqual(pd.docTypes("coverage 1095 c.pdf", employer), []);
+  const marketplace = "Form 1095-A Health Insurance Marketplace Statement 2025\n1 Marketplace identifier IL\n2 Marketplace-assigned policy number 000111\nMonthly enrollment premiums 950.00";
+  assert.deepStrictEqual(pd.docTypes("1095-A.pdf", marketplace), ["1095-a"]);
+});
+
+test("un renglon que nombra dos años no fija el año del documento", () => {
+  // Las instrucciones de un 5498 de 2025 hablan de aportes "for tax year 2024 that were made in 2025".
+  const f5498 = "Date Issued: May 13, 2026\nBox 8 shows SEP IRA contributions made during 2025 (including contributions for tax year 2024 that were made in 2025) but not\ncontributions made in 2026 for 2025.\n1 IRA contributions $ 7,000.00 Form 5498";
+  assert.deepStrictEqual(pd.docTypes("5498.pdf", f5498), ["5498"]);
+  assert.strictEqual(pd.docYear(f5498), null);
+  assert.deepStrictEqual(pc.checkOtherYearDocuments(pkg(f1040(), [{ name: "5498.pdf", reviewRole: "supporting_document", text: f5498 }]), META), []);
+  assert.strictEqual(pd.docYear("Statement for tax year 2024\nInterest income 120.00"), 2024, "un año solo en el renglon sigue contando");
+});
+
 const carryoverPage = (year, rows) => ["2025 GENERAL INFORMATION PAGE 1", `CARRYOVERS TO ${year}`, ...rows].join("\n");
 
 test("un arrastre estatal sin la declaracion de ese estado el año anterior", () => {

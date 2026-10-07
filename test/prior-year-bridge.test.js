@@ -115,6 +115,20 @@ test("si el arrastre SÍ figura en el año actual, no dice nada", () => {
   assert.strictEqual(checkSuspendedLossCarryforward(withCarryforward, PRIOR_8582_SUSPENDED), null);
 });
 
+test("el arrastre llegó con otra cifra: de más es medio, de menos es alto, y repartido en 1c y 2c no es nada", () => {
+  const line = (id, amount) => `c Prior years' unallowed losses (enter the amount from Part ${id === "1c" ? "IV" : "V"}, column (c)) . . . . . ${id} ( ${amount} )`;
+  const current = (rows) => `Form 8582 Passive Activity Loss Limitations\n${rows.join("\n")}\n`;
+  const doubled = checkSuspendedLossCarryforward(current([line("1c", ""), line("2c", "63,000.")]), PRIOR_8582_SUSPENDED);
+  assert.strictEqual(doubled.severity, "MEDIUM");
+  assert.match(doubled.detail, /allocated \$31,500\.00 .* brings in \$63,000\.00 .* \$31,500\.00 more/);
+  const short = checkSuspendedLossCarryforward(current([line("2c", "20,000.")]), PRIOR_8582_SUSPENDED);
+  assert.strictEqual(short.severity, "HIGH");
+  assert.match(short.detail, /\$11,500\.00 less/);
+  assert.strictEqual(checkSuspendedLossCarryforward(current([line("1c", "11,500."), line("2c", "20,000.")]), PRIOR_8582_SUSPENDED), null, "la suma de 1c y 2c es el arrastre");
+  // La copia del Form 8582 para el AMT repite los renglones: no se suman dos veces.
+  assert.strictEqual(checkSuspendedLossCarryforward(current([line("2c", "31,500."), line("2c", "31,500.")]), PRIOR_8582_SUSPENDED), null);
+});
+
 test("distribución que supera la base sin ganancia de capital reportada", () => {
   assert.deepStrictEqual(extractStockBasis(PRIOR_7203_EXCESS), { basisBeforeDistributions: 410000, distributions: 465000 });
   const finding = checkExcessDistributions(PRIOR_7203_EXCESS, "2024");

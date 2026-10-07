@@ -5255,7 +5255,8 @@ async function buildReviewPayload() {
   scanDropped.length = 0;
   const preparedFiles = [];
   for (const item of allFiles) {
-    preparedFiles.push(await prepareFileForReview(item));
+    // La Review lee las imagenes que vienen adentro de un ZIP; ver imageForReview.
+    preparedFiles.push(await prepareFileForReview({ ...item, zipImages: true }));
   }
 
   return {
@@ -8783,7 +8784,59 @@ function safeSheetName(name) {
 // server log can say whether the attachments were lost here or ignored downstream.
 const scanDropped = [];
 
-async function prepareFileForReview({ file, type }) {
+// Las imagenes de adentro de un ZIP: capturas de pantalla y fotos que el cliente guarda junto a
+// sus formularios. No tienen texto que extraer, asi que se achican y viajan como imagen para
+// que el modelo las lea. En un paquete real los dos comprobantes de pagos estimados al estado
+// eran capturas PNG: nadie los leyo, y la declaracion tenia esa linea en cero.
+//
+// Diez alcanza para una carpeta normal y acota lo que pesa el pedido. 1568 px de lado es el
+// tamaño hasta el que el modelo lee una imagen sin achicarla el mismo.
+const ZIP_IMAGE_MAX = 10;
+const ZIP_IMAGE_MAX_EDGE = 1568;
+const ZIP_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+
+async function decodeImageFile(file) {
+  if (typeof createImageBitmap === "function") {
+    // Con la orientacion de la foto aplicada, donde el navegador lo permite.
+    try { return await createImageBitmap(file, { imageOrientation: "from-image" }); } catch (_) { /* opcion no soportada: se prueba sin ella */ }
+    try { return await createImageBitmap(file); } catch (_) { /* cae al elemento img */ }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("The image could not be decoded.")); };
+    img.src = url;
+  });
+}
+
+/** Una imagen lista para adjuntar a la revision: achicada, sobre fondo blanco y en JPEG. */
+async function imageForReview(file) {
+  const source = await decodeImageFile(file);
+  try {
+    const sourceWidth = source.naturalWidth || source.width;
+    const sourceHeight = source.naturalHeight || source.height;
+    if (!sourceWidth || !sourceHeight) throw new Error("The image has no size.");
+    const scale = Math.min(1, ZIP_IMAGE_MAX_EDGE / Math.max(sourceWidth, sourceHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+    const context = canvas.getContext("2d");
+    // Un PNG con transparencia sale negro en JPEG si no se le pone fondo.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const data = canvas.toDataURL("image/jpeg", 0.9).split(",")[1] || "";
+    if (!data) throw new Error("The image could not be encoded.");
+    return { name: displayFileName(file), mediaType: "image/jpeg", data };
+  } finally {
+    if (typeof source.close === "function") source.close();
+  }
+}
+
+// `zipImages` lo pide solo la Review: las otras pestañas comparten esta funcion y su servidor
+// no lee imagenes, asi que para ellas un ZIP se prepara exactamente como antes.
+async function prepareFileForReview({ file, type, zipImages = false }) {
   const guessedRole = guessReviewFileRole(file);
   const base = {
     name: displayFileName(file),
@@ -8796,7 +8849,7 @@ async function prepareFileForReview({ file, type }) {
   const ext = fileExtension(file.name).toLowerCase();
   if (ext === "zip") {
     try {
-      const extracted = await extractZipPackage(file);
+      const extracted = await extractZipPackage(file, { images: zipImages });
       return {
         ...base,
         encoding: "zip-text",
@@ -8804,6 +8857,7 @@ async function prepareFileForReview({ file, type }) {
         workbookTemplate: extracted.workbookTemplates[0] || null,
         workbookTemplates: extracted.workbookTemplates,
         scannedPdfs: extracted.scannedPdfs || [],
+        ...(zipImages ? { scannedImages: extracted.scannedImages, unreadEntries: extracted.unreadEntries } : {}),
       };
     } catch (error) {
       console.warn("ZIP package parse failed:", error);
@@ -8866,20 +8920,40 @@ async function extractZipPackageText(file) {
   return (await extractZipPackage(file)).text;
 }
 
-async function extractZipPackage(file) {
+/** Archivos que el sistema operativo deja en una carpeta y que nadie subio a proposito. */
+function isZipClutter(name) {
+  return /^(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(name) || /^(?:\._|~\$)/.test(name);
+}
+
+// Con `options.images` (solo la Review) devuelve ademas las imagenes del ZIP listas para
+// adjuntar, y `unreadEntries`: los archivos de los que no viaja nada, ni texto ni adjunto. Sin
+// esa lista un PDF escaneado que pasaba el tope, una foto o un formato que no se lee
+// desaparecian del paquete sin dejar rastro.
+async function extractZipPackage(file, options = {}) {
   const innerFiles = await extractZipFiles(file);
   const sections = [];
   const workbookTemplates = [];
   const scannedPdfs = [];
+  const scannedImages = [];
+  const unreadEntries = [];
   for (const innerFile of innerFiles) {
     const ext = fileExtension(innerFile.name).toLowerCase();
     try {
       let text = "";
+      let unread = false;
       if (ext === "zip") {
-        const nested = await extractZipPackage(innerFile);
+        const nested = await extractZipPackage(innerFile, options);
         text = nested.text;
         workbookTemplates.push(...nested.workbookTemplates);
-        scannedPdfs.push(...(nested.scannedPdfs || []).slice(0, Math.max(0, 6 - scannedPdfs.length)));
+        const scanRoom = Math.max(0, 6 - scannedPdfs.length);
+        scannedPdfs.push(...(nested.scannedPdfs || []).slice(0, scanRoom));
+        const imageRoom = Math.max(0, ZIP_IMAGE_MAX - scannedImages.length);
+        scannedImages.push(...nested.scannedImages.slice(0, imageRoom));
+        unreadEntries.push(
+          ...nested.unreadEntries,
+          ...(nested.scannedPdfs || []).slice(scanRoom).map((scan) => scan.name),
+          ...nested.scannedImages.slice(imageRoom).map((image) => image.name),
+        );
       }
       else if (ext === "pdf") {
         text = await extractPdfText(innerFile);
@@ -8890,10 +8964,13 @@ async function extractZipPackage(file) {
           try {
             scannedPdfs.push({ name: displayFileName(innerFile), data: await readAsBase64(innerFile) });
           } catch (error) {
+            unread = true;
             scanDropped.push(displayFileName(innerFile));
             console.warn("Scanned PDF inside ZIP could not be attached:", displayFileName(innerFile), error);
           }
         }
+        // Un escaneado que no se adjunto, por tamaño o porque ya iban seis.
+        else if (isImageOnlyPdfText(text)) unread = true;
       }
       else if (["xlsx", "xls"].includes(ext)) {
         const extracted = await extractXlsxWithTemplate(innerFile);
@@ -8902,12 +8979,23 @@ async function extractZipPackage(file) {
       }
       else if (["docx", "doc"].includes(ext)) text = await extractDocx(innerFile);
       else if (isTextLikeFile(innerFile.type || guessMediaType(innerFile.name), innerFile.name)) text = await fileTextContent(innerFile);
+      else if (options.images && ZIP_IMAGE_EXTENSIONS.includes(ext) && scannedImages.length < ZIP_IMAGE_MAX) {
+        try {
+          scannedImages.push(await imageForReview(innerFile));
+        } catch (error) {
+          unread = true;
+          console.warn("Image inside ZIP could not be attached:", displayFileName(innerFile), error);
+        }
+      }
+      // Una imagen de mas, o un formato que no se lee.
+      else if (!isZipClutter(innerFile.name)) unread = true;
       if (text.trim()) {
         sections.push([
           `--- ZIP ENTRY: ${displayFileName(innerFile)} ---`,
           text.trim(),
         ].join("\n"));
       }
+      if (unread) unreadEntries.push(displayFileName(innerFile));
     } catch (error) {
       sections.push(`--- ZIP ENTRY: ${displayFileName(innerFile)} ---\nUnable to parse this entry: ${error.message || "unknown error"}`);
     }
@@ -8916,6 +9004,8 @@ async function extractZipPackage(file) {
     text: sections.length ? sections.join("\n\n") : "No readable files found inside ZIP package.",
     workbookTemplates,
     scannedPdfs,
+    scannedImages,
+    unreadEntries,
   };
 }
 

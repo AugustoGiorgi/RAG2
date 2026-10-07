@@ -288,6 +288,59 @@ test("W-2 con codigo W sin Form 8889", () => {
   assert.ok(found.some((f) => /code W/.test(f.title)));
 });
 
+test("un 5498-SA que solo informa el saldo no pide el Form 8889; con aportes o un 1099-SA, si", () => {
+  // El transcript del IRS lista el 5498-SA todos los años, haya o no movimientos en la cuenta.
+  const transcript = (record) => doc("irs wage and income transcript.pdf", [
+    "This Product Contains Sensitive Taxpayer Data", "Wage and Income Transcript",
+    "Form 5498-SA or 5498-MSA", "Trustee:", "EXAMPLE TRUST CO", ...record,
+    "Form 5498 Individual Retirement Arrangement Contribution Information", "IRA Contributions: $7,000.00",
+  ].join("\n"));
+  const asks8889 = (extra) => run(pkg(f1040(), null, [extra]), ic.presenceChecks).some((f) => /Form 8889/.test(f.title));
+  assert.strictEqual(asks8889(transcript(["MSA Fair Market Value: $25,000.00", "HSA Indicator: HSA Box Checked"])), false, "solo el valor de la cuenta");
+  assert.strictEqual(asks8889(transcript(["Total Contribution: $4,150.00", "MSA Fair Market Value: $25,000.00"])), true);
+  assert.strictEqual(asks8889(doc("5498-SA.pdf", "Form 5498-SA HSA, Archer MSA, or Medicare Advantage MSA Information\n2 Total contributions made in 2025\n$ 3,000.00\n5 Fair market value of HSA $ 9,000.00")), true);
+  assert.strictEqual(asks8889(doc("1099-SA.pdf", "2025 Form 1099-SA Distributions From an HSA\n1 Gross distribution 1,200.00")), true);
+});
+
+test("el 1098 sin deducir trae el interes, el tope de deuda y el formulario, no el transcript", () => {
+  const itemized = f1040({ l12: "45,000.", extra: scheduleA("45,000.", "40,000.").map((l) => l.replace("8a 12,000.", "8a")) });
+  const lender = doc("1098 lender.pdf", "Form 1098 Mortgage Interest Statement 2025\n1 Mortgage interest received from payer(s)/borrower(s)*\n$ 60,000.00\n2 Outstanding mortgage principal 3 Mortgage origination date\n$ 1,000,000.00 06/01/23");
+  const transcript = doc("irs transcript.pdf", "This Product Contains Sensitive Taxpayer Data\nWage and Income Transcript\nForm 1098 Mortgage Interest Statement\nMortgage Interest Received from Payer(s)/Borrower(s): $60,000.00");
+  const [f] = run(pkg(itemized, null, [lender, transcript]), ic.moreDocumentChecks).filter((x) => /Form 1098/.test(x.title));
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.detail, /Box 1 reports \$60,000 of interest/);
+  assert.match(f.detail, /above the \$750,000 acquisition-debt limit, so about \$45,000/);
+  assert.doesNotMatch(f.detail, /irs transcript/, "el transcript no es el formulario");
+  const small = doc("1098 small.pdf", "Form 1098 Mortgage Interest Statement 2025\n1 Mortgage interest received from payer(s)/borrower(s)* $ 4,200.00\n2 Outstanding mortgage principal $ 180,000.00");
+  const [g] = run(pkg(itemized, null, [small]), ic.moreDocumentChecks).filter((x) => /Form 1098/.test(x.title));
+  assert.strictEqual(g.severity, "MEDIUM");
+  assert.doesNotMatch(g.detail, /acquisition-debt limit/);
+});
+
+test("un W-2 con sueldo de otro estado y sin la declaracion de ese estado", () => {
+  const w2 = doc("w2.pdf", "2025 W-2 Wage and Tax Statement\n1 Wages, tips, other comp. 2 Federal income tax withheld\n105000.00 20000.00\nIL 1234-5678 105000.00 4200.00\nIN 0099887 20000.00 640.00\nIL 1234-5678 105000.00 4200.00");
+  assert.deepStrictEqual(ic.w2StateLines(w2), [{ state: "IL", wages: 105000, tax: 4200 }, { state: "IN", wages: 20000, tax: 640 }], "las copias repetidas del W-2 cuentan una vez");
+  const [f] = run(pkg(f1040(), null, [w2]), ic.checkW2OtherStates);
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.title, /Indiana wages with no Indiana return/);
+  assert.match(f.detail, /\$20,000 of Indiana wages and \$640 of Indiana income tax withheld \(w2\.pdf\)/);
+  // La declaracion de ese estado esta en el paquete: nada que decir.
+  const withState = f1040({ extra: ["Form IT-40PNR Indiana Part-Year or Full-Year Nonresident Individual Income Tax Return"] });
+  assert.deepStrictEqual(run(pkg(withState, null, [w2]), ic.checkW2OtherStates), []);
+  // Un solo estado, el del domicilio.
+  const oneState = doc("w2.pdf", "2025 W-2 Wage and Tax Statement\n1 Wages, tips, other comp.\nIL 1234-5678 105000.00 4200.00");
+  assert.deepStrictEqual(run(pkg(f1040(), null, [oneState]), ic.checkW2OtherStates), []);
+});
+
+test("Nueva York: la retencion de otro estado sumada a la linea 72 del IT-201", () => {
+  const w2 = doc("w2.pdf", "2025 W-2 Wage and Tax Statement\n1 Wages, tips, other comp.\nCA 106-0000-5 90000.00 5000.00\nNY 123456789 9 400000.00 23000.00");
+  const ny = (line72) => f1040({ extra: ["IT-201 Resident Income Tax Return", `72 Total New York State tax withheld 72 ${line72} .00`] }).replace("SPRINGFIELD, IL 62701", "ALBANY, NY 12207");
+  const found = run(pkg(ny("28000"), null, [w2]), ic.checkW2OtherStates);
+  assert.deepStrictEqual(found.map((f) => f.title), ["Form W-2 — California wages with no California return", "Form IT-201 line 72 — another state's withholding claimed as New York tax"]);
+  assert.match(found[1].detail, /claims \$28,000 of New York State tax withheld\. The W-2s show \$23,000 withheld for New York and \$5,000 for California/);
+  assert.strictEqual(run(pkg(ny("23000"), null, [w2]), ic.checkW2OtherStates).length, 1, "con la linea 72 solo de Nueva York queda el aviso de California");
+});
+
 test("una liquidacion de un canje 1031 sin Form 8824", () => {
   const settlement = doc("closing.pdf", "ALTA Settlement Statement\nSeller: JANE EXAMPLE\nSettlement Date: 3/1/2025\nFunds to Example Exchange Co., qualified intermediary, IRC 1031");
   const found = run(pkg(f1040(), null, [settlement]), ic.moreDocumentChecks);

@@ -180,3 +180,37 @@ test("lo mismo aplica a la tabla de identificadores", () => {
   assert.strictEqual(review.infoConsistency.length, 2);
   assert.match(review.infoConsistency[review.infoConsistency.length - 1].item, /verified as matching/);
 });
+
+/* --- Los renglones del tie-out tienen identidad propia -------------------- */
+//
+// La tabla se une por parecido de texto, y dos renglones obligatorios distintos se fundian: el
+// de la linea 7 del 1040 quedaba adentro del de la linea 7 del Schedule D y desaparecia de toda
+// revision de dos pasadas. Con los renglones estatales paso lo mismo con los pagos estimados.
+
+const TIE_OUT = [
+  { lineItem: "Schedule D Line 7 — Net short-term capital gain (loss)", status: "NOT VERIFIED" },
+  { lineItem: "Form 1040 Line 7 — Capital gain (loss)", returnAmount: 41250, status: "NOT VERIFIED" },
+  { lineItem: "Form 1040 Line 26 — Estimated tax payments", returnAmount: 12000, workpaperAmount: 12000, status: "TIE" },
+  { lineItem: "Form IT-201 Line 75 — Estimated tax payments and amount paid with Form IT-370", returnAmount: 0, workpaperAmount: 9500, status: "OUT_OF_BALANCE" },
+];
+
+test("dos renglones obligatorios distintos no se funden por parecerse", () => {
+  const { review } = mergeReviews([revision({ tieOutResults: TIE_OUT }), revision({ tieOutResults: TIE_OUT })]);
+  assert.deepStrictEqual(review.tieOutResults.map((row) => row.lineItem), TIE_OUT.map((row) => row.lineItem));
+  const state = review.tieOutResults.find((row) => /IT-201 Line 75/.test(row.lineItem));
+  assert.strictEqual(state.workpaperAmount, 9500, "los pagos al estado no son los federales");
+});
+
+test("el mismo renglon obligatorio escrito distinto en cada pasada sigue siendo uno", () => {
+  const a = revision({ tieOutResults: [{ lineItem: "Form 1040 Line 26 — Estimated tax payments", note: "primera" }] });
+  const b = revision({ tieOutResults: [{ lineItem: "Form 1040, line 26 (2025 estimated payments and amount applied from 2024)", note: "segunda" }] });
+  const { review } = mergeReviews([a, b]);
+  assert.strictEqual(review.tieOutResults.length, 1);
+  assert.strictEqual(review.tieOutResults[0].note, "primera");
+});
+
+test("un renglon que agrego el modelo se sigue uniendo por parecido, como antes", () => {
+  const a = revision({ tieOutResults: [{ lineItem: "Charitable contributions per receipts", note: "primera" }] });
+  const b = revision({ tieOutResults: [{ lineItem: "Charitable contributions per receipts and acknowledgment letters", note: "segunda" }] });
+  assert.strictEqual(mergeReviews([a, b]).review.tieOutResults.length, 1);
+});
