@@ -202,21 +202,45 @@ test("cobertura: sin archivos no devuelve nada", () => {
 });
 
 // Una revision real cito cada W-2 y cada 1099 de un ZIP y aun asi aviso que el ZIP "no figuraba
-// como leido": el modelo lista los documentos de adentro, no el nombre del paquete.
-test("cobertura: un ZIP se da por leido cuando figura alguno de sus documentos", () => {
-  const zip = {
-    name: "Client documents.zip",
-    reviewRole: "supporting_document",
-    text: "--- ZIP ENTRY: Employer W2.pdf ---\n1 Wages, tips, other compensation\n88400.00\n\n--- ZIP ENTRY: folder/Broker 1099.pdf ---\n1a Total ordinary dividends 612.40",
-    scannedPdfs: [{ name: "Scanned W2.pdf", data: "" }],
+// como leido": el modelo no lista el nombre del paquete, y a los documentos de adentro los
+// nombra a su manera o solo los cita en lo que escribe. Lo que se informa es cuales de los
+// documentos del ZIP no aparecen por ningun lado.
+const ZIP = {
+  name: "Client documents.zip",
+  reviewRole: "supporting_document",
+  text: "--- ZIP ENTRY: Employer W2.pdf ---\n1 Wages, tips, other compensation\n88400.00\n\n--- ZIP ENTRY: folder/1099-G.pdf ---\nState or local income tax refunds 250.00\n\n--- ZIP ENTRY: 1099-B_#1234_unknown.pdf ---\nProceeds 2,300.50",
+  scannedPdfs: [{ name: "Scanned W2.pdf", data: "" }],
+};
+const zipRow = (review) => auditDocumentCoverage(review, [ZIP]).coverage[0];
+
+test("cobertura: un ZIP queda leido cuando la revision da cuenta de todos sus documentos", () => {
+  // Listados de tres maneras distintas, y uno solo citado en lo que la revision escribio.
+  const review = {
+    documentsRead: [{ filename: "Client documents/Employer W2.pdf" }, { filename: "Client documents.zip — Scanned W2.pdf (image)" }],
+    issues: [{ issueDescription: "The refund was left out.", source: "1099-G.pdf" }],
+    tieOutResults: [{ note: "1099-B_#1234 totals: proceeds less basis." }],
   };
-  const status = (documentsRead) => auditDocumentCoverage({ documentsRead }, [zip]).coverage[0].status;
-  assert.strictEqual(status([{ filename: "Client documents/Employer W2.pdf" }]), "REVIEWED", "con la carpeta del paquete delante");
-  assert.strictEqual(status([{ filename: "Broker 1099.pdf" }]), "REVIEWED", "o con el nombre solo");
-  assert.strictEqual(status([{ filename: "Client documents/Scanned W2.pdf" }]), "REVIEWED", "o un escaneado que salio de el");
-  assert.strictEqual(status([{ filename: "Client documents.zip" }]), "REVIEWED", "o el paquete mismo, como antes");
-  assert.strictEqual(status([{ filename: "Client 1040 2025.pdf" }]), "NOT_REVIEWED", "si no figura ninguno, se avisa");
-  assert.strictEqual(status([{ filename: "Employer W2 corrected.pdf" }]), "NOT_REVIEWED", "y un nombre parecido no alcanza");
+  assert.strictEqual(zipRow(review).status, "REVIEWED");
+  assert.strictEqual(zipRow({ documentsRead: [{ filename: "Client documents.zip" }] }).status, "REVIEWED", "o listando el paquete mismo, como antes");
+});
+
+test("cobertura: de un ZIP leido a medias se informan los documentos que faltan, no el ZIP", () => {
+  const row = zipRow({ documentsRead: [{ filename: "Employer W2.pdf" }], issues: [{ source: "1099-G.pdf" }] });
+  assert.strictEqual(row.status, "NOT_REVIEWED");
+  assert.deepStrictEqual(row.entriesNotRead, ["1099-B_#1234_unknown.pdf", "Scanned W2.pdf"]);
+  assert.strictEqual(row.label, "1099-B_#1234_unknown.pdf; Scanned W2.pdf (inside Client documents.zip)");
+});
+
+test("cobertura: un ZIP del que no aparece nada se sigue avisando entero", () => {
+  const row = zipRow({ documentsRead: [{ filename: "Client 1040 2025.pdf" }, { filename: "Employer W2 corrected.pdf" }] });
+  assert.strictEqual(row.status, "NOT_REVIEWED");
+  assert.strictEqual(row.label, undefined, "sin detalle: no se abrio ninguno");
+});
+
+test("cobertura: el numero del formulario solo no es el nombre del archivo", () => {
+  // "Form 1099-G" en la prosa habla del formulario; "1099-G.pdf" es el archivo.
+  const general = zipRow({ documentsRead: [{ filename: "Employer W2.pdf" }, { filename: "Scanned W2.pdf" }], issues: [{ issueDescription: "No Form 1099-G was provided. See 1099-B_#1234." }] });
+  assert.deepStrictEqual(general.entriesNotRead, ["1099-G.pdf"]);
 });
 
 test("enforceNumericVerdicts encadena la verificacion de evidencia", () => {

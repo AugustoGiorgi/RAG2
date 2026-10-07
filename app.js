@@ -11195,6 +11195,9 @@ function checkboxNeedsChange(currentState, shouldBe) {
     return s;
   };
   if (!safeText(shouldBe).trim()) return false;
+  // "Confirm" asks the reviewer to look at the box; it is not another state for it. A box
+  // marked "Checked" with "Confirm" beside it was counted as one to change.
+  if (/^(confirm|verify|review|n\/?a|no action|no change|unchanged|same)\b/.test(safeText(shouldBe).trim().toLowerCase())) return false;
   const now = norm(currentState);
   const want = norm(shouldBe);
   if (now === want) return false;

@@ -121,3 +121,19 @@ test("el nombre de una persona es el que la declaracion imprime delante de su SS
   assert.deepStrictEqual(nameFor(fakeReturn(2025), SP), { first: "JANE", last: "SAMPLE" });
   assert.strictEqual(nameFor("UNA SOLA VEZ 400-00-9999", "400-00-9999"), null, "con una sola aparicion no se decide");
 });
+
+// Asi llega un ZIP desde el navegador: un solo archivo con una seccion por documento. Cada
+// seccion se cruza como un documento propio.
+test("un ZIP se cruza documento por documento", () => {
+  const zipText = [
+    `--- ZIP ENTRY: Support/W-2 John.pdf ---\nForm W-2 Wage and Tax Statement 2025\na Employee's SSN ${TP}\nJOHN Q SAMPLE`,
+    `--- ZIP ENTRY: Support/5498 Jane.pdf ---\nForm 5498 IRA Contribution Information 2025\nPARTICIPANT'S TIN XXX-XX-2222\nJANE R MAIDEN`,
+    `--- ZIP ENTRY: Support/K-1 Acme.pdf ---\n${K1("ACME FUND LP", FUND_EIN, TP, "SAMPLE FAMILY TRUST")}`,
+    `--- ZIP ENTRY: Support/K-1 Other.pdf ---\n${K1("OTHER FUND LLC", "98-7654321", TP, "JOHN Q SAMPLE")}`,
+  ].join("\n\n");
+  const rows = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("Support.zip", zipText)]), { taxYear: "2025" });
+  const items = rows.map((r) => r.item);
+  assert.ok(items.includes("Name on 5498 Jane.pdf"), "el apellido distinto se ve dentro del ZIP");
+  assert.ok(items.includes("K-1 K-1 Other.pdf"), "el K-1 que no esta en la declaracion tambien");
+  assert.match(rows[rows.length - 1].note, /documents whose SSN is on the return: 4; documents carrying the name the return prints: 1; K-1s whose EIN is on the return: 1\./);
+});

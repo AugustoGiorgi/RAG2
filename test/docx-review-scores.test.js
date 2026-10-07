@@ -159,3 +159,12 @@ test("sin filas, no hay seccion ni contador", () => {
   const xml = build({ issues: [], tieOutResults: [], checkboxReview: [], infoConsistency: [], missingDocuments: [] });
   assert.doesNotMatch(xml, /Informational Data Consistency|Checkbox Review/);
 });
+
+// Otra review real: "Checked" con "Confirm" al lado conto como casilla a cambiar. Pedir que se
+// confirme no es decir que este mal.
+test("checkbox: 'Confirm' pide mirar la casilla, no cambiarla", () => {
+  const rows = [box("Checked", "Confirm"), box("Checked", "Verify against the purchase agreement"), box("Yes", "N/A"), box("Checked", "No action"), box("No", "No change")];
+  assert.strictEqual(checkboxLabel(rows), "5 reviewed · 0 to change · 100% correct");
+  // Una respuesta distinta a la del año anterior sigue siendo un cambio, aunque termine en "confirm".
+  assert.strictEqual(checkboxLabel([box("Yes", "No (prior year) — confirm")]), "1 reviewed · 1 to change · 0% correct");
+});

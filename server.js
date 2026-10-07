@@ -12009,9 +12009,11 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     normalized.documentCoverage = coverage.coverage;
     normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
     if (coverage.unreviewed.length) {
-      const notRead = coverage.unreviewed.map((c) => c.name);
+      // A ZIP read only in part is reported by the documents inside it that were left out.
+      const notRead = coverage.unreviewed.map((c) => c.label || c.name);
+      const notReadCount = coverage.unreviewed.reduce((n, c) => n + (Array.isArray(c.entriesNotRead) ? c.entriesNotRead.length : 1), 0);
       normalized.openQuestions = Array.isArray(normalized.openQuestions) ? normalized.openQuestions : [];
-      normalized.openQuestions.unshift(`${notRead.length} uploaded document(s) are not listed as read by this review: ${notRead.join("; ")}. A tie-out cannot be complete if the supporting document was never opened — confirm whether these affect the return.`);
+      normalized.openQuestions.unshift(`${notReadCount} uploaded document(s) are not listed as read by this review: ${notRead.join("; ")}. A tie-out cannot be complete if the supporting document was never opened — confirm whether these affect the return.`);
       console.log(`[Review] document coverage: ${coverage.unreviewed.length} of ${coverage.coverage.length} file(s) unreferenced.`);
     }
     // Separate, and the one signal the model cannot talk its way past: these files carry no
