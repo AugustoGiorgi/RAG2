@@ -10,6 +10,7 @@ const tls = require("node:tls");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const { isDeepStrictEqual } = require("node:util");
 const { createConcurrencyLimiter } = require("./lib/concurrency-limiter");
+const { buildForgotPasswordPage, buildResetPasswordPage, buildPasswordFormPage } = require("./lib/password-pages");
 let tenantLookupCache = null;
 const { buildPresentation } = require("./lib/pptx-builder");
 const { buildPlanningDeck } = require("./lib/pptx-builder");
@@ -307,6 +308,8 @@ const SESSION_TTL_SECONDS = Number(process.env.SESSION_TTL_SECONDS || 8 * 60 * 6
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? (process.env.NODE_ENV === "production" ? "true" : "false")).toLowerCase() === "true";
 const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
+const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
+const PASSWORD_RESET_ORIGIN = "https://ragtax-ia.com";
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
 const USER_AI_RATE_LIMIT_WINDOW_MS = Number(process.env.USER_AI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
@@ -883,6 +886,9 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
     if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/forgot-password") { sendHtml(res, 200, buildForgotPasswordPage()); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/reset-password") { res.setHeader("referrer-policy", "no-referrer"); sendHtml(res, 200, buildResetPasswordPage()); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/change-password") { await handleChangePasswordPage(req, res); return; }
     if (req.method === "GET" && req.url === "/request-access") { await handleAccessRequestPage(req, res); return; }
     // Public marketing page: visitors without a session get the landing; authenticated
     // users fall through to the app exactly as before. If landing.html is missing, the
@@ -897,10 +903,16 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
       }
     }
     if (req.method === "POST" && req.url === "/api/login") { await handleLogin(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/auth/forgot-password") { await handleForgotPassword(req, res); return; }
+    if (req.method === "POST" && req.url === "/api/auth/reset-password") { await handleResetPassword(req, res); return; }
     if (req.method === "POST" && req.url === "/api/access-request") { await handleAccessRequest(req, res); return; }
     if (req.method === "POST" && req.url === "/api/logout") { await handleLogout(req, res); return; }
     if (req.method === "GET" && req.url === "/api/auth/status") { await handleAuthStatus(req, res); return; }
     if (requestUrl.pathname === "/api/auth/change-password" && req.method === "POST") { await handleChangePassword(req, res); return; }
+    if (requestUrl.pathname.startsWith("/auth/") && getSession(req)?.mustChangePassword) {
+      sendJson(res, 403, { code: "PASSWORD_CHANGE_REQUIRED", error: "Change your temporary password before continuing." });
+      return;
+    }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google") { await handleGoogleAuth(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google/callback") { await handleGoogleCallback(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo") { await handleQboAuth(req, res); return; }
@@ -914,6 +926,11 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (req.method === "GET" && requestUrl.pathname === "/terms") { serveEula(res); return; }
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
+    if (req.user.mustChangePassword) {
+      if (isApiRequest(req)) sendJson(res, 403, { code: "PASSWORD_CHANGE_REQUIRED", error: "Change your temporary password before continuing." });
+      else redirect(res, "/change-password");
+      return;
+    }
     // Only a global admin's responses keep what a run cost (see costSafePayload).
     res._costViewer = (req.user || getSession(req))?.role === "admin";
     // A firm limited to some sections of the app cannot call the routes of the others. Before
@@ -4647,6 +4664,12 @@ async function handleLoginPage(_req, res) {
   sendHtml(res, 200, buildLoginPage());
 }
 
+async function handleChangePasswordPage(req, res) {
+  const session = getSession(req);
+  if (!session) { redirect(res, "/login"); return; }
+  sendHtml(res, 200, buildPasswordFormPage({ temporary: Boolean(session.mustChangePassword) }));
+}
+
 async function handleLandingPage(_req, res) {
   try {
     sendHtml(res, 200, fsSync.readFileSync(path.join(ROOT, "landing.html"), "utf8"));
@@ -4696,13 +4719,18 @@ async function handleLogin(req, res) {
     }
   }
 
+  const sessionUser = issueSession(res, user);
+  appendAuditLog(req, "auth.login_success", { username: sessionUser.username, role: sessionUser.role });
+  sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
+}
+
+function issueSession(res, user) {
   const sessionUser = authUserForSession(user);
   const issuedAt = Math.floor(Date.now() / 1000);
   const token = signSession({ ...sessionUser, user: sessionUser, iat: issuedAt,
     authVersion: hmac(user.passwordHash), exp: issuedAt + SESSION_TTL_SECONDS });
   res.setHeader("set-cookie", buildSessionCookie(token));
-  appendAuditLog(req, "auth.login_success", { username: sessionUser.username, role: sessionUser.role });
-  sendJson(res, 200, { ok: true, user: sessionUser, ...sessionUser });
+  return sessionUser;
 }
 
 async function handleAccessRequest(req, res) {
@@ -4767,6 +4795,7 @@ async function handleAuthStatus(req, res) {
     username: session?.username || "",
     role: session?.role || "",
     displayName: session?.displayName || session?.username || "",
+    mustChangePassword: Boolean(session?.mustChangePassword),
     authRequired: AUTH_REQUIRED,
     // The sections this user's firm may use, for the page to hide the rest; null is all.
     sections: session ? firmSectionsFor(session) : null,
@@ -4851,10 +4880,8 @@ async function handleChangePassword(req, res) {
   const payload = await readJsonBody(req);
   const currentPassword = String(payload.currentPassword || "");
   const newPassword = String(payload.newPassword || "");
-  if (newPassword.length < 12) { sendJson(res, 400, { error: "New password must be at least 12 characters." }); return; }
-  // Serialize per-user to prevent two simultaneous password-change requests
-  // from both reading the store before either writes.
-  await withUserStoreLock(session.username, () => {
+  if (!validNewPassword(newPassword)) { sendJson(res, 400, { error: "New password must be 12 to 256 characters." }); return; }
+  await withUserStoreLock("__userstore__", async () => {
     const store = readUserStore();
     const user = store.users.find((item) => item.username === session.username);
     if (!user || !verifyPassword(currentPassword, user.passwordHash)) {
@@ -4862,11 +4889,118 @@ async function handleChangePassword(req, res) {
       sendJson(res, 401, { error: "Current password is incorrect." });
       return;
     }
+    if (verifyPassword(newPassword, user.passwordHash)) { sendJson(res, 400, { error: "Choose a different password." }); return; }
     user.passwordHash = createPasswordHash(newPassword);
+    user.mustChangePassword = false;
+    user.passwordReset = null;
     user.updatedAt = new Date().toISOString();
     user.lastPasswordChangeAt = user.updatedAt;
     writeUserStore(store);
+    await flushDatabaseSyncQueue();
+    issueSession(res, user);
     appendAuditLog(req, "auth.password_changed", { username: session.username });
+    sendJson(res, 200, { ok: true });
+  });
+}
+
+function normalizedUserEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function validUserEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
+}
+
+function validNewPassword(value) {
+  return value.length >= 12 && value.length <= 256;
+}
+
+function emailBelongsToAnotherUser(users, email, username) {
+  return users.some((user) => user.username !== username && normalizedUserEmail(user.email) === email);
+}
+
+async function handleForgotPassword(req, res) {
+  const payload = await readJsonBody(req);
+  const email = normalizedUserEmail(payload.email);
+  if (!validUserEmail(email)) { sendJson(res, 400, { error: "Enter a valid email address." }); return; }
+  if (isRateLimited(req, "forgot-password", 5, 60 * 60 * 1000)
+      || isRateLimitedKey(`forgot-email:${hmac(email)}`, 3, 60 * 60 * 1000)) {
+    sendJson(res, 429, { error: "Please wait before requesting another link." });
+    return;
+  }
+  const generic = { ok: true, message: "If an active account has this email, a recovery link will arrive shortly." };
+  sendJson(res, 200, generic);
+  if (!smtpConfigured()) return;
+  void sendPasswordResetLink(req, email).catch((error) => {
+    console.warn("[Auth] Password recovery could not be prepared:", error.message);
+  });
+}
+
+async function sendPasswordResetLink(req, email) {
+  const pending = await withUserStoreLock("__userstore__", async () => {
+    const store = readUserStore();
+    const user = store.users.find((item) => item.active !== false && normalizedUserEmail(item.email) === email);
+    if (!user) return null;
+    const token = crypto.randomBytes(32).toString("base64url");
+    const hash = hmac(`password-reset:${user.username}:${token}`);
+    user.passwordReset = { hash, expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString() };
+    writeUserStore(store);
+    await flushDatabaseSyncQueue();
+    return { username: user.username, token, hash };
+  });
+  if (pending) {
+    const link = `${PASSWORD_RESET_ORIGIN}/reset-password#${new URLSearchParams({ username: pending.username, token: pending.token })}`;
+    try {
+      await sendSmtpMail({
+        from: smtpFromAddress(), to: email, subject: "RAG Tax AI password reset",
+        bodyText: `A password reset was requested for your RAG Tax AI account.\n\nOpen this link to choose a new password:\n${link}\n\nThis link expires in 15 minutes and works only once. If you did not request it, ignore this message.`,
+      });
+      appendAuditLog(req, "auth.password_reset_requested", { username: pending.username });
+    } catch (error) {
+      await withUserStoreLock("__userstore__", async () => {
+        const store = readUserStore();
+        const user = store.users.find((item) => item.username === pending.username);
+        if (user?.passwordReset?.hash === pending.hash) {
+          user.passwordReset = null;
+          writeUserStore(store);
+          await flushDatabaseSyncQueue();
+        }
+      });
+      console.warn("[Auth] Password recovery email could not be sent:", error.message);
+    }
+  }
+}
+
+async function handleResetPassword(req, res) {
+  const payload = await readJsonBody(req);
+  const username = String(payload.username || "").trim();
+  const token = String(payload.token || "");
+  const newPassword = String(payload.newPassword || "");
+  if (!validNewPassword(newPassword)) { sendJson(res, 400, { error: "New password must be 12 to 256 characters." }); return; }
+  if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username) || !/^[a-zA-Z0-9_-]{43}$/.test(token)) {
+    sendJson(res, 400, { error: "This recovery link is invalid or expired." }); return;
+  }
+  if (isRateLimited(req, `reset-password:${username}`, 10, 15 * 60 * 1000)) {
+    sendJson(res, 429, { error: "Too many attempts. Please try again later." }); return;
+  }
+  await withUserStoreLock("__userstore__", async () => {
+    const store = readUserStore();
+    const user = store.users.find((item) => item.username === username && item.active !== false);
+    const reset = user?.passwordReset;
+    if (!reset?.hash || !reset.expiresAt || Date.now() > new Date(reset.expiresAt).getTime()
+        || !safeEqual(reset.hash, hmac(`password-reset:${username}:${token}`))) {
+      sendJson(res, 400, { error: "This recovery link is invalid or expired." }); return;
+    }
+    if (verifyPassword(newPassword, user.passwordHash)) { sendJson(res, 400, { error: "Choose a different password." }); return; }
+    user.passwordHash = createPasswordHash(newPassword);
+    user.mustChangePassword = false;
+    user.passwordReset = null;
+    user.updatedAt = new Date().toISOString();
+    user.lastPasswordChangeAt = user.updatedAt;
+    writeUserStore(store);
+    await flushDatabaseSyncQueue();
+    res.setHeader("set-cookie", clearSessionCookie());
+    appendAuditLog(req, "auth.password_reset_completed", { username });
     sendJson(res, 200, { ok: true });
   });
 }
@@ -4902,15 +5036,20 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const payload = await readJsonBody(req);
       const username = String(payload.username || "").trim();
       const password = String(payload.password || "");
+      const email = normalizedUserEmail(payload.email);
       if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) { sendJson(res, 400, { error: "Username must be 3-64 letters, numbers, dots, hyphens, or underscores." }); return; }
-      if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+      if (!validNewPassword(password)) { sendJson(res, 400, { error: "Password must be 12 to 256 characters." }); return; }
+      if (!validUserEmail(email)) { sendJson(res, 400, { error: "A valid recovery email is required." }); return; }
       if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
+      if (emailBelongsToAnotherUser(store.users, email, username)) { sendJson(res, 409, { error: "This email is already assigned to another user." }); return; }
       const now = new Date().toISOString();
       const bgId = payload.budgetGroupId || null;
       const groupExists = bgId && (store.budgetGroups || []).some((g) => g.id === bgId);
       const user = {
         username,
+        email,
         passwordHash: createPasswordHash(password),
+        mustChangePassword: true,
         // firm_admin: new users are forced into the manager's own firm, as plain users,
         // with no global budget-group assignment. Only the global admin chooses these.
         tenantId: isGlobalAdmin ? String(payload.tenantId || DEFAULT_TENANT_ID).trim().toLowerCase() || DEFAULT_TENANT_ID : managerTenant,
@@ -4936,6 +5075,15 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const user = store.users.find((item) => item.username === username);
       if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
       if (!canManageUser(user)) { sendJson(res, 403, { error: "You can only manage users of your own firm." }); return; }
+      if (payload.email !== undefined) {
+        const email = normalizedUserEmail(payload.email);
+        if (email && !validUserEmail(email)) { sendJson(res, 400, { error: "Enter a valid recovery email." }); return; }
+        if (email !== normalizedUserEmail(user.email)) {
+          if (email && emailBelongsToAnotherUser(store.users, email, username)) { sendJson(res, 409, { error: "This email is already assigned to another user." }); return; }
+          user.email = email;
+          user.passwordReset = null;
+        }
+      }
       // Role changes are a global-admin decision only.
       if (payload.role !== undefined && isGlobalAdmin) user.role = payload.role === "admin" ? "admin" : payload.role === "firm_admin" ? "firm_admin" : "user";
       if (payload.displayName !== undefined) user.displayName = String(payload.displayName || username).trim();
@@ -4974,8 +5122,10 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const user = store.users.find((item) => item.username === username);
       if (!user) { sendJson(res, 404, { error: "User not found." }); return; }
       if (!canManageUser(user)) { sendJson(res, 403, { error: "You can only manage users of your own firm." }); return; }
-      if (password.length < 12) { sendJson(res, 400, { error: "Password must be at least 12 characters." }); return; }
+      if (!validNewPassword(password)) { sendJson(res, 400, { error: "Password must be 12 to 256 characters." }); return; }
       user.passwordHash = createPasswordHash(password);
+      user.mustChangePassword = true;
+      user.passwordReset = null;
       user.updatedAt = new Date().toISOString();
       user.lastPasswordChangeAt = user.updatedAt;
       writeUserStore(store);
@@ -5278,10 +5428,12 @@ function parseAuthUsersJson() {
 function publicUserIdentity(user) {
   return {
     username: user.username,
+    email: user.email || "",
     role: normalizeUserRole(user.role, user.username),
     displayName: user.displayName || user.username,
     tenantId: String(user.tenantId || DEFAULT_TENANT_ID),
     active: user.active !== false,
+    mustChangePassword: Boolean(user.mustChangePassword),
     createdAt: user.createdAt || "",
     updatedAt: user.updatedAt || "",
     lastPasswordChangeAt: user.lastPasswordChangeAt || "",
@@ -5292,10 +5444,12 @@ function publicUser(user, preloaded = {}) {
   const budget = userSpendBudget(user.username, preloaded);
   return {
     username: user.username,
+    email: user.email || "",
     role: normalizeUserRole(user.role, user.username),
     displayName: user.displayName || user.username,
     tenantId: String(user.tenantId || DEFAULT_TENANT_ID),
     active: user.active !== false,
+    mustChangePassword: Boolean(user.mustChangePassword),
     spendLimitUsd: user.spendLimitUsd === undefined ? null : sanitizeSpendLimit(user.spendLimitUsd),
     spendUsedUsd: budget.usedUsd,
     spendRemainingUsd: budget.remainingUsd,
@@ -5378,6 +5532,7 @@ function createPasswordHash(password) {
 function authUserForSession(user) {
   return {
     username: String(user?.username || ""),
+    mustChangePassword: Boolean(user?.mustChangePassword),
     tenantId: String(user?.tenantId || user?.tenant_id || DEFAULT_TENANT_ID),
     role: normalizeUserRole(user?.role, user?.username),
     displayName: String(user?.displayName || user?.username || ""),
@@ -5415,7 +5570,7 @@ function getSession(req) {
     const configuredUser = getAuthUsers().find((user) => user.username === payload.username);
     if (!configuredUser) return null;
     if (payload.role !== configuredUser.role || String(payload.tenantId || DEFAULT_TENANT_ID) !== configuredUser.tenantId) return null;
-    if (payload.authVersion && !safeEqual(payload.authVersion, hmac(configuredUser.passwordHash))) return null;
+    if (!payload.authVersion || !safeEqual(payload.authVersion, hmac(configuredUser.passwordHash))) return null;
     const changedAt = configuredUser.lastPasswordChangeAt ? Math.floor(new Date(configuredUser.lastPasswordChangeAt).getTime() / 1000) : 0;
     if (changedAt && (!payload.iat || payload.iat < changedAt)) return null;
     const sessionUser = authUserForSession(configuredUser);
@@ -5723,7 +5878,8 @@ async function hydrateLocalDataFromDatabase() {
 
 async function hydrateUsersFromDatabase() {
   const result = await databasePool.query(
-    `select username, password_hash, tenant_id, role, display_name, active, spend_limit_usd,
+    `select username, password_hash, tenant_id, role, display_name, email, active,
+            must_change_password, password_reset_hash, password_reset_expires_at, spend_limit_usd,
             created_at, updated_at, last_password_change_at
        from rag_private.app_users
       order by created_at nulls last, username`,
@@ -5743,7 +5899,11 @@ async function hydrateUsersFromDatabase() {
       tenantId: row.tenant_id || DEFAULT_TENANT_ID,
       role: normalizeUserRole(row.role, row.username),
       displayName: row.display_name || row.username,
+      email: normalizedUserEmail(row.email || previous.get(row.username)?.email),
       active: row.active !== false,
+      mustChangePassword: row.must_change_password === true,
+      passwordReset: row.password_reset_hash && row.password_reset_expires_at
+        ? { hash: row.password_reset_hash, expiresAt: new Date(row.password_reset_expires_at).toISOString() } : null,
       spendLimitUsd: hydratedSpendLimit(row.spend_limit_usd, previous.get(row.username)),
       createdAt: row.created_at ? new Date(row.created_at).toISOString() : "",
       updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : "",
@@ -5868,14 +6028,20 @@ async function syncUsersToDatabase(store) {
     );
     await databasePool.query(
       `insert into rag_private.app_users
-        (username, password_hash, tenant_id, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
-       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8::timestamptz, now()), coalesce($9::timestamptz, now()), $10::timestamptz)
+        (username, password_hash, tenant_id, role, display_name, email, active, must_change_password,
+         password_reset_hash, password_reset_expires_at, spend_limit_usd, created_at, updated_at, last_password_change_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11,
+               coalesce($12::timestamptz, now()), coalesce($13::timestamptz, now()), $14::timestamptz)
        on conflict (username) do update set
         password_hash = excluded.password_hash,
         tenant_id = excluded.tenant_id,
         role = excluded.role,
         display_name = excluded.display_name,
+        email = excluded.email,
         active = excluded.active,
+        must_change_password = excluded.must_change_password,
+        password_reset_hash = excluded.password_reset_hash,
+        password_reset_expires_at = excluded.password_reset_expires_at,
         spend_limit_usd = excluded.spend_limit_usd,
         updated_at = now(),
         last_password_change_at = excluded.last_password_change_at`,
@@ -5885,7 +6051,11 @@ async function syncUsersToDatabase(store) {
         tenantId,
         normalizeUserRole(user.role, user.username),
         String(user.displayName || user.username),
+        normalizedUserEmail(user.email) || null,
         user.active !== false,
+        Boolean(user.mustChangePassword),
+        user.passwordReset?.hash || null,
+        sqlTimestamp(user.passwordReset?.expiresAt),
         // null must stay null ("no limit"): sqlNumber(null) is 0, a 0 USD limit.
         sanitizeSpendLimit(user.spendLimitUsd),
         sqlTimestamp(user.createdAt),
@@ -6444,8 +6614,12 @@ function clientIp(req) {
 }
 
 function isRateLimited(req, bucket, maxRequests, windowMs) {
-  const now = Date.now();
   const key = `${bucket}:${clientIp(req) || "unknown"}`;
+  return isRateLimitedKey(key, maxRequests, windowMs);
+}
+
+function isRateLimitedKey(key, maxRequests, windowMs) {
+  const now = Date.now();
   const current = rateLimitBuckets.get(key);
   if (!current || current.resetAt <= now) {
     rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
@@ -8864,6 +9038,7 @@ function buildLoginPage(error = "") {
             </div>
             <button class="login-submit-btn" id="loginSubmit" type="submit"><span id="loginText">Sign In</span><span id="loginSpinner" hidden><svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" opacity=".3"/><path d="M12 2 A10 10 0 0 1 22 12" stroke="currentColor" stroke-width="3" fill="none" stroke-linecap="round"/></svg>Signing in...</span></button>
           </form>
+          <p class="login-access-link"><a href="/forgot-password">Forgot your password?</a></p>
           <p class="login-access-link">No account yet? <a href="/request-access">Request access</a></p>
           <div class="login-legal-links"><a href="/privacy" target="_blank" rel="noopener">Privacy Policy</a><span>&middot;</span><a href="/eula" target="_blank" rel="noopener">Terms of Use</a></div>
           <div class="login-version">RAG Tax AI v2.0 &middot; Powered by Claude</div>
@@ -8914,7 +9089,7 @@ function buildLoginPage(error = "") {
           return;
         }
         if (response.ok) {
-          window.location.href = "/";
+          window.location.href = payload.mustChangePassword ? "/change-password" : "/";
           return;
         }
         const error = document.getElementById("error");

@@ -83,6 +83,7 @@ const els = {
   adminUserMessage: document.getElementById("adminUserMessage"),
   adminNewUsername: document.getElementById("adminNewUsername"),
   adminNewDisplayName: document.getElementById("adminNewDisplayName"),
+  adminNewEmail: document.getElementById("adminNewEmail"),
   adminNewPassword: document.getElementById("adminNewPassword"),
   adminNewSpendLimit: document.getElementById("adminNewSpendLimit"),
   adminNewBudgetGroup: document.getElementById("adminNewBudgetGroup"),
@@ -609,6 +610,7 @@ function init() {
   els.clearFiles.addEventListener("click", resetFiles);
   els.form.addEventListener("submit", runReview);
   els.logoutButton.addEventListener("click", logout);
+  document.getElementById("changePasswordButton")?.addEventListener("click", () => { window.location.href = "/change-password"; });
   els.dashboardButton?.addEventListener("click", openDashboard);
   els.closeDashboardButton?.addEventListener("click", () => { els.dashboardOverlay.hidden = true; });
   els.newReviewButton?.addEventListener("click", startNewDashboardSession);
@@ -4659,6 +4661,7 @@ function renderAdminUsers(users) {
         <div class="admin-user-identity">
           <strong>${escapeHtml(username)}</strong>
           <span>${escapeHtml(user.displayName || "")}</span>
+          ${user.mustChangePassword ? '<span>Temporary password pending change</span>' : ""}
           <span class="admin-user-spend">Firm: ${escapeHtml(user.tenantId || "")}</span>
           ${showSpend ? `<div class="admin-user-figures">${figures}</div>
           ${meter}` : ""}
@@ -4666,6 +4669,10 @@ function renderAdminUsers(users) {
         <label>
           <span>Display</span>
           <input data-admin-display="${escapeHtml(username)}" value="${escapeHtml(user.displayName || "")}" />
+        </label>
+        <label>
+          <span>Recovery email</span>
+          <input data-admin-email="${escapeHtml(username)}" type="email" value="${escapeHtml(user.email || "")}" placeholder="Add email for recovery" />
         </label>
         ${currentUser.role === "admin" ? `
         <label>
@@ -4719,10 +4726,11 @@ function bindAdminUserActions() {
 async function createAdminUser(event) {
   event.preventDefault();
   const username = els.adminNewUsername.value.trim();
+  const email = els.adminNewEmail.value.trim();
   const password = els.adminNewPassword.value;
   const spendLimitUsd = els.adminNewSpendLimit.value;
-  if (!username || !password) {
-    showAdminUserMessage("Username and password are required.", "error");
+  if (!username || !email || !password) {
+    showAdminUserMessage("Username, recovery email and temporary password are required.", "error");
     return;
   }
   const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
@@ -4730,6 +4738,7 @@ async function createAdminUser(event) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       username,
+      email,
       password,
       displayName: els.adminNewDisplayName.value.trim(),
       role: els.adminNewRole.value || "user",
@@ -4747,13 +4756,14 @@ async function createAdminUser(event) {
   }
   els.adminCreateUserForm.reset();
   if (els.adminNewRole) els.adminNewRole.value = "user";
-  showAdminUserMessage(`User ${username} created.`);
+  showAdminUserMessage(`User ${username} created. Their temporary password must be changed at first sign-in.`);
   await loadAdminUsers();
 }
 
 async function updateAdminUser(username) {
   if (!username) return;
   const displayName = els.adminUsersList?.querySelector(`[data-admin-display="${cssEscape(username)}"]`)?.value || "";
+  const email = els.adminUsersList?.querySelector(`[data-admin-email="${cssEscape(username)}"]`)?.value.trim() || "";
   const roleSelect = els.adminUsersList?.querySelector(`[data-admin-role="${cssEscape(username)}"]`);
   const groupSelect = els.adminUsersList?.querySelector(`[data-admin-group="${cssEscape(username)}"]`);
   const active = els.adminUsersList?.querySelector(`[data-admin-active="${cssEscape(username)}"]`)?.value !== "false";
@@ -4764,7 +4774,7 @@ async function updateAdminUser(username) {
     // role/budgetGroupId/spendLimitUsd only travel when their controls exist (global admin
     // view); a firm admin's payload omits them and the server ignores them anyway.
     body: JSON.stringify({
-      displayName, active,
+      displayName, email, active,
       ...(limitInput ? { spendLimitUsd: limitInput.value } : {}),
       ...(roleSelect ? { role: roleSelect.value } : {}),
       ...(groupSelect ? { budgetGroupId: groupSelect.value || null } : {}),
@@ -4781,7 +4791,16 @@ async function updateAdminUser(username) {
 
 async function resetAdminUserPassword(username) {
   if (!username) return;
-  const password = window.prompt(`New password for ${username}`);
+  const dialog = document.getElementById("temporaryPasswordDialog");
+  const input = document.getElementById("temporaryPasswordInput");
+  document.getElementById("temporaryPasswordTitle").textContent = `Set temporary password for ${username}`;
+  input.value = "";
+  dialog.returnValue = "";
+  const password = await new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm" ? input.value : ""), { once: true });
+    dialog.showModal();
+    input.focus();
+  });
   if (!password) return;
   const response = await fetch(`${API_BASE_URL}/api/admin/users/${encodeURIComponent(username)}/password`, {
     method: "PUT",
@@ -4793,7 +4812,7 @@ async function resetAdminUserPassword(username) {
     showAdminUserMessage(payload.error || "Could not reset password.", "error");
     return;
   }
-  showAdminUserMessage(`Password updated for ${username}.`);
+  showAdminUserMessage(`Temporary password set for ${username}. They must change it at next sign-in.`);
 }
 
 async function deleteAdminUser(username) {

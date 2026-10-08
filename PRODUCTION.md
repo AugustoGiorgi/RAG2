@@ -56,6 +56,23 @@ GET /
 
 Use `/healthz` for hosting health checks.
 
+## Password recovery
+
+New accounts require a unique recovery email and receive a temporary password.
+Their session can only change that password before accessing the app. Existing
+accounts are not forced to change passwords on deployment; an administrator may
+add a recovery email to them from User Administration. The login page links to
+email recovery. A reset link expires after 15 minutes, is single-use, and the
+token is stored only as an HMAC hash. Resetting or changing a password invalidates
+existing sessions. Never send the user's final password to an administrator.
+
+The reset email uses the existing `ACCESS_REQUEST_SMTP_*` settings and links to
+`https://ragtax-ia.com/reset-password`. If mail delivery is unavailable, an
+administrator can set a new temporary password in User Administration; the user
+must change it on the next sign-in. Before relying on recovery in a new
+environment, verify SMTP delivery to an authorized test inbox. Run
+`node --test test/password-recovery.test.js` for the isolated mail and auth flow.
+
 ## Deployment Notes
 
 - Serve over HTTPS.

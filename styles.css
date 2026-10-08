@@ -8702,3 +8702,13 @@ body {
 .admin-access-picker-option.selected strong { color: var(--accent); }
 .admin-access-picker-empty, .admin-access-hint { margin: 0; padding: 10px 2px; color: #64748b; font-size: 13px; }
 .admin-access-picker + .admin-access-firm { margin-top: 4px; }
+/* Password reset dialog is intentionally compact and readable in the admin UI. */
+.password-dialog { width: min(420px, calc(100vw - 32px)); border: 1px solid #cbd5e1; border-radius: 6px; padding: 24px; color: #172033; background: #fff; }
+.password-dialog::backdrop { background: rgba(15, 23, 42, .55); }
+.password-dialog h2 { margin: 0 0 8px; font-size: 20px; }
+.password-dialog p { margin: 0 0 18px; color: #536176; line-height: 1.45; }
+.password-dialog label { display: block; margin-bottom: 6px; font-weight: 700; font-size: 13px; }
+.password-dialog input { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid #aebdcf; border-radius: 6px; font: inherit; }
+.password-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.password-dialog-actions button { min-height: 40px; padding: 8px 13px; border: 1px solid #b8c6d6; border-radius: 6px; background: #fff; color: #173e73; font-weight: 700; cursor: pointer; }
+.password-dialog-actions button[value="confirm"] { border-color: #173e73; background: #173e73; color: #fff; }

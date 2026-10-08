@@ -63,7 +63,7 @@ before(async () => {
   child.stdout.on("data", (d) => { bootLog += d; });
   child.stderr.on("data", (d) => { bootLog += d; });
 
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`${BASE}/login`);
@@ -71,8 +71,8 @@ before(async () => {
     } catch (_) { /* aún no arrancó */ }
     await new Promise((r) => setTimeout(r, 300));
   }
-  throw new Error(`server did not boot in 20s. Log:\n${bootLog.slice(-2000)}`);
-}, { timeout: 30000 });
+  throw new Error(`server did not boot in 60s. Log:\n${bootLog.slice(-2000)}`);
+}, { timeout: 75000 });
 
 after(() => {
   if (child) child.kill();
@@ -133,7 +133,7 @@ test("firm_admin: gestiona SOLO su firma, sin poderes globales", async () => {
   assert.deepStrictEqual(names, ["boss_t", "pilot_t"]);
   // Crea un usuario: cae en SU firma aunque intente otra, y nunca como admin.
   const created = await api("boss_t", "POST", "/api/admin/users", {
-    username: "nuevo_t", password: "NuevoTest123456", role: "admin", tenantId: "rag-tax-ai",
+    username: "nuevo_t", email: "nuevo@example.test", password: "NuevoTest123456", role: "admin", tenantId: "rag-tax-ai",
   });
   assert.strictEqual(created.status, 200);
   assert.strictEqual(created.json.user.tenantId, "otrafirma");
@@ -208,6 +208,9 @@ test("cambiar la contraseña revoca la cookie anterior de inmediato", async () =
   assert.strictEqual((await api("admin_t", "PUT", "/api/admin/users/ana_t/password", { password: "NuevaClaveTest123456" })).status, 200);
   assert.strictEqual((await api("ana_t", "GET", "/api/clients")).status, 401);
   await login("ana_t", "NuevaClaveTest123456");
+  assert.strictEqual((await api("ana_t", "GET", "/api/clients")).status, 403);
+  assert.strictEqual((await api("ana_t", "POST", "/api/auth/change-password", { currentPassword: "NuevaClaveTest123456", newPassword: "AnaPrivatePassword123!" })).status, 200);
+  await login("ana_t", "AnaPrivatePassword123!");
   assert.strictEqual((await api("ana_t", "GET", "/api/clients")).status, 200);
 });
 

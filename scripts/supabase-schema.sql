@@ -16,12 +16,21 @@ create table if not exists rag_private.app_users (
   tenant_id text not null default 'rag-tax-ai' references rag_private.firms(tenant_id),
   role text not null default 'user' check (role in ('admin', 'firm_admin', 'user')),
   display_name text not null,
+  email text,
   active boolean not null default true,
+  must_change_password boolean not null default false,
+  password_reset_hash text,
+  password_reset_expires_at timestamptz,
   spend_limit_usd numeric(12, 4),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   last_password_change_at timestamptz
 );
+
+alter table rag_private.app_users add column if not exists email text;
+alter table rag_private.app_users add column if not exists must_change_password boolean not null default false;
+alter table rag_private.app_users add column if not exists password_reset_hash text;
+alter table rag_private.app_users add column if not exists password_reset_expires_at timestamptz;
 
 create table if not exists rag_private.user_firms (
   username text not null references rag_private.app_users(username) on delete cascade,

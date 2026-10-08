@@ -75,6 +75,18 @@
     <script src="/assets/vendor/pdf.min.js"></script>
   </head>
   <body class="auth-loading">
+    <dialog id="temporaryPasswordDialog" class="password-dialog" aria-labelledby="temporaryPasswordTitle">
+      <form method="dialog">
+        <h2 id="temporaryPasswordTitle">Set temporary password</h2>
+        <p>The user will have to change this password at their next sign-in.</p>
+        <label for="temporaryPasswordInput">Temporary password</label>
+        <input id="temporaryPasswordInput" type="password" autocomplete="new-password" minlength="12" maxlength="256" required />
+        <div class="password-dialog-actions">
+          <button type="submit" value="cancel" formnovalidate>Cancel</button>
+          <button type="submit" value="confirm">Set password</button>
+        </div>
+      </form>
+    </dialog>
     <main class="app-shell">
       <header class="topbar">
         <div class="brand">
@@ -90,6 +102,7 @@
           <span id="webSearchStatus" class="system-pill">Web research: off</span>
           <button id="driveHeaderStatus" class="topbar-button drive-header-status" type="button" hidden>Connect Google Drive</button>
           <button id="adminNavButton" class="topbar-button admin-only" type="button" hidden>Admin</button>
+          <button id="changePasswordButton" class="topbar-button" type="button">Change password</button>
           <button id="logoutButton" class="topbar-button" type="button">Logout</button>
         </div>
       </header>
@@ -115,7 +128,8 @@
             <form id="adminCreateUserForm" class="admin-user-form">
               <label><span>Username</span><input id="adminNewUsername" autocomplete="off" required /></label>
               <label><span>Display name</span><input id="adminNewDisplayName" autocomplete="off" /></label>
-              <label><span>Password</span><input id="adminNewPassword" type="text" autocomplete="off" minlength="12" required /></label>
+              <label><span>Recovery email</span><input id="adminNewEmail" type="email" autocomplete="off" required /></label>
+              <label><span>Temporary password</span><input id="adminNewPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
               <label id="adminSpendLimitField"><span>Token budget USD</span><input id="adminNewSpendLimit" type="number" min="0" step="0.01" placeholder="No limit (or use a group)" /></label>
               <label id="adminBudgetGroupField"><span>Budget group</span><select id="adminNewBudgetGroup"><option value="">— No group (individual budget) —</option></select></label>
               <label id="adminRoleField"><span>Role</span><select id="adminNewRole"><option value="user">User</option><option value="firm_admin">Firm administrator</option><option value="admin">Administrator (global)</option></select></label>

@@ -62,14 +62,20 @@ async function migrateUsers(client) {
     );
     await client.query(
       `insert into rag_private.app_users
-        (username, password_hash, tenant_id, role, display_name, active, spend_limit_usd, created_at, updated_at, last_password_change_at)
-       values ($1, $2, $3, $4, $5, $6, $7, coalesce($8::timestamptz, now()), coalesce($9::timestamptz, now()), $10::timestamptz)
+        (username, password_hash, tenant_id, role, display_name, email, active, must_change_password,
+         password_reset_hash, password_reset_expires_at, spend_limit_usd, created_at, updated_at, last_password_change_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $11,
+               coalesce($12::timestamptz, now()), coalesce($13::timestamptz, now()), $14::timestamptz)
        on conflict (username) do update set
         password_hash = excluded.password_hash,
         tenant_id = excluded.tenant_id,
         role = excluded.role,
         display_name = excluded.display_name,
+        email = excluded.email,
         active = excluded.active,
+        must_change_password = excluded.must_change_password,
+        password_reset_hash = excluded.password_reset_hash,
+        password_reset_expires_at = excluded.password_reset_expires_at,
         spend_limit_usd = excluded.spend_limit_usd,
         updated_at = now(),
         last_password_change_at = excluded.last_password_change_at`,
@@ -77,9 +83,13 @@ async function migrateUsers(client) {
         String(user.username),
         String(user.passwordHash),
         tenantId,
-        user.role === "admin" ? "admin" : "user",
+        ["admin", "firm_admin"].includes(user.role) ? user.role : "user",
         String(user.displayName || user.username),
+        String(user.email || "").trim().toLowerCase() || null,
         user.active !== false,
+        Boolean(user.mustChangePassword),
+        user.passwordReset?.hash || null,
+        isoOrNull(user.passwordReset?.expiresAt),
         user.spendLimitUsd === undefined ? null : normalizeNumber(user.spendLimitUsd),
         isoOrNull(user.createdAt),
         isoOrNull(user.updatedAt),
@@ -90,7 +100,7 @@ async function migrateUsers(client) {
       `insert into rag_private.user_firms (username, tenant_id, firm_role)
        values ($1, $2, $3)
        on conflict (username, tenant_id) do update set firm_role = excluded.firm_role`,
-      [String(user.username), tenantId, user.role === "admin" ? "admin" : "member"],
+      [String(user.username), tenantId, ["admin", "firm_admin"].includes(user.role) ? "admin" : "member"],
     );
   }
   return users.length;
