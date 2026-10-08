@@ -113,6 +113,8 @@ ENABLE_GMAIL_SEND=true
 
 `gmail.send` sends only after the user reviews the recipient, subject, body, and attachments and confirms the action. `drive.file` uses Google Picker so the app can read only files the user explicitly selects. Users connected with an older scope set must reconnect once.
 
+Password recovery can also send through Gmail API. Connect a dedicated RAG Google account to an app user, then set `PASSWORD_RESET_TRANSPORT=gmail`, `PASSWORD_RESET_GMAIL_USERNAME` to that app username, and `PASSWORD_RESET_GMAIL_EMAIL` to the exact Gmail address. The server verifies the connected account and `gmail.send` grant before sending. A failed send clears the pending reset token. Leave the transport as `smtp` only when SMTP is configured and working; no customer Google connection is selected automatically for recovery emails.
+
 ## QuickBooks Online Setup
 
 1. Go to https://developer.intuit.com.

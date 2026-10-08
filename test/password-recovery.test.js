@@ -207,3 +207,67 @@ test("temporary passwords and email recovery protect existing and new accounts",
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(mail.messages.length, 2, "disabled users do not receive recovery mail");
 });
+
+test("Gmail recovery uses the dedicated sender and rejects missing scope", { timeout: 90000 }, async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ragtax-gmail-recovery-test-"));
+  const capturePath = path.join(dataDir, "gmail-capture.txt");
+  const tokenPath = path.join(dataDir, "google_tokens.json");
+  fs.writeFileSync(path.join(dataDir, "users.json"), JSON.stringify({ users: [
+    { username: "one", email: "one@example.test", passwordHash: passwordHash("FirstPassword123!"), role: "user", tenantId: "firm-one", active: true },
+    { username: "two", email: "two@example.test", passwordHash: passwordHash("SecondPassword123!"), role: "user", tenantId: "firm-one", active: true },
+  ], budgetGroups: [] }));
+  const sender = { access_token: "synthetic-access-token", refresh_token: "synthetic-refresh-token",
+    expiry_date: Date.now() + 3600000, scope: "https://www.googleapis.com/auth/gmail.send" };
+  fs.writeFileSync(tokenPath, JSON.stringify({ users: { recovery_sender: sender } }));
+  const port = await availablePort();
+  const child = spawn(process.execPath, ["--require", path.join(ROOT, "test", "fixtures", "gmail-recovery-fetch.js"), "server.js"], {
+    cwd: ROOT,
+    env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), DATA_DIR: dataDir,
+      AUTH_SECRET: "synthetic-gmail-recovery-secret-0123456789", AUTH_USERS_JSON: "[]",
+      DATABASE_URL: "", ANTHROPIC_API_KEY: "", ADMIN_2FA_ENABLED: "false", COOKIE_SECURE: "false",
+      GOOGLE_CLIENT_ID: "synthetic-client-id", GOOGLE_CLIENT_SECRET: "synthetic-client-secret",
+      PASSWORD_RESET_TRANSPORT: "gmail", PASSWORD_RESET_GMAIL_USERNAME: "recovery_sender",
+      PASSWORD_RESET_GMAIL_EMAIL: "sender@example.test", TEST_GMAIL_EMAIL: "sender@example.test",
+      TEST_GMAIL_CAPTURE_PATH: capturePath },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  child.stdout.on("data", (chunk) => { log = (log + chunk).slice(-1500); });
+  child.stderr.on("data", (chunk) => { log = (log + chunk).slice(-1500); });
+  t.after(async () => {
+    if (child.exitCode === null) {
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill();
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    }
+    if (path.resolve(dataDir).startsWith(path.resolve(os.tmpdir()) + path.sep)) fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${port}`;
+  const bootDeadline = Date.now() + 60000;
+  while (Date.now() < bootDeadline) {
+    try { if ((await fetch(`${base}/healthz`)).ok) break; } catch (_) { /* booting */ }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  assert.ok(Date.now() < bootDeadline, `server did not start: ${log}`);
+  const forgot = (email) => fetch(`${base}/api/auth/forgot-password`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email }),
+  });
+  assert.equal((await forgot("one@example.test")).status, 200);
+  const sendDeadline = Date.now() + 10000;
+  while (!fs.existsSync(capturePath) && Date.now() < sendDeadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(fs.existsSync(capturePath), `Gmail send was not called: ${log}`);
+  const mime = Buffer.from(fs.readFileSync(capturePath, "utf8"), "base64url").toString("utf8");
+  assert.match(mime, /To: one@example\.test/);
+  assert.match(mime, /RAG Tax AI password reset/);
+  assert.match(mime, /Content-Type: multipart\/alternative/);
+  fs.writeFileSync(tokenPath, JSON.stringify({ users: { recovery_sender: { ...sender, scope: "https://www.googleapis.com/auth/drive.file" } } }));
+  assert.equal((await forgot("two@example.test")).status, 200);
+  const rollbackDeadline = Date.now() + 10000;
+  while (Date.now() < rollbackDeadline) {
+    const user = JSON.parse(fs.readFileSync(path.join(dataDir, "users.json"), "utf8")).users.find((item) => item.username === "two");
+    if (log.includes("has not granted gmail.send") && !user.passwordReset) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.match(log, /has not granted gmail.send/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, "users.json"), "utf8")).users.find((item) => item.username === "two").passwordReset, null);
+});

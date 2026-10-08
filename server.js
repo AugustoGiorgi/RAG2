@@ -310,6 +310,9 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS
 const LOGIN_RATE_LIMIT_MAX = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
 const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
 const PASSWORD_RESET_ORIGIN = "https://ragtax-ia.com";
+const PASSWORD_RESET_TRANSPORT = String(process.env.PASSWORD_RESET_TRANSPORT || "smtp").trim().toLowerCase();
+const PASSWORD_RESET_GMAIL_USERNAME = String(process.env.PASSWORD_RESET_GMAIL_USERNAME || "").trim();
+const PASSWORD_RESET_GMAIL_EMAIL = String(process.env.PASSWORD_RESET_GMAIL_EMAIL || "").trim().toLowerCase();
 const API_RATE_LIMIT_WINDOW_MS = Number(process.env.API_RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const API_RATE_LIMIT_MAX = Number(process.env.API_RATE_LIMIT_MAX || 240);
 const USER_AI_RATE_LIMIT_WINDOW_MS = Number(process.env.USER_AI_RATE_LIMIT_WINDOW_MS || 60 * 60 * 1000);
@@ -4968,7 +4971,10 @@ async function handleForgotPassword(req, res) {
   }
   const generic = { ok: true, message: "If an active account has this email, a recovery link will arrive shortly." };
   sendJson(res, 200, generic);
-  if (!smtpConfigured()) return;
+  if (!passwordResetDeliveryConfigured()) {
+    console.warn("[Auth] Password recovery delivery is not configured.");
+    return;
+  }
   void sendPasswordResetLink(req, email).catch((error) => {
     console.warn("[Auth] Password recovery could not be prepared:", error.message);
   });
@@ -4990,10 +4996,7 @@ async function sendPasswordResetLink(req, email) {
   if (pending) {
     const link = `${PASSWORD_RESET_ORIGIN}/reset-password#${new URLSearchParams({ username: pending.username, token: pending.token })}`;
     try {
-      await sendSmtpMail({
-        from: smtpFromAddress(), to: email, subject: "RAG Tax AI password reset",
-        bodyText: `A password reset was requested for your RAG Tax AI account.\n\nOpen this link to choose a new password:\n${link}\n\nThis link expires in 15 minutes and works only once. If you did not request it, ignore this message.`,
-      });
+      await sendPasswordResetMail(email, link);
       appendAuditLog(req, "auth.password_reset_requested", { username: pending.username });
     } catch (error) {
       await withUserStoreLock("__userstore__", async () => {
@@ -5008,6 +5011,37 @@ async function sendPasswordResetLink(req, email) {
       console.warn("[Auth] Password recovery email could not be sent:", error.message);
     }
   }
+}
+
+function passwordResetDeliveryConfigured() {
+  if (PASSWORD_RESET_TRANSPORT === "smtp") return smtpConfigured();
+  return PASSWORD_RESET_TRANSPORT === "gmail" && GMAIL_SEND_ENABLED && isGoogleDriveEnabled()
+    && Boolean(PASSWORD_RESET_GMAIL_USERNAME && validUserEmail(PASSWORD_RESET_GMAIL_EMAIL));
+}
+
+async function sendPasswordResetMail(to, link) {
+  const subject = "RAG Tax AI password reset";
+  const bodyText = `A password reset was requested for your RAG Tax AI account.\n\nOpen this link to choose a new password:\n${link}\n\nThis link expires in 15 minutes and works only once. If you did not request it, ignore this message.`;
+  if (PASSWORD_RESET_TRANSPORT === "smtp") {
+    await sendSmtpMail({ from: smtpFromAddress(), to, subject, bodyText });
+    return;
+  }
+  const username = PASSWORD_RESET_GMAIL_USERNAME;
+  const tokens = readGoogleTokens(username);
+  if (!googleTokenHasScope(tokens, GOOGLE_GMAIL_SEND_SCOPE)) {
+    throw new Error("The configured recovery sender has not granted gmail.send.");
+  }
+  const profileResponse = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username);
+  if (!profileResponse.ok) throw new Error(`Recovery sender Gmail profile check failed (${profileResponse.status}).`);
+  const profile = await profileResponse.json();
+  if (String(profile.emailAddress || "").toLowerCase() !== PASSWORD_RESET_GMAIL_EMAIL) {
+    throw new Error("The connected Gmail account does not match the configured recovery sender.");
+  }
+  const raw = Buffer.from(buildMimeEmail({ to, subject, bodyText })).toString("base64url");
+  const response = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ raw }),
+  }, username);
+  if (!response.ok) throw new Error(`Recovery sender Gmail send failed (${response.status}).`);
 }
 
 async function persistPasswordResetToken(user, reset, expectedHash) {
