@@ -5037,7 +5037,7 @@ async function sendPasswordResetMail(to, link) {
   if (String(profile.email || "").toLowerCase() !== PASSWORD_RESET_GMAIL_EMAIL) {
     throw new Error("The connected Gmail account does not match the configured recovery sender.");
   }
-  const raw = Buffer.from(buildMimeEmail({ to, subject, bodyText })).toString("base64url");
+  const raw = Buffer.from(buildMimeEmail({ from: PASSWORD_RESET_GMAIL_EMAIL, to, subject, bodyText })).toString("base64url");
   const response = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ raw }),
   }, username);
@@ -17134,6 +17134,7 @@ function buildMimeEmail(params) {
   const alt = `alt_${boundary}`;
   const lines = [];
   lines.push(
+    ...(params.from ? [`From: ${params.from}`] : []),
     `To: ${params.to}`,
     `Subject: ${encodeMimeHeader(params.subject)}`,
     "MIME-Version: 1.0",

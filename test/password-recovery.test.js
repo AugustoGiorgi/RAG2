@@ -257,6 +257,7 @@ test("Gmail recovery uses the dedicated sender and rejects missing scope", { tim
   while (!fs.existsSync(capturePath) && Date.now() < sendDeadline) await new Promise((resolve) => setTimeout(resolve, 50));
   assert.ok(fs.existsSync(capturePath), `Gmail send was not called: ${log}`);
   const mime = Buffer.from(fs.readFileSync(capturePath, "utf8"), "base64url").toString("utf8");
+  assert.match(mime, /^From: sender@example\.test\r?$/m);
   assert.match(mime, /To: one@example\.test/);
   assert.match(mime, /RAG Tax AI password reset/);
   assert.match(mime, /Content-Type: multipart\/alternative/);
