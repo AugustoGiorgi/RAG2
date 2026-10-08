@@ -146,8 +146,14 @@ test("temporary passwords and email recovery protect existing and new accounts",
   assert.equal((await request("GET", "/api/clients", undefined, firstLogin.cookie)).status, 403);
   const changePage = await fetch(`${base}/change-password`, { headers: { cookie: firstLogin.cookie } });
   assert.equal(changePage.status, 200);
-  assert.match(await changePage.text(), /temporary password/i);
+  const changeHtml = await changePage.text();
+  assert.match(changeHtml, /temporary password/i);
+  assert.match(changeHtml, /<form id="form" novalidate>/);
+  assert.equal((changeHtml.match(/class="visibility"/g) || []).length, 3);
   assert.equal((await request("POST", "/api/auth/change-password", { currentPassword: "bad", newPassword: "PrivatePassword123!" }, firstLogin.cookie)).status, 401);
+  assert.equal((await request("POST", "/api/auth/change-password", { currentPassword: "TemporaryPassword123!", newPassword: "shortpass123" }, firstLogin.cookie)).status, 400);
+  assert.equal((await request("POST", "/api/auth/change-password", { currentPassword: "TemporaryPassword123!", newPassword: "password123456789" }, firstLogin.cookie)).status, 400);
+  assert.equal((await request("POST", "/api/auth/change-password", { currentPassword: "TemporaryPassword123!", newPassword: "new_test_private_phrase" }, firstLogin.cookie)).status, 400);
   const changed = await request("POST", "/api/auth/change-password", { currentPassword: "TemporaryPassword123!", newPassword: "PrivatePassword123!" }, firstLogin.cookie);
   assert.equal(changed.status, 200);
   assert.ok(changed.cookie);
@@ -176,6 +182,7 @@ test("temporary passwords and email recovery protect existing and new accounts",
   assert.ok(token);
   assert.equal(fs.readFileSync(path.join(dataDir, "users.json"), "utf8").includes(token), false);
   assert.equal((await request("POST", "/api/auth/reset-password", { username: "new_test", token: "X".repeat(43), newPassword: "RecoveredPassword123!" })).status, 400);
+  assert.equal((await request("POST", "/api/auth/reset-password", { username: "new_test", token, newPassword: "123456789012345" })).status, 400);
   const reset = await request("POST", "/api/auth/reset-password", { username: "new_test", token, newPassword: "RecoveredPassword123!" });
   assert.equal(reset.status, 200);
   assert.equal((await request("POST", "/api/auth/reset-password", { username: "new_test", token, newPassword: "AnotherPassword123!" })).status, 400);

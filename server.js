@@ -4880,7 +4880,6 @@ async function handleChangePassword(req, res) {
   const payload = await readJsonBody(req);
   const currentPassword = String(payload.currentPassword || "");
   const newPassword = String(payload.newPassword || "");
-  if (!validNewPassword(newPassword)) { sendJson(res, 400, { error: "New password must be 12 to 256 characters." }); return; }
   await withUserStoreLock("__userstore__", async () => {
     const store = readUserStore();
     const user = store.users.find((item) => item.username === session.username);
@@ -4889,14 +4888,20 @@ async function handleChangePassword(req, res) {
       sendJson(res, 401, { error: "Current password is incorrect." });
       return;
     }
+    const passwordError = chosenPasswordError(newPassword, user);
+    if (passwordError) { sendJson(res, 400, { error: passwordError }); return; }
     if (verifyPassword(newPassword, user.passwordHash)) { sendJson(res, 400, { error: "Choose a different password." }); return; }
-    user.passwordHash = createPasswordHash(newPassword);
-    user.mustChangePassword = false;
-    user.passwordReset = null;
-    user.updatedAt = new Date().toISOString();
-    user.lastPasswordChangeAt = user.updatedAt;
+    const updatedAt = new Date().toISOString();
+    const nextUser = { ...user, passwordHash: createPasswordHash(newPassword), mustChangePassword: false,
+      passwordReset: null, updatedAt, lastPasswordChangeAt: updatedAt };
+    try { await persistChosenPassword(user.passwordHash, nextUser); }
+    catch (error) {
+      console.warn("[Auth] Password change could not be persisted:", error.message);
+      sendJson(res, 503, { error: "Could not save your new password. Please try again." });
+      return;
+    }
+    Object.assign(user, nextUser);
     writeUserStore(store);
-    await flushDatabaseSyncQueue();
     issueSession(res, user);
     appendAuditLog(req, "auth.password_changed", { username: session.username });
     sendJson(res, 200, { ok: true });
@@ -4913,6 +4918,39 @@ function validUserEmail(value) {
 
 function validNewPassword(value) {
   return value.length >= 12 && value.length <= 256;
+}
+
+function chosenPasswordError(value, user) {
+  const length = Array.from(value).length;
+  if (length < 15 || length > 256) return "Use 15 to 256 characters for your new password.";
+  const compact = value.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const username = String(user?.username || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const emailName = normalizedUserEmail(user?.email).split("@")[0].replace(/[^\p{L}\p{N}]/gu, "");
+  if ((username.length >= 4 && compact.includes(username)) || (emailName.length >= 4 && compact.includes(emailName))) {
+    return "Do not include your username or email address in your password.";
+  }
+  if (/^(.)\1+$/u.test(compact)
+      || /^(?:password|contrasena|contraseña|qwerty|letmein|welcome|admin|ragtaxai)\d*$/u.test(compact)
+      || /^\d+$/u.test(compact)) {
+    return "This password is too easy to guess. Choose a longer, less predictable phrase.";
+  }
+  return "";
+}
+
+async function persistChosenPassword(previousHash, user) {
+  if (!DATABASE_PERSISTENCE_ENABLED) return;
+  if (!databaseReady || !databasePool) throw new Error("Database is unavailable.");
+  await flushDatabaseSyncQueue(60000);
+  const result = await databasePool.query({
+    text: `update rag_private.app_users
+              set password_hash = $1, must_change_password = false,
+                  password_reset_hash = null, password_reset_expires_at = null,
+                  updated_at = $2::timestamptz, last_password_change_at = $2::timestamptz
+            where username = $3 and password_hash = $4`,
+    values: [user.passwordHash, user.updatedAt, user.username, previousHash],
+    query_timeout: 30000,
+  });
+  if (result.rowCount !== 1) throw new Error("Stored credentials changed during update.");
 }
 
 function emailBelongsToAnotherUser(users, email, username) {
@@ -4976,7 +5014,6 @@ async function handleResetPassword(req, res) {
   const username = String(payload.username || "").trim();
   const token = String(payload.token || "");
   const newPassword = String(payload.newPassword || "");
-  if (!validNewPassword(newPassword)) { sendJson(res, 400, { error: "New password must be 12 to 256 characters." }); return; }
   if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username) || !/^[a-zA-Z0-9_-]{43}$/.test(token)) {
     sendJson(res, 400, { error: "This recovery link is invalid or expired." }); return;
   }
@@ -4991,14 +5028,20 @@ async function handleResetPassword(req, res) {
         || !safeEqual(reset.hash, hmac(`password-reset:${username}:${token}`))) {
       sendJson(res, 400, { error: "This recovery link is invalid or expired." }); return;
     }
+    const passwordError = chosenPasswordError(newPassword, user);
+    if (passwordError) { sendJson(res, 400, { error: passwordError }); return; }
     if (verifyPassword(newPassword, user.passwordHash)) { sendJson(res, 400, { error: "Choose a different password." }); return; }
-    user.passwordHash = createPasswordHash(newPassword);
-    user.mustChangePassword = false;
-    user.passwordReset = null;
-    user.updatedAt = new Date().toISOString();
-    user.lastPasswordChangeAt = user.updatedAt;
+    const updatedAt = new Date().toISOString();
+    const nextUser = { ...user, passwordHash: createPasswordHash(newPassword), mustChangePassword: false,
+      passwordReset: null, updatedAt, lastPasswordChangeAt: updatedAt };
+    try { await persistChosenPassword(user.passwordHash, nextUser); }
+    catch (error) {
+      console.warn("[Auth] Password reset could not be persisted:", error.message);
+      sendJson(res, 503, { error: "Could not save your new password. Please try again." });
+      return;
+    }
+    Object.assign(user, nextUser);
     writeUserStore(store);
-    await flushDatabaseSyncQueue();
     res.setHeader("set-cookie", clearSessionCookie());
     appendAuditLog(req, "auth.password_reset_completed", { username });
     sendJson(res, 200, { ok: true });
