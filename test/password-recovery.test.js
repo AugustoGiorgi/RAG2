@@ -217,7 +217,7 @@ test("Gmail recovery uses the dedicated sender and rejects missing scope", { tim
     { username: "two", email: "two@example.test", passwordHash: passwordHash("SecondPassword123!"), role: "user", tenantId: "firm-one", active: true },
   ], budgetGroups: [] }));
   const sender = { access_token: "synthetic-access-token", refresh_token: "synthetic-refresh-token",
-    expiry_date: Date.now() + 3600000, scope: "https://www.googleapis.com/auth/gmail.send" };
+    expiry_date: Date.now() + 3600000, scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/userinfo.email" };
   fs.writeFileSync(tokenPath, JSON.stringify({ users: { recovery_sender: sender } }));
   const port = await availablePort();
   const child = spawn(process.execPath, ["--require", path.join(ROOT, "test", "fixtures", "gmail-recovery-fetch.js"), "server.js"], {

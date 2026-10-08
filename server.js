@@ -5031,10 +5031,10 @@ async function sendPasswordResetMail(to, link) {
   if (!googleTokenHasScope(tokens, GOOGLE_GMAIL_SEND_SCOPE)) {
     throw new Error("The configured recovery sender has not granted gmail.send.");
   }
-  const profileResponse = await googleApiFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {}, username);
-  if (!profileResponse.ok) throw new Error(`Recovery sender Gmail profile check failed (${profileResponse.status}).`);
+  const profileResponse = await googleApiFetch("https://www.googleapis.com/oauth2/v2/userinfo", {}, username);
+  if (!profileResponse.ok) throw new Error(`Recovery sender Google identity check failed (${profileResponse.status}).`);
   const profile = await profileResponse.json();
-  if (String(profile.emailAddress || "").toLowerCase() !== PASSWORD_RESET_GMAIL_EMAIL) {
+  if (String(profile.email || "").toLowerCase() !== PASSWORD_RESET_GMAIL_EMAIL) {
     throw new Error("The connected Gmail account does not match the configured recovery sender.");
   }
   const raw = Buffer.from(buildMimeEmail({ to, subject, bodyText })).toString("base64url");
