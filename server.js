@@ -4981,9 +4981,10 @@ async function sendPasswordResetLink(req, email) {
     if (!user) return null;
     const token = crypto.randomBytes(32).toString("base64url");
     const hash = hmac(`password-reset:${user.username}:${token}`);
-    user.passwordReset = { hash, expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString() };
+    const reset = { hash, expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS).toISOString() };
+    await persistPasswordResetToken(user, reset);
+    user.passwordReset = reset;
     writeUserStore(store);
-    await flushDatabaseSyncQueue();
     return { username: user.username, token, hash };
   });
   if (pending) {
@@ -4999,14 +5000,30 @@ async function sendPasswordResetLink(req, email) {
         const store = readUserStore();
         const user = store.users.find((item) => item.username === pending.username);
         if (user?.passwordReset?.hash === pending.hash) {
+          await persistPasswordResetToken(user, null, pending.hash);
           user.passwordReset = null;
           writeUserStore(store);
-          await flushDatabaseSyncQueue();
         }
       });
       console.warn("[Auth] Password recovery email could not be sent:", error.message);
     }
   }
+}
+
+async function persistPasswordResetToken(user, reset, expectedHash) {
+  if (!DATABASE_PERSISTENCE_ENABLED) return;
+  if (!databaseReady || !databasePool) throw new Error("Database is unavailable.");
+  await flushDatabaseSyncQueue(60000);
+  const result = await databasePool.query({
+    text: `update rag_private.app_users
+              set password_reset_hash = $1, password_reset_expires_at = $2::timestamptz
+            where username = $3 and password_hash = $4
+              ${expectedHash ? "and password_reset_hash = $5" : ""}`,
+    values: [reset?.hash || null, reset?.expiresAt || null, user.username, user.passwordHash,
+      ...(expectedHash ? [expectedHash] : [])],
+    query_timeout: 30000,
+  });
+  if (result.rowCount !== 1) throw new Error("Stored recovery state changed during update.");
 }
 
 async function handleResetPassword(req, res) {
