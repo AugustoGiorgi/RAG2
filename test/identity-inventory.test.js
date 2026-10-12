@@ -193,3 +193,29 @@ test("un ZIP se cruza documento por documento", () => {
   assert.ok(items.includes("K-1 K-1 Other.pdf"), "el K-1 que no esta en la declaracion tambien");
   assert.match(rows[rows.length - 1].note, /documents whose SSN is on the return: 4; documents carrying the name the return prints: 1; K-1s whose EIN is on the return: 1\./);
 });
+
+// Una revision real: el K-1 de una sociedad que la declaracion reporta venia emitido a un SSN
+// que no era el del contribuyente, con su nombre. No es un error de un digito, asi que el cruce
+// de arriba no lo veia, y el EIN estaba en la declaracion, asi que contaba como verificado.
+test("un K-1 de una entidad de la declaracion emitido a un SSN que no es de nadie de la declaracion", () => {
+  const other = "400-00-9876";
+  const docs = [file("K-1 Acme.pdf", K1("ACME FUND LP", FUND_EIN, other, "JOHN Q SAMPLE"))];
+  const rows = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), docs), { taxYear: "2025" });
+  const row = rows.find((r) => r.item === "SSN on K-1 K-1 Acme.pdf");
+  assert.ok(row, "tiene que haber una fila propia");
+  assert.strictEqual(row.status, "MISMATCH");
+  assert.strictEqual(row.returnValue, "***1111");
+  assert.strictEqual(row.sourceValue, "***9876");
+  assert.match(row.note, /issued to the SSN ending 9876, which is not on the return, although it carries the name SAMPLE; the entity's EIN is on the return/);
+  assert.doesNotMatch(JSON.stringify(rows), /400-00-9876/, "en el informe van solo los ultimos cuatro");
+  assert.match(rows[rows.length - 1].note, /K-1s whose EIN is on the return: 0\./, "no cuenta como verificado");
+});
+
+test("un PDF con los K-1 de varios socios trae el del contribuyente: no es una diferencia", () => {
+  const all = `${K1("ACME FUND LP", FUND_EIN, "400-00-9876", "SOMEONE ELSE")}\n${K1("ACME FUND LP", FUND_EIN, TP, "JOHN Q SAMPLE")}`;
+  const rows = identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("All K-1s.pdf", all)]), { taxYear: "2025" });
+  assert.deepStrictEqual(rows.map((r) => r.status), ["MATCH"]);
+  // Y con el SSN del contribuyente enmascarado, como lo imprimen muchas sociedades.
+  const masked = `${K1("ACME FUND LP", FUND_EIN, "400-00-9876", "SOMEONE ELSE")}\n${K1("ACME FUND LP", FUND_EIN, "XXX-XX-1111", "JOHN Q SAMPLE")}`;
+  assert.deepStrictEqual(identityInventoryRows(pack(fakeReturn(2025), fakeReturn(2024), [file("All K-1s.pdf", masked)]), { taxYear: "2025" }).map((r) => r.status), ["MATCH"]);
+});

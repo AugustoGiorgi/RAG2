@@ -6,7 +6,7 @@ const assert = require("node:assert");
 const {
   runCrossDocumentChecks, checkRentalSaleNotReported, checkRentalPropertyContinuity,
   checkLatePaymentExposure, checkK1WithoutSupport, checkEstimatedK1s, checkPartnerLiabilities,
-  checkRentalExpensesOutOfProportion,
+  checkRentalExpensesOutOfProportion, checkPreliminaryStatements, sameWord,
   scheduleEProperties, streetKey, monthsLate,
 } = require("../lib/cross-document-checks");
 
@@ -292,6 +292,85 @@ test("el rotulo de la casilla siguiente no se lee como importe", () => {
 test("prestamos asignados como recourse y totales que atan: nada", () => {
   const files = [{ name: "LLC 2025 return.pdf", reviewRole: "current_return", text: return1065([k1Block("1,000.", "99,000.", "2,000.", "148,000.")]) }];
   assert.deepStrictEqual(checkPartnerLiabilities(files, { taxYear: "2025" }), []);
+});
+
+/* --- La prorroga impresa lejos de la lista de formularios ------------------- */
+
+test("la lista de formularios que corta de renglon tambien muestra la prorroga", () => {
+  const wrapped = current1040({ extension: false }).replace("FEDERAL: 1040, SCH 1, SCH E, 8582", "FEDERAL: 1040, SCH 1, SCH 2, SCH 3, SCH A, SCH B, SCH C\nSCH D, SCH E, 4868, 8582");
+  const [f] = checkLatePaymentExposure(pkg(wrapped), META, { now: SEPT });
+  assert.doesNotMatch(f.detail, /does not show an extension/, "el 4868 esta en el segundo renglon de la lista");
+  assert.match(f.evidence, /the extension on the return/);
+});
+
+test("con un pago de prorroga programado y sin reclamar, el recargo se dice en condicional", () => {
+  const scheduled = "2025 FEDERAL FORM 4868 ELECTRONIC EXTENSION TAX PAYMENT\nTHE TAXPAYER HAS AN EXTENSION AMOUNT DUE OF $38,000 WHICH WILL BE\nDEBITED FROM THE FOLLOWING ACCOUNT ON 4/15/2026.";
+  const [f] = checkLatePaymentExposure(pkg(`${current1040({ extension: false })}\n${scheduled}`), META, { now: SEPT });
+  assert.match(f.detail, /^If the Form 4868 payment that the return schedules for 4\/15\/2026 was not made \(see Schedule 3 line 10\), the \$40,000 balance is 6 months past due at the date on the client letter \(September 16, 2026\): about \$1,200 of late-payment penalty/);
+  // El informe une dos hallazgos que comparten dos cifras de mas de mil dolares: este no puede
+  // repetir el importe del pago, o se funde con el del Schedule 3 y se pierde la estimacion.
+  const { sameIssue } = require("../lib/review-merge");
+  const other = { formOrSchedule: "Schedule 3 line 10 — scheduled extension payment not claimed", issueDescription: "The return schedules a Form 4868 electronic payment of $38,000 for 4/15/2026, and Schedule 3 line 10 shows nothing, so line 37 still asks for $40,000." };
+  assert.ok(!sameIssue({ formOrSchedule: f.title, issueDescription: f.detail, evidence: f.evidence }, other));
+  assert.match(f.action, /^Confirm first whether the scheduled extension payment was made/);
+  assert.doesNotMatch(f.detail, /does not show an extension/);
+  // Reclamado en el Schedule 3, es un pago como cualquier otro: el texto de siempre.
+  const [claimed] = checkLatePaymentExposure(pkg(`${current1040()}\n${scheduled}`), META, { now: SEPT });
+  assert.match(claimed.detail, /^The return shows \$40,000 owed/);
+});
+
+/* --- 4. K-1 escaneados -------------------------------------------------------- */
+
+test("un K-1 escaneado esta en el paquete aunque el codigo no lo pueda leer", () => {
+  // El archivo se llama como la entidad, con un error de tipeo de una letra.
+  const zip = { name: "Support.zip", reviewRole: "supporting_document", text: "--- ZIP ENTRY: Support/notes.txt ---\nnothing here", scannedPdfs: [{ name: "Support/Example Holdngs LLC K1.pdf", data: "" }] };
+  assert.deepStrictEqual(checkK1WithoutSupport(pkg(current1040(), [zip]), META), []);
+  // Despues del modelo los adjuntos no viajan: queda el nombre en meta.imageFiles.
+  assert.deepStrictEqual(checkK1WithoutSupport(pkg(current1040()), { ...META, imageFiles: ["Support/Example Holdngs LLC K1.pdf"] }), []);
+  // Un K-1 escaneado sin nombre de entidad puede ser el que falta: tampoco se afirma.
+  assert.deepStrictEqual(checkK1WithoutSupport(pkg(current1040()), { ...META, imageFiles: ["Support/K-1 2025.pdf"] }), []);
+});
+
+test("con otros escaneados sin leer, el K-1 que falta se dice con la advertencia", () => {
+  const [f] = checkK1WithoutSupport(pkg(current1040()), { ...META, imageFiles: ["Support/W2 2025.pdf", "Support/photo.jpg"] });
+  assert.match(f.detail, /EXAMPLE HOLDINGS LLC \(S corporation, EIN 12-3456789\)/);
+  assert.match(f.detail, /2 files in the package are scans or were not read by this check \(W2 2025\.pdf; photo\.jpg\): open them before asking the client\./);
+});
+
+test("dos palabras son la misma con una letra de diferencia, si son largas", () => {
+  assert.ok(sameWord("MANAGMENT", "MANAGEMENT"));
+  assert.ok(sameWord("HOLDINGS", "HOLDINGZ"));
+  assert.ok(!sameWord("HOLDINGS", "HOLDERS"));
+  assert.ok(!sameWord("WEST", "EAST"), "las cortas tienen que ser iguales");
+  assert.ok(sameWord("WEST", "WEST"));
+});
+
+/* --- 4b. Estados de corredora preliminares ----------------------------------- */
+
+const brokerAccount = (account, preliminary) => [
+  `B) ${account}`,
+  ...(preliminary ? ["Preliminary Tax Statement", "Enclosed is your Example Brokerage Preliminary Tax Statement for Tax Year 2025.", "THIS IS NOT AN OFFICIAL TAX STATEMENT.", "It should NOT be used to complete your taxes."] : []),
+  `EXAMPLE BROKERAGE LLC Account ${account}`,
+  "1a Total ordinary dividends 1,200.00",
+].join("\n");
+
+test("un estado de corredora preliminar, sin el definitivo, es un hallazgo", () => {
+  const statement = { name: "Brokerage tax statement.pdf", reviewRole: "supporting_document", text: `${brokerAccount("11112222", false)}\n${brokerAccount("33334444", true)}` };
+  const [f] = checkPreliminaryStatements(pkg(current1040(), [statement, { ...statement, name: "Brokerage tax statement (1).pdf" }]), META);
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /^Brokerage tax statement\.pdf \(account ending 4444\) is marked as a preliminary tax statement/);
+  assert.doesNotMatch(f.detail, /2222|\(1\)\.pdf/, "la cuenta definitiva del mismo PDF no se nombra, ni la copia repetida");
+  assert.ok(f.detail.length <= 320);
+});
+
+test("si el paquete trae el estado definitivo de esa cuenta, el preliminar quedo superado", () => {
+  const preliminary = { name: "February statement.pdf", reviewRole: "supporting_document", text: brokerAccount("33334444", true) };
+  const final = { name: "March statement.pdf", reviewRole: "supporting_document", text: brokerAccount("33334444", false) };
+  assert.deepStrictEqual(checkPreliminaryStatements(pkg(current1040(), [preliminary, final]), META), []);
+  assert.deepStrictEqual(checkPreliminaryStatements(pkg(current1040(), [final]), META), [], "un estado definitivo no dice nada");
+  // El definitivo puede llegar con el mismo nombre de archivo, en otra carpeta del paquete.
+  const zip = (folder, text) => ({ name: `${folder}.zip`, reviewRole: "supporting_document", text: `--- ZIP ENTRY: ${folder}/Tax statement.pdf ---\n${text}` });
+  assert.deepStrictEqual(checkPreliminaryStatements(pkg(current1040(), [zip("February", brokerAccount("33334444", true)), zip("March", brokerAccount("33334444", false))]), META), []);
 });
 
 /* --- Todo junto ------------------------------------------------------------- */

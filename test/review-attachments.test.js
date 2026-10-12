@@ -87,3 +87,19 @@ test("el informe nombra los archivos que no se leyeron, sin la carpeta", () => {
   assert.match(long, /^26 file\(s\)/);
   assert.match(long, /file 20\.heic; and 6 more\./);
 });
+
+// Un cruce que busca un documento por su texto tiene que saber que hay documentos sin texto:
+// un K-1 escaneado esta en el paquete aunque el codigo no lo lea.
+test("los documentos sin texto del paquete, por nombre: escaneados, imagenes y lo que no viajo", () => {
+  const { imageDocumentNames } = require("../lib/review-attachments");
+  const files = [
+    { name: "Return.pdf", text: "texto" },
+    { name: "Scan.pdf", scannedPdfBase64: "AAAA", scannedPdfName: "Scan.pdf" },
+    { name: "Docs.zip", scannedPdfs: [{ name: "Docs/Fund K1.pdf", data: "AAAA" }, null], scannedImages: [{ name: "Docs/receipt.png", data: png() }], unreadEntries: ["Docs/old.heic", "Docs/Fund K1.pdf"] },
+    null,
+  ];
+  assert.deepStrictEqual(imageDocumentNames(files, { scanDropped: ["Big scan.pdf"] }), ["Scan.pdf", "Docs/Fund K1.pdf", "Docs/receipt.png", "Docs/old.heic", "Big scan.pdf"]);
+  // Despues del modelo los archivos llegan recortados y los nombres viajan en la metadata.
+  assert.deepStrictEqual(imageDocumentNames([{ name: "Return.pdf", text: "texto" }], { imageFiles: ["Docs/Fund K1.pdf"] }), ["Docs/Fund K1.pdf"]);
+  assert.deepStrictEqual(imageDocumentNames(undefined, undefined), []);
+});

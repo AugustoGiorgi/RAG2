@@ -822,3 +822,79 @@ test("y si la revision nombro las entradas, no se toca nada", () => {
   };
   assert.strictEqual(verifySupportCoverage(review, files).corrected, 0);
 });
+
+/* --- La cifra que falta es la de la clausula que dice que falta ---------------- */
+
+const RETURN_1040 = {
+  name: "Client 1040 2025.pdf",
+  reviewRole: "current_return",
+  fullText: `Form 1040 U.S. Individual Income Tax Return 2025
+5b State and local real estate taxes . . . . . . . . . . . 5b 8,400.
+TAXES 11,900 10,000 1,900
+e Enter the smaller of line 5d or $40,000 ($20,000 if married filing separately) . . 5e 11,900.
+D 52,300.
+${"filler line so the return clears the length gate. ".repeat(20)}`,
+};
+
+// Una revision real: el hallazgo decia que una factura de impuesto inmobiliario no estaba
+// incluida, y era cierto. El control probo las otras cifras del texto — el tope y el total,
+// que la declaracion imprime — y lo bajo a LOW diciendo que la declaracion lo contradecia.
+test("no degrada un hallazgo por cifras que nombra en otra clausula", () => {
+  const { verifyAbsenceClaims: verify, absentAmounts } = require("../lib/review-guards");
+  const real = issue({
+    issueDescription: "Schedule A Line 5b reports $8,400 of real estate taxes, matching the city tax document ($8,399.60), but a second county real estate tax bill of $5,250.75 paid 11/05/2025 is not included in this total.",
+    evidence: "City tax document $8,399.60 (included); county bill $5,250.75 (not included); total SALT already capped at $11,900 (line 7) and subject to $40,000 cap.",
+  });
+  assert.deepStrictEqual(absentAmounts(`${real.issueDescription} ${real.evidence}`), [5250.75]);
+  const out = verify({ issues: [real] }, [RETURN_1040]);
+  assert.strictEqual(out.corrected, 0);
+  assert.strictEqual(out.issues[0].priority, "MEDIUM");
+});
+
+test("la cifra que la propia clausula dice que falta se sigue probando contra la declaracion", () => {
+  const { verifyAbsenceClaims: verify } = require("../lib/review-guards");
+  const wrong = issue({ issueDescription: "The K-1 reports $52,300 of ordinary income, but $52,300 is not reported on Schedule E and the cap of $40,000 does not change that." });
+  const out = verify({ issues: [wrong] }, [RETURN_1040]);
+  assert.strictEqual(out.corrected, 1);
+  assert.match(out.issues[0].riskAnalysis, /CONTRADICTED BY THE RETURN[\s\S]*\$52,300\.00/);
+  assert.doesNotMatch(out.issues[0].riskAnalysis, /\$40,000\.00/, "solo la cifra de la clausula que dice que falta");
+  // Si la clausula de la ausencia no trae ninguna cifra, se prueban todas, como antes.
+  const split = issue({ issueDescription: "The K-1 reports $52,300 of ordinary income, but Schedule E line 28 does not report this amount." });
+  assert.strictEqual(verify({ issues: [split] }, [RETURN_1040]).corrected, 1);
+});
+
+/* --- "No esta en la declaracion", en la tabla de datos -------------------------- */
+
+const RETURN_WITH_PIN = {
+  name: "Client 1040 2025.pdf",
+  reviewRole: "current_return",
+  fullText: `Form 1040 U.S. Individual Income Tax Return 2025
+47 City taxable income . . . . . . . 47 654321 .00
+If the IRS sent you an Identity Protection
+PIN, enter it
+Joint return? TEACHER here (see inst.) 778899
+${"filler line so the return clears the length gate. ".repeat(20)}`,
+};
+
+test("una fila que dice que un identificador no esta en la declaracion, y la declaracion lo imprime", () => {
+  const { verifyIdentityAbsenceRows } = require("../lib/review-guards");
+  const rows = [
+    { item: "IP PIN", returnValue: "Not entered on Form 1040 signature block (field blank in extracted text)", sourceValue: "778899", status: "MISMATCH", note: "Verify placement." },
+    { item: "IP PIN (spouse)", returnValue: "Not entered", sourceValue: "112233", status: "MISMATCH", note: "" },
+    { item: "State ID", returnValue: "Not shown", sourceValue: "654321", status: "MISMATCH", note: "" },
+    { item: "Address", returnValue: "100 EXAMPLE ROAD", sourceValue: "200 OTHER ROAD", status: "MISMATCH", note: "" },
+    { item: "Phone", returnValue: "Missing", sourceValue: "$778899", status: "MISMATCH", note: "" },
+  ];
+  const out = verifyIdentityAbsenceRows(rows, [RETURN_WITH_PIN]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.rows[0].status, "MATCH");
+  assert.strictEqual(out.rows[0].returnValue, "Printed on the return");
+  assert.match(out.rows[0].note, /^Checked by code: the value on the document is printed on the return, so it is not missing; confirm it sits in the right field\. Verify placement\.$/);
+  assert.doesNotMatch(out.rows[0].note, /778899/, "el numero no se repite en la nota");
+  assert.strictEqual(out.rows[1].status, "MISMATCH", "el que de verdad no esta sigue como diferencia");
+  assert.strictEqual(out.rows[2].status, "MISMATCH", "un numero que en la declaracion es un importe no cuenta");
+  assert.strictEqual(out.rows[3].status, "MISMATCH", "una fila que compara dos valores no se toca");
+  assert.strictEqual(out.rows[4].status, "MISMATCH", "un importe no es un identificador");
+  assert.strictEqual(verifyIdentityAbsenceRows(rows, []).corrected, 0, "sin la declaracion no se afirma nada");
+  assert.strictEqual(verifyIdentityAbsenceRows(undefined, [RETURN_WITH_PIN]).corrected, 0);
+});

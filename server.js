@@ -42,10 +42,10 @@ const { budgetPools } = require("./lib/spend-budget");
 const { stripCostData } = require("./lib/cost-privacy");
 const { SECTIONS, firmKey, sectionsForRoute, normalizeSections, allowedSections, setFirmSections } = require("./lib/firm-access");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice, returnStates, omittedFiles, omissionNote } = require("./lib/package-trim");
-const { collectImages, unreadFilesOf, unreadNote } = require("./lib/review-attachments");
+const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
-const { verifyAbsenceClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
@@ -11225,6 +11225,10 @@ function buildDirectReviewRequest(payload = {}, req, compactionLimits = {}) {
     documentsRead: documents.map((file) => ({ name: file.name, filename: file.name, role: file.role })),
     // Para el informe: lo que el paquete trae y nadie leyo. Ver unreadFilesOf.
     unreadFiles: unreadFilesOf(payload, collectScannedPdfDocuments(payload).skippedScans),
+    // Los escaneados y las imagenes del paquete, por nombre. Los cruces que corren despues del
+    // modelo reciben los documentos ya recortados, sin los adjuntos: sin esta lista un K-1
+    // escaneado que esta en el paquete salia como "K-1 not in the package".
+    imageFiles: imageDocumentNames(payload.files, metadata),
     feedbackApplied: feedback.map((entry) => entry.text).filter(Boolean),
     systemPrompt: buildDirectReviewSystemPrompt(returnType, state, payload.files),
     userContent: buildDirectReviewUserContent(meta, documents, feedback, metadata, payload),
@@ -11934,7 +11938,7 @@ function structureModelCandidates() {
 
 function normalizeDirectReview(review, reviewRequest) {
   if (!review || typeof review !== "object") return null;
-  const normalized = normalizeSeniorReviewServer(review, { metadata: reviewRequest.meta, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, fullText: file.originalText || file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size, omitted: file.omitted })), unreadFiles: reviewRequest.unreadFiles }) || {};
+  const normalized = normalizeSeniorReviewServer(review, { metadata: { ...reviewRequest.meta, imageFiles: reviewRequest.imageFiles }, files: reviewRequest.documents.map((file) => ({ name: file.name, reviewRole: file.role, text: file.extractedText, fullText: file.originalText || file.extractedText, encoding: file.encoding, mediaType: file.mimeType, size: file.size, omitted: file.omitted })), unreadFiles: reviewRequest.unreadFiles }) || {};
   normalized.clientName = normalized.clientName || reviewRequest.meta.clientName;
   normalized.returnType = normalized.returnType || reviewRequest.meta.returnType;
   normalized.taxYear = normalized.taxYear || reviewRequest.meta.taxYear;
@@ -12331,6 +12335,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   enforceReviewConciseness(normalized);
   enforceInfoConsistencyStatus(normalized);
+  // Una fila que dice que un identificador no esta en la declaracion, cuando la declaracion lo
+  // imprime: se contesta buscandolo. Despues de la linea de arriba, que fuerza MISMATCH por lo
+  // que dice la nota.
+  const identityAbsence = verifyIdentityAbsenceRows(normalized.infoConsistency, payload?.files);
+  if (identityAbsence.corrected) {
+    normalized.infoConsistency = identityAbsence.rows;
+    console.log(`[Review] ${identityAbsence.corrected} identity row(s) said a value was missing from a return that prints it; set to MATCH.`);
+  }
   mergeComputedIdentityRows(normalized, payload);
   mergeComputedCheckboxRows(normalized, payload);
   enforceFilingReadinessConsistency(normalized);

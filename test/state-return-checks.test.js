@@ -228,3 +228,53 @@ test("con sociedades y S corps mezcladas no se puede atribuir la cifra federal",
   // El renglon 32 vacio imprime solo su numero: leerlo como $32 daria una diferencia falsa.
   assert.strictEqual(checkStateBusinessIncome(conNuevaJersey("", "462564")), null);
 });
+
+/* --- Nueva York: MCTMT del autonomo -------------------------------------------- */
+
+// El Schedule SE y el IT-201 como los imprime pdf.js: el importe de la linea 4c en el renglon
+// de la excepcion, y las lineas 54a-54e con ".00" suelto cuando estan en blanco.
+const scheduleSE = (net) => [
+  "SCHEDULE SE Self-Employment Tax",
+  "c Combine lines 4a and 4b. If less than $400, stop; you don't owe self-employment tax.",
+  `Exception: If less than $400 and you had church employee income, enter -0- and continue . . . . . . 4c ${net}`,
+].join("\n");
+const it201 = ({ year = 2025, months = "12", cityTax = "9000", l54a = "", l54e = "" } = {}) => [
+  "IT-201 Resident Income Tax Return",
+  "F NYC residents and NYC part-year residents only :",
+  `(1) Number of months you lived in NYC in ${year} . . . . . . . . . . ${months}`.trimEnd(),
+  `(2) Number of months your spouse lived in NYC in ${year}`,
+  `Page 3 of 4 IT-201 (${year})`,
+  "47 NYC taxable income . . . . . . . . . . . . . 47 250000 .00",
+  `47a 47a ${cityTax} .00`.replace("  ", " "),
+  "54a MCTMT net earnings",
+  `base for Zone 1 . . . 54a ${l54a} .00`.replace("  ", " "),
+  "54b MCTMT net earnings",
+  "base for Zone 2 . . . 54b .00",
+  "54c MCTMT for Zone 1 . . . . . . . . . . . . . 54c .00",
+  "54d MCTMT for Zone 2 . . . . . . . . . . . . . 54d .00 See instructions to calculate",
+  `54e Total MCTMT (add lines 54c and 54d) . . . . . . . 54e ${l54e} .00 the MCTMT for each zone.`.replace("  ", " "),
+].join("\n");
+
+test("Nueva York: ganancias de autoempleo sobre el umbral con las lineas del MCTMT en blanco", () => {
+  const { checkNewYorkMctmt } = require("../lib/state-return-checks");
+  const f = checkNewYorkMctmt(`${scheduleSE("200,000.")}\n${it201()}`, { taxYear: "2025" });
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /^Schedule SE shows \$200,000 of net earnings from self-employment for a New York City resident, and Form IT-201 lines 54a-54e \(MCTMT\) are blank\. If the business is carried on in the city the tax is about \$1,200 \(0\.6% in Zone 1, owed once the earnings pass \$50,000\)\.$/);
+  assert.ok(f.detail.length <= 320);
+});
+
+test("Nueva York: el MCTMT ya calculado, por debajo del umbral o fuera de la ciudad no dice nada", () => {
+  const { checkNewYorkMctmt, mctmtRules } = require("../lib/state-return-checks");
+  const meta = { taxYear: "2025" };
+  assert.strictEqual(checkNewYorkMctmt(`${scheduleSE("200,000.")}\n${it201({ l54a: "200000", l54e: "1200" })}`, meta), null, "ya esta calculado");
+  assert.strictEqual(checkNewYorkMctmt(`${scheduleSE("32,000.")}\n${it201()}`, meta), null, "no pasa el umbral");
+  assert.strictEqual(checkNewYorkMctmt(`${scheduleSE("200,000.")}\n${it201({ months: "", cityTax: "" })}`, meta), null, "no es residente de la ciudad: no se sabe la zona");
+  assert.strictEqual(checkNewYorkMctmt(it201(), meta), null, "sin Schedule SE no hay ganancias de autoempleo");
+  assert.strictEqual(checkNewYorkMctmt(scheduleSE("200,000."), meta), null, "sin IT-201 no es de Nueva York");
+  // Dos Schedule SE: el umbral es por persona.
+  const two = checkNewYorkMctmt(`${scheduleSE("200,000.")}\n${scheduleSE("40,000.")}\n${it201()}`, meta);
+  assert.match(two.detail, /\$200,000 of net earnings/);
+  // Desde 2026 el umbral sube a $150,000; la tasa de la zona 1 cambio en 2023 y en 2024.
+  assert.strictEqual(checkNewYorkMctmt(`${scheduleSE("120,000.")}\n${it201({ year: 2026 })}`, { taxYear: "2026" }), null);
+  assert.deepStrictEqual([2022, 2023, 2024, 2026].map((y) => mctmtRules(y).zone1Rate), [0.0034, 0.0047, 0.006, 0.006]);
+});

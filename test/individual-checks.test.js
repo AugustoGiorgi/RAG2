@@ -406,3 +406,157 @@ test("si la declaracion reporta mas que los documentos no se dice nada", () => {
 test("un 1040 limpio contra un año anterior limpio no dice nada", () => {
   assert.deepStrictEqual(ic.runIndividualChecks(pkg(f1040(), prior1040()), META), []);
 });
+
+/* --- Schedule D: arrastre y ventas contra los 1099-B ---------------------------- */
+
+// El Schedule D como lo imprime pdf.js: los importes de 1a y 8a al final del ultimo renglon del
+// rotulo, despues de la guia de puntos; el arrastre entre parentesis.
+const scheduleD = ({ st = "", lt = "", l6 = "", l14 = "", l16 = "", l21 = "" } = {}) => [
+  "SCHEDULE D Capital Gains and Losses",
+  "Go to www.irs.gov/ScheduleD for instructions and the latest information.",
+  "Part I Short-Term Capital Gains and Losses ' Generally Assets Held One Year or Less (see instructions)",
+  "1a Totals for all short-term transactions reported",
+  `blank and go to line 1b . . . . . . . . . . . . . . . . . . . . . ${st}`.trimEnd(),
+  "1b Totals for all transactions reported on",
+  "Form(s) 8949 with Box A or Box G checked . .",
+  "4 Short-term gain from Form 6252 and short-term gain or (loss) from Forms 4684, 6781, and 8824 . . . . 4",
+  "6 Short-term capital loss carryover. Enter the amount, if any, from line 8 of your Capital Loss Carryover",
+  `Worksheet in the instructions . . . . . . . . . . . . . . . . . . 6 ${l6}`.trimEnd(),
+  "Part II Long-Term Capital Gains and Losses ' Generally Assets Held More Than One Year (see instructions)",
+  "8a Totals for all long-term transactions reported",
+  `blank and go to line 8b . . . . . . . . . . . . . . . . . . . . . ${lt}`.trimEnd(),
+  "8b Totals for all transactions reported on",
+  "Form(s) 8949 with Box D or Box J checked . .",
+  "11 Gain from Form 4797, Part I; long-term gain from Forms 2439 and 6252; and long-term gain or (loss) from",
+  "14 Long-term capital loss carryover. Enter the amount, if any, from line 13 of your Capital Loss Carryover",
+  `Worksheet in the instructions . . . . . . . . . . . . . . . . . . 14 ${l14}`.trimEnd(),
+  `16 Combine lines 7 and 15 and enter the result . . . . . . . . . . . . . 16 ${l16}`.trimEnd(),
+  "21 If line 16 is a loss, enter here and on Form 1040, 1040-SR, or 1040-NR, line 7, the smaller of:",
+  `. . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 ${l21}`.trimEnd(),
+];
+
+test("el arrastre de perdidas de capital va entre parentesis: traido completo no es un hallazgo", () => {
+  const prior = prior1040({ extra: scheduleD({ l16: "-9,000.", l21: "( 3,000. )" }) });
+  const completo = f1040({ extra: scheduleD({ l6: "( 2,000. )", l14: "( 4,000. )" }) });
+  assert.deepStrictEqual(run(pkg(completo, prior), ic.checkCapitalLossCarryover), [], "antes se leia negativo y decia que las lineas estaban en blanco");
+  const [parcial] = run(pkg(f1040({ extra: scheduleD({ l6: "( 1,000. )" }) }), prior), ic.checkCapitalLossCarryover);
+  assert.strictEqual(parcial.severity, "MEDIUM");
+  assert.match(parcial.detail, /leaving about \$6,000 to carry forward; this year's lines 6 and 14 bring in \$1,000/);
+  const [nada] = run(pkg(f1040({ extra: scheduleD() }), prior), ic.checkCapitalLossCarryover);
+  assert.strictEqual(nada.severity, "HIGH");
+  assert.match(nada.detail, /about \$6,000 carries to this year\. Lines 6 and 14 of this return are blank/);
+});
+
+test("las ventas del Schedule D se leen por plazo, con columnas vacias", () => {
+  assert.deepStrictEqual(rf.scheduleDProceeds(scheduleD({ st: "45,000. 40,000. 5,000.", lt: "5,000. 5,000." }).join("\n")), { stProceeds: 45000, stCost: 40000, ltProceeds: 5000, ltCost: 5000 });
+  assert.deepStrictEqual(rf.scheduleDProceeds(scheduleD({ st: "9,000. 9,500. 200. -300.", lt: "" }).join("\n")), { stProceeds: 9000, stCost: 9500, ltProceeds: 0, ltCost: 0 });
+  assert.strictEqual(rf.scheduleDProceeds(scheduleD({ st: "9,000. 100.", lt: "" }).join("\n")), null, "dos importes que no cierran no se adivinan");
+  assert.strictEqual(rf.scheduleDProceeds("Form 1040 with no Schedule D"), null);
+});
+
+const brokerStatement = (name, st, lt) => doc(name, ["Form 1099-B 2025 Proceeds From Broker and Barter Exchange Transactions", "Summary of Proceeds, Gains & Losses, Adjustments and Withholding", `Total Short-term ${st}`, `Total Long-term ${lt}`, "Total Undetermined-term 0.00 0.00 0.00 0.00 0.00"].join("\n"));
+
+test("ventas de los 1099-B que no estan en el Schedule D, o que estan en el plazo equivocado", () => {
+  const one = brokerStatement("Broker one 1099.pdf", "20,000.00 18,000.00 0.00 0.00 2,000.00", "30,000.00 26,000.00 0.00 0.00 4,000.00");
+  const two = brokerStatement("Broker two 1099.pdf", "0.00 0.00 0.00 0.00 0.00", "5,000.00 5,000.00 0.00 0.00 0.00");
+  const copy = brokerStatement("Broker one 1099 (copy).pdf", "20,000.00 18,000.00 0.00 0.00 2,000.00", "30,000.00 26,000.00 0.00 0.00 4,000.00");
+  const wrong = f1040({ extra: scheduleD({ st: "45,000. 40,000. 5,000.", lt: "5,000. 5,000." }) });
+  const [f] = run(pkg(wrong, null, [one, two, copy]), ic.checkScheduleDAgainstBrokerTotals);
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.detail, /^\$5,000 of 1099-B proceeds is not on Schedule D at all, and \$25,000 of long-term sales appears to be on the short-term lines\. The statements in the package total \$20,000 short-term and \$35,000 long-term, against \$45,000 and \$5,000/);
+  assert.ok(f.detail.length <= 320, "el informe corta el hallazgo a 320 caracteres");
+  assert.match(f.evidence, /Broker one 1099\.pdf; Broker two 1099\.pdf; Schedule D/, "la copia repetida no cuenta dos veces");
+  const right = f1040({ extra: scheduleD({ st: "20,000. 18,000. 2,000.", lt: "35,000. 31,000. 4,000." }) });
+  assert.deepStrictEqual(run(pkg(right, null, [one, two, copy]), ic.checkScheduleDAgainstBrokerTotals), []);
+  const more = f1040({ extra: scheduleD({ st: "60,000. 50,000. 10,000.", lt: "90,000. 80,000. 10,000." }) });
+  assert.deepStrictEqual(run(pkg(more, null, [one]), ic.checkScheduleDAgainstBrokerTotals), [], "si declara mas, puede haber un estado que no se leyo");
+  const [moved] = run(pkg(f1040({ extra: scheduleD({ st: "50,000. 44,000. 6,000.", lt: "" }) }), null, [one]), ic.checkScheduleDAgainstBrokerTotals);
+  assert.strictEqual(moved.severity, "MEDIUM");
+  assert.match(moved.detail, /^Total 1099-B proceeds agree with Schedule D, but \$30,000 of long-term sales appears to be on the short-term lines/);
+});
+
+/* --- Pago con la prorroga programado y sin reclamar ------------------------------ */
+
+const scheduledExtension = ["2025 FEDERAL FORM 4868 ELECTRONIC EXTENSION TAX PAYMENT", "THE TAXPAYER HAS AN EXTENSION AMOUNT DUE OF $12,000 WHICH WILL BE", "DEBITED FROM THE FOLLOWING ACCOUNT ON 4/15/2026."];
+const schedule3 = (l10 = "") => ["SCHEDULE 3 Additional Credits and Payments", `10 Amount paid with request for extension to file (see instructions) . . . . . . . 10 ${l10}`.trimEnd()];
+
+test("un pago con la prorroga programado que el Schedule 3 no reclama", () => {
+  assert.deepStrictEqual(rf.scheduledExtensionPayment(scheduledExtension.join("\n")), { amount: 12000, date: "4/15/2026" });
+  const owes = { l24: "20,000.", l34: "", l35a: "", l37: "12,500." };
+  const [f] = run(pkg(f1040({ ...owes, extra: [...scheduledExtension, ...schedule3()] })), ic.checkExtensionPayment);
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.detail, /schedules a Form 4868 electronic payment of \$12,000 for 4\/15\/2026, and Schedule 3 line 10 shows nothing, so line 37 still asks for \$12,500/);
+  assert.deepStrictEqual(run(pkg(f1040({ ...owes, extra: [...scheduledExtension, ...schedule3("12,000.")] })), ic.checkExtensionPayment), [], "reclamado, nada");
+  assert.deepStrictEqual(run(pkg(f1040({ ...owes, extra: [...scheduledExtension, ...schedule3()] })), ic.checkExtensionPayment, { taxYear: "2025", now: "2026-03-01T00:00:00Z" }), [], "antes de la fecha del debito no se sabe");
+});
+
+/* --- QBI: negocios que salieron y sueldos que no se contaron ---------------------- */
+
+const partII = (rows, amounts) => ["28 (a) Name (b) Enter P for partnership; S for S corporation (d) Employer identification number", ...rows, "Passive Income and Loss Nonpassive Income and Loss", ...amounts, "29 a Totals . . . . . . . . . . . . . . . . 100,000."];
+const lastYearQbi = ["Form 8995 Qualified Business Income Deduction Simplified Computation", "i EXAMPLE HOLDINGS LLC 98-1111111 40,000.", "ii SAMPLE REALTY INC 98-2222222 60,000."];
+const thisYear8995A = (rows) => ["Go to www.irs.gov/Form8995A for instructions and the latest information.", "Part I Trade, Business, or Aggregation Information", ...rows, "Part II Determine Your Adjusted Qualified Business Income"];
+
+test("un negocio que estaba en el QBI del año pasado y este año no esta en el 8995-A", () => {
+  const scheduleE = partII(["A EXAMPLE HOLDINGS LLC P 98-1111111", "B SAMPLE REALTY INC S 98-2222222 X"], ["A 40,000.", "B 60,000."]);
+  const dropped = f1040({ extra: [...thisYear8995A(["A OTHER SHOP LLC 98-3333333"]), ...scheduleE] });
+  const [f] = run(pkg(dropped, prior1040({ extra: lastYearQbi })), ic.checkQbiBusinessesDropped);
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.detail, /^EXAMPLE HOLDINGS LLC \(\$40,000\) and SAMPLE REALTY INC \(\$60,000\), on Schedule E Part II, were in last year's qualified business income computation and are not on Form 8995-A this year\./);
+  assert.ok(f.detail.length <= 320);
+  const kept = f1040({ extra: [...thisYear8995A(["A EXAMPLE HOLDINGS LLC 98-1111111", "B SAMPLE REALTY INC 98-2222222"]), ...scheduleE] });
+  assert.deepStrictEqual(run(pkg(kept, prior1040({ extra: lastYearQbi })), ic.checkQbiBusinessesDropped), []);
+  const gone = f1040({ extra: thisYear8995A(["A OTHER SHOP LLC 98-3333333"]) });
+  assert.deepStrictEqual(run(pkg(gone, prior1040({ extra: lastYearQbi })), ic.checkQbiBusinessesDropped), [], "si ya no esta en el Schedule E, no hay ingreso que dejar afuera");
+  assert.deepStrictEqual(run(pkg(dropped), ic.checkQbiBusinessesDropped), [], "sin año anterior no se compara");
+});
+
+const scheduleCWithPayroll = ({ line26 = "4,000.", allowed = "2,000.", other = ["PAYROLL EXPENSE 120,000.", "PAYROLL PROCESSING FEES 1,500."] } = {}) => [
+  "--- Page 5 ---",
+  "SCHEDULE C Profit or Loss From Business",
+  "C Business name. If no separate business name, leave blank. D Employer ID number (EIN) (see instr.)",
+  "EXAMPLE WORKSHOP LLC",
+  "E Business address (including suite or room no.)",
+  `26 Wages (less employment credits) . . . . . . . . 26 ${line26}`.trimEnd(),
+  "--- Page 6 ---",
+  "Part V Other Expenses. List below business expenses not included on lines 8-27a, or line 30.",
+  ...other,
+  "48 Total other expenses. Enter here and on line 27b . . . . . . . . . . . . 48 121,500.",
+  "--- Page 7 ---",
+  ...thisYear8995A(["A EXAMPLE WORKSHOP LLC 98-7654321"]),
+  "2 Qualified business income from the trade, business, or",
+  "aggregation. See instructions . . . . . . . . . . . . . . . . 2 100,000.",
+  "4 Allocable share of W-2 wages from the trade, business, or",
+  `aggregation . . . . . . . . . . . . . . . . . . . . . . . . 4 ${line26}`.trimEnd(),
+  "16 Total qualified business income component. Add all amounts",
+  `reported on line 15 . . . . . . . . . . . . . . . . . . . . 16 ${allowed}`,
+];
+
+test("la nomina cargada como otros gastos no cuenta como sueldos W-2 para el QBI", () => {
+  const books = doc("Example workshop workpaper.xlsx", "Payroll,120,000.00\nWorkers Compensation Insurance,4,000.00");
+  const [f] = run(pkg(f1040({ extra: scheduleCWithPayroll() }), null, [books]), ic.checkQbiWagesInOtherExpenses);
+  assert.strictEqual(f.severity, "HIGH");
+  assert.match(f.detail, /^The W-2 wage limit cuts the QBI deduction to \$2,000, against \$20,000 at 20% of income: Schedule C for EXAMPLE WORKSHOP LLC deducts \$120,000 of payroll under other expenses and shows only \$4,000 on line 26 \(Wages\)/);
+  assert.ok(f.detail.length <= 320);
+  assert.match(f.evidence, /Line 26 is the workers' compensation figure in Example workshop workpaper\.xlsx/);
+  assert.deepStrictEqual(run(pkg(f1040({ extra: scheduleCWithPayroll({ allowed: "20,000." }) })), ic.checkQbiWagesInOtherExpenses), [], "si el limite por sueldos no recorta nada, no importa");
+  assert.deepStrictEqual(run(pkg(f1040({ extra: scheduleCWithPayroll({ other: ["PAYROLL PROCESSING FEES 1,500.", "PAYROLL TAXES 9,000."] }) })), ic.checkQbiWagesInOtherExpenses), [], "impuestos y comisiones de nomina no son sueldos");
+});
+
+/* --- Intereses hipotecarios que desaparecen -------------------------------------- */
+
+const mortgageScheduleA = ({ l8a = "", l17 = "" } = {}) => ["SCHEDULE A Itemized Deductions", "Go to www.irs.gov/ScheduleA for instructions and the latest information.", `8a Home mortgage interest and points reported to you on Form 1098 . . . . . . 8a ${l8a}`.trimEnd(), `17 Add the amounts in the far right column for lines 4 through 16 . . . . . . 17 ${l17}`.trimEnd()];
+
+test("intereses hipotecarios deducidos el año pasado y no este, sin 1098 en el paquete", () => {
+  const prior = prior1040({ extra: mortgageScheduleA({ l8a: "9,500.", l17: "30,000." }) });
+  const current = f1040({ extra: mortgageScheduleA({ l17: "32,000." }) });
+  const [f] = run(pkg(current, prior), ic.checkMortgageInterestDropped);
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /deducted \$9,500 of home mortgage interest on line 8a; this year the return itemizes, line 8a is blank and no Form 1098 was found/);
+  assert.deepStrictEqual(run(pkg(f1040({ extra: mortgageScheduleA({ l8a: "9,100.", l17: "32,000." }) }), prior), ic.checkMortgageInterestDropped), []);
+  // Un 1098 escaneado esta en el paquete aunque el codigo no lo lea: viaja como adjunto, o,
+  // en el paso posterior al modelo, queda solo su nombre.
+  const scanned = { name: "Support.zip", reviewRole: "supporting_document", text: "", scannedPdfs: [{ name: "Support/Form 1098 2025.pdf", data: "" }] };
+  assert.deepStrictEqual(run(pkg(current, prior, [scanned]), ic.checkMortgageInterestDropped), []);
+  assert.deepStrictEqual(run(pkg(current, prior), ic.checkMortgageInterestDropped, { ...META, imageFiles: ["Support/Form 1098 2025.pdf"] }), []);
+  assert.deepStrictEqual(run(pkg(f1040(), prior), ic.checkMortgageInterestDropped), [], "sin Schedule A este año no se dice nada");
+});
