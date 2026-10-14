@@ -728,3 +728,76 @@ test("pero una cedula del 1411 de verdad si lo calla", () => {
   const cedula = [{ name: "wp.pdf", fullText: "Reg. 1.1411-7 deemed sale computation for the disposition" }];
   assert.strictEqual(checkNiitDispositionAdjustment(F8960(), [{ name: "r.pdf", fullText: F8960() }, ...cedula]), null);
 });
+
+/* --- Preguntas del Schedule K contra lo que la propia declaracion adjunta ----- */
+
+const { checkForeignCorporationNotListed, foreignCorporations5471, checkDigitalAssetQuestionEntity } = require("../lib/return-consistency-checks");
+
+const SCHEDULE_K_5A = (listed = "") => [
+  "Form 1120 (2025) EXAMPLE TECH CORP 00-0000000 Page 4",
+  "Schedule K Other Information (see instructions)",
+  "5 At the end of the tax year, did the corporation:",
+  "a Own directly 20% or more, or own, directly or indirectly, 50% or more of the total voting power of all classes of stock entitled",
+  "ownership, see instructions . . . . . . . . X",
+  "(i) Name of Corporation Identification Number Owned in Voting",
+  "Incorporation",
+  "(if any) Stock",
+  ...(listed ? [listed] : []),
+  "b Own directly an interest of 20% or more, or own, directly or indirectly, an interest of 50% or more in any foreign or domestic",
+].join("\n");
+const FORM_5471 = [
+  "--- Page 21 ---",
+  "Information Return of U.S. Persons With Respect OMB No. 1545-0123",
+  "Form 5471",
+  "EXAMPLE TECH CORP owned at the end of its annual accounting period 100.0000 %",
+  "1a Name and address of foreign corporation b (1) Employer identification number, if any",
+  "SAMPLE HOLDINGS LTD",
+  "1 HARBOUR ROAD",
+  "c Country under whose laws incorporated",
+  "BERMUDA",
+].join("\n");
+
+test("una sociedad extranjera del Form 5471 que la pregunta 5a no lista", () => {
+  assert.deepStrictEqual(foreignCorporations5471(FORM_5471), [{ name: "SAMPLE HOLDINGS LTD", country: "BERMUDA", percent: 100 }]);
+  const f = checkForeignCorporationNotListed(`${SCHEDULE_K_5A()}\n${FORM_5471}`);
+  assert.strictEqual(f.title, "Schedule K question 5a — foreign corporation on Form 5471 not listed");
+  assert.match(f.detail, /^The return attaches Form 5471 for SAMPLE HOLDINGS LTD \(BERMUDA\), 100% owned at year end, and Schedule K question 5a lists no such corporation\./);
+  assert.strictEqual(checkForeignCorporationNotListed(`${SCHEDULE_K_5A("SAMPLE HOLDINGS LTD BERMUDA 100.00%")}\n${FORM_5471}`), null, "listada, nada");
+  assert.strictEqual(checkForeignCorporationNotListed(SCHEDULE_K_5A()), null, "sin 5471, nada");
+  assert.strictEqual(checkForeignCorporationNotListed(`${SCHEDULE_K_5A()}\n${FORM_5471.replace("100.0000 %", "10.0000 %")}`), null, "menos del 20% no se lista");
+});
+
+const QUESTION_27 = (answer) => `27 At any time during this tax year, did the corporation (a) receive a digital asset (as a reward, award, or payment for property or services); or (b) sell, exchange,\nor otherwise dispose of a digital asset (or a financial interest in a digital asset)? See instructions . . . . X [ANSWER: ${answer}]`;
+const CRYPTO_STATEMENT = "STATEMENT 4\nFORM 1120, SCHEDULE L, LINE 6\nOTHER CURRENT ASSETS\nCRYPTOCURRENCY HOLDINGS . . . . . . . . $ 120,000. $ 480,000.";
+
+test("la pregunta de activos digitales en No con tenencias de cripto en el propio balance", () => {
+  const f = checkDigitalAssetQuestionEntity(`U.S. Corporation Income Tax Return\n${QUESTION_27("No")}\n${CRYPTO_STATEMENT}`, []);
+  assert.strictEqual(f.severity, "MEDIUM");
+  assert.match(f.detail, /^The return answers No to the digital asset question, while its own statement carries CRYPTOCURRENCY HOLDINGS of \$120,000 and \$480,000\. Receiving, exchanging or paying with a digital asset, stablecoins included, makes the answer Yes/);
+  // La evidencia tambien puede estar solo en los libros.
+  const books = [{ name: "books.xlsx", reviewRole: "supporting_document", text: "Crypto Wallet 0x01 - USDC,250000.00,\nOffice supplies,1200.00," }];
+  const fromBooks = checkDigitalAssetQuestionEntity(`U.S. Corporation Income Tax Return\n${QUESTION_27("No")}`, books);
+  assert.match(fromBooks.detail, /books\.xlsx carries Crypto Wallet 0x01 - USDC of \$250,000/);
+  assert.strictEqual(checkDigitalAssetQuestionEntity(`U.S. Corporation Income Tax Return\n${QUESTION_27("Yes")}\n${CRYPTO_STATEMENT}`, []), null, "contestada Si, nada");
+  assert.strictEqual(checkDigitalAssetQuestionEntity(`U.S. Corporation Income Tax Return\n${QUESTION_27("No")}`, []), null, "sin tenencias, nada");
+  assert.strictEqual(checkDigitalAssetQuestionEntity(`Form 1040 U.S. Individual Income Tax Return\n${QUESTION_27("No")}\n${CRYPTO_STATEMENT}`, []), null, "el 1040 tiene su propio cruce");
+});
+
+test("el M-1 renglon 1: una diferencia chica sin efecto en el impuesto es MEDIUM y nombra su causa", () => {
+  const book = [{ name: "books.xlsx", fullText: "Profit and Loss\nNet Income,\"-500,000.40\"" }];
+  const text = [
+    "U.S. Corporation Income Tax Return",
+    "Schedule M-1 Reconciliation of Income (Loss) per Books With Income per Return",
+    "1 Net income (loss) per books . . . . . . . . -501,250.",
+    "STATEMENT 2",
+    "OTHER DEDUCTIONS",
+    "AMORTIZATION . . . . . . . . . . . . 1,250.",
+    "relleno para el largo minimo. ".repeat(20),
+  ].join("\n");
+  const f = checkScheduleM1TiesToBooks(text, book);
+  assert.strictEqual(f.severity, "MEDIUM", "1.250 de 500.000 no es lo primero que hay que leer");
+  assert.match(f.detail, /The difference matches the \$1,250\.00 of amortization the return deducts: a tax item was folded into book income/);
+  const big = checkScheduleM1TiesToBooks(text.replace("-501,250.", "-540,000."), book);
+  assert.strictEqual(big.severity, "HIGH");
+  assert.match(big.detail, /Line 1 is the one figure on the reconciliation that is not a judgement call/);
+});

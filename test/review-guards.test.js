@@ -898,3 +898,46 @@ test("una fila que dice que un identificador no esta en la declaracion, y la dec
   assert.strictEqual(verifyIdentityAbsenceRows(rows, []).corrected, 0, "sin la declaracion no se afirma nada");
   assert.strictEqual(verifyIdentityAbsenceRows(undefined, [RETURN_WITH_PIN]).corrected, 0);
 });
+
+/* --- "Falta el Form 1125-E", en una declaracion que no lo necesita ------------ */
+
+const RETURN_1120 = (totalIncome, cogs = "") => ({
+  name: "Client 1120 2025.pdf",
+  reviewRole: "current_return",
+  fullText: [
+    "U.S. Corporation Income Tax Return OMB No. 1545-0123",
+    "Form 1120",
+    "1 a Gross receipts or sales . . . . . . . . . 1 a 1,900.",
+    "b Returns and allowances . . . . . . . . . 1 b",
+    `2 Cost of goods sold (attach Form 1125-A) . . . . . . . . . 2 ${cogs}`.trimEnd(),
+    `11 Total income. Add lines 3 through 10 . . . . . . . . . 11 ${totalIncome}`,
+    "12 Compensation of officers (see instructions, attach Form 1125-E) . . . . 12 98,000.",
+    "filler line so the return clears the length gate. ".repeat(20),
+  ].join("\n"),
+});
+
+test("el 1125-E reportado como faltante con ingresos totales por debajo de $500.000", () => {
+  const { verifyConditionalFormClaims, corporateTotalReceipts } = require("../lib/review-guards");
+  assert.strictEqual(corporateTotalReceipts(RETURN_1120("6,400.").fullText), 6400);
+  assert.strictEqual(corporateTotalReceipts(RETURN_1120("6,400.", "1,000.").fullText), 7400, "el costo de ventas se resta en la linea 11 y es parte de los ingresos");
+  const review = {
+    issues: [
+      issue({ formOrSchedule: "Form 1120 Line 12 / Form 1125-E", issueDescription: "Form 1125-E was not included in the documents provided for review." }),
+      issue({ formOrSchedule: "Schedule L", issueDescription: "Another finding." }),
+    ],
+    missingDocuments: ["Form 1125-E (Compensation of Officers)", "Bank statements"],
+    openQuestions: ["Can Form 1125-E be provided?", "Who signs the return?"],
+  };
+  const out = verifyConditionalFormClaims(review, [RETURN_1120("6,400.")]);
+  assert.strictEqual(out.corrected, 1);
+  assert.strictEqual(out.removed, 2);
+  assert.deepStrictEqual(out.issues.map((i) => i.priority), ["LOW", "MEDIUM"]);
+  assert.match(out.issues[0].riskAnalysis, /^CONTRADICTED BY THE RETURN: Form 1125-E is required only when total receipts .* this return's are \$6,400\.00/);
+  assert.deepStrictEqual(out.missingDocuments, ["Bank statements"]);
+  assert.deepStrictEqual(out.openQuestions, ["Who signs the return?"]);
+  // Con $500.000 o mas el formulario si se exige: nada se toca.
+  const big = verifyConditionalFormClaims(review, [RETURN_1120("650,000.")]);
+  assert.strictEqual(big.corrected + big.removed, 0);
+  // Sin un 1120 que leer, tampoco.
+  assert.strictEqual(verifyConditionalFormClaims(review, [RETURN]).corrected, 0);
+});

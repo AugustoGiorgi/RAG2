@@ -453,3 +453,24 @@ test("renglones estatales: con una declaracion de Nueva York el checklist suma s
   const [issue] = tieOut.issuesFromOutOfBalanceRows(out, []);
   assert.match(issue.issueDescription, /reports \$0 on this line and the supporting documents add to \$60,000/);
 });
+
+// La misma diferencia vista desde tres renglones: el cruce del M-1 la explica y las filas del
+// tie-out que la repiten bajan a LOW diciendo a cual repiten.
+test("una fila del tie-out que repite la diferencia de un hallazgo del codigo baja a LOW", () => {
+  const tieOut = require("../lib/tie-out");
+  const rows = [
+    { lineItem: "Schedule L — Total assets", returnAmount: "498,600", workpaperAmount: "499,850", difference: "-1,250", status: "OUT_OF_BALANCE" },
+    { lineItem: "Form 1120 Line 17 — Taxes", returnAmount: "9,000", workpaperAmount: "6,000", difference: "3,000", status: "OUT_OF_BALANCE" },
+  ];
+  const issues = tieOut.issuesFromOutOfBalanceRows(rows, []);
+  assert.strictEqual(issues.length, 2);
+  const deterministic = [{ title: "Schedule M-1 line 1 does not equal net income per books", detail: "Schedule M-1 line 1 reports -$501,250.00; the books end at -$500,000.40, a difference of -$1,249.60." }];
+  const out = tieOut.foldTieOutIssuesExplainedBy(issues, deterministic);
+  assert.strictEqual(out.folded, 1);
+  const folded = out.issues.find((i) => /Total assets/.test(i.formOrSchedule));
+  assert.strictEqual(folded.priority, "LOW");
+  assert.strictEqual(folded.contradictedByGuard, true, "la explicacion sobrevive al recorte de los LOW");
+  assert.match(folded.riskAnalysis, /^SAME DIFFERENCE AS AN AUTOMATED FINDING: "Schedule M-1 line 1 does not equal net income per books"/);
+  assert.strictEqual(out.issues.find((i) => /Taxes/.test(i.formOrSchedule)).priority, "HIGH", "otra diferencia sigue como estaba");
+  assert.strictEqual(tieOut.foldTieOutIssuesExplainedBy(issues, []).folded, 0);
+});

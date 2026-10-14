@@ -579,3 +579,10 @@ test("el cruce de la reserva ya puede disparar sobre una sociedad", () => {
   assert.match(finding.detail, /\$57,900\.00/);
   assert.match(finding.detail, /\$29,600\.00/);
 });
+
+test("un dolar o dos entre el cierre y la apertura es redondeo, no un hallazgo", () => {
+  const redondeo = RETURN_1065.replace("14 Total assets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 300000. 290000.",
+                                       "14 Total assets . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 299999. 290000.");
+  assert.notStrictEqual(redondeo, RETURN_1065, "el reemplazo tiene que haber cambiado el texto");
+  assert.deepStrictEqual(checkBalanceSheetContinuity(redondeo, PRIOR_1065, "2024"), []);
+});

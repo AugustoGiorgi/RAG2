@@ -28,7 +28,7 @@ const planningStrategies = require("./lib/planning-strategies");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage, issuesFromOutOfBalanceRows, keepTieOutIssuesInTable } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage, issuesFromOutOfBalanceRows, keepTieOutIssuesInTable, foldTieOutIssuesExplainedBy } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
@@ -45,11 +45,13 @@ const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplica
 const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
-const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
+const { runCarryforwardChecks } = require("./lib/carryforward-checks");
+const { runFormArithmeticChecks } = require("./lib/form-arithmetic-checks");
 const { runPackageChecks } = require("./lib/package-checks");
 const { runIndividualChecks } = require("./lib/individual-checks");
 const { runK1Checks } = require("./lib/k1-checks");
@@ -11978,6 +11980,8 @@ function automatedFindingsFor(payload) {
     () => runStateReturnChecks(files, metadata),
     () => runAnswerArithmeticChecks(files, metadata),
     () => runCrossDocumentChecks(files, metadata),
+    () => runCarryforwardChecks(files, metadata),
+    () => runFormArithmeticChecks(files, metadata),
     () => runIndividualChecks(files, metadata),
     () => runK1Checks(files, metadata),
     () => runEntityExtraChecks(files, metadata),
@@ -12104,6 +12108,16 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     console.log(`[Review] ${absence.corrected} finding(s) claimed a figure was absent from a return that prints it; lowered to LOW.`);
   }
 
+  // Un formulario que la declaracion no necesita, reportado como faltante: el 1125-E se pide
+  // desde $500.000 de ingresos totales. Baja el hallazgo y saca la linea de las listas.
+  const conditional = verifyConditionalFormClaims(normalized, payload?.files);
+  if (conditional.corrected || conditional.removed) {
+    normalized.issues = conditional.issues;
+    normalized.missingDocuments = conditional.missingDocuments;
+    normalized.openQuestions = conditional.openQuestions;
+    console.log(`[Review] Form 1125-E reported as missing on a return with $${conditional.receipts} of total receipts: ${conditional.corrected} finding(s) lowered to LOW, ${conditional.removed} list line(s) removed.`);
+  }
+
   // The same error about a form rather than a figure, which the check above cannot see
   // because such a finding names no dollar amount.
   const attachments = verifyAttachmentClaims(normalized, payload?.files);
@@ -12135,6 +12149,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // "it works here, it did not fire there" that nobody could settle from the output.
   const guardCounts = [
     ["contradicted by the return", absence.corrected],
+    ["asking for a form the return does not need", conditional.corrected],
     ["contradicted by the package", attachments.corrected],
     ["contradicted by the workpaper", workpaper.corrected],
     ["resting on support the review did not open", supportCoverage.corrected],
@@ -12194,6 +12209,10 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // Lo que solo aparece poniendo un papel al lado de otro: una liquidacion de venta sin Form
   // 4797, una propiedad que deja de depreciarse, un K-1 que falta o que es una estimacion.
   const crossDocChecks = runCrossDocumentChecks(payload?.files, payload?.metadata || {});
+  // Lo que el año anterior dejo para este (creditos, formularios, amortizacion, pagos) y no
+  // aparece; y la cuenta que cada renglon imprime en su rotulo, hecha con sus propios importes.
+  const carryforwardChecks = runCarryforwardChecks(payload?.files, payload?.metadata || {});
+  const arithmeticChecks = runFormArithmeticChecks(payload?.files, payload?.metadata || {});
   // Lo que viene del año anterior y se pierde en silencio, y cada documento contra su renglon
   // (1040); cada socio contra si mismo el año anterior y los K-1 recibidos contra lo cargado
   // (entidades); y que el paquete sea el que se cree que es (todos los tipos).
@@ -12214,7 +12233,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   // El paquete va justo antes de la identidad: un archivo ilegible o un tipo de declaracion
   // equivocado se lee antes que cualquier cruce que dependa de ellos.
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...form1040Checks, ...k1Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...carryforwardChecks, ...arithmeticChecks, ...form1040Checks, ...k1Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -12243,6 +12262,13 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
       });
     }
     console.log(`[Review] ${bridged.length} deterministic cross-year finding(s) added.`);
+    // Una fila del tie-out escrita como hallazgo que repite la diferencia de uno de estos: la
+    // misma causa vista desde otro renglon. Baja a LOW y dice a cual repite.
+    const tieFold = foldTieOutIssuesExplainedBy(normalized.issues, bridged);
+    if (tieFold.folded) {
+      normalized.issues = tieFold.issues;
+      console.log(`[Review] ${tieFold.folded} tie-out finding(s) repeat the difference of a deterministic finding; lowered to LOW.`);
+    }
   }
 
   // Reported into the review the same way the guards are, and for the same reason. A run
@@ -12261,6 +12287,8 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["state returns", stateChecks.length],
     ["answered conditions", answerChecks.length],
     ["cross-document", crossDocChecks.length],
+    ["carryforwards and prior payments", carryforwardChecks.length],
+    ["form arithmetic", arithmeticChecks.length],
     ["1040 carryovers and documents", form1040Checks.length],
     ["K-1s received", k1Checks.length],
     ["entity owners and K-1s", entityOwnerChecks.length],
