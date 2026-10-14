@@ -45,7 +45,7 @@ const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplica
 const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
-const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, calibrateSmallDollarSeverity, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
@@ -12141,6 +12141,16 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   if (supportCoverage.corrected) {
     normalized.issues = supportCoverage.issues;
     console.log(`[Review] ${supportCoverage.corrected} finding(s) rest on absent support while the review names ${supportCoverage.named} of ${supportCoverage.support} supporting documents; lowered to LOW.`);
+  }
+
+  // Un HIGH del modelo en el que todas las cifras son menores a $1.000 pasa a MEDIUM: lo que
+  // se lee primero tiene que ser lo que mueve plata.
+  const smallDollar = calibrateSmallDollarSeverity(normalized);
+  if (smallDollar.adjusted) {
+    normalized.issues = smallDollar.issues;
+    normalized.verifiedItems = Array.isArray(normalized.verifiedItems) ? normalized.verifiedItems : [];
+    normalized.verifiedItems.push(`AUTOMATED SEVERITY: ${smallDollar.adjusted} HIGH finding(s) whose amounts are all under $1,000 lowered to MEDIUM.`);
+    console.log(`[Review] ${smallDollar.adjusted} HIGH finding(s) with every amount under $1,000; lowered to MEDIUM.`);
   }
 
   // Reported into the review itself, findings or none — the same reason the cross-year inputs

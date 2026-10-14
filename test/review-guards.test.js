@@ -944,3 +944,22 @@ test("el 1125-E reportado como faltante con ingresos totales por debajo de $500.
   const otherWording = { issues: [issue({ formOrSchedule: "Form 1120 Line 12 / Form 1125-E", issueDescription: "Compensation of officers rose sharply, but no Form 1125-E is included in the package to break out the officers paid.", evidence: "Form 1120 Line 12; no Form 1125-E in package." })] };
   assert.strictEqual(verifyConditionalFormClaims(otherWording, [RETURN_1120("6,400.")]).corrected, 1);
 });
+
+/* --- Un HIGH del modelo donde todas las cifras son menores a $1.000 ------------- */
+
+test("un HIGH del modelo con todas sus cifras por debajo de $1.000 pasa a MEDIUM", () => {
+  const { calibrateSmallDollarSeverity } = require("../lib/review-guards");
+  const review = { issues: [
+    issue({ priority: "HIGH", formOrSchedule: "Form CT-222", issueDescription: "Underpayment penalties of $48 (franchise) and $14 (MTA) were computed.", evidence: "CT-222 line 42: $48; $14." }),
+    issue({ priority: "HIGH", formOrSchedule: "Schedule E", issueDescription: "A property tax bill of $9,800.50 is not deducted anywhere." }),
+    issue({ priority: "HIGH", formOrSchedule: "Form 1120 Line 12", issueDescription: "Officer compensation on line 12 is 98,000 and no W-2 supports it.", evidence: "Line 12; payroll register $650." }),
+    issue({ priority: "HIGH", formOrSchedule: "Form W-2", issueDescription: "The SSN on the W-2 does not match the return." }),
+    issue({ priority: "HIGH", formOrSchedule: "Schedule L", issueDescription: "A difference of $40 that the code computed.", source: "Automated cross-year check" }),
+    issue({ priority: "MEDIUM", formOrSchedule: "Schedule B", issueDescription: "Interest of $120 is missing." }),
+  ] };
+  const out = calibrateSmallDollarSeverity(review);
+  assert.strictEqual(out.adjusted, 1);
+  assert.deepStrictEqual(out.issues.map((i) => i.priority), ["MEDIUM", "HIGH", "HIGH", "HIGH", "HIGH", "MEDIUM"]);
+  assert.match(out.issues[0].riskAnalysis, /^SEVERITY ADJUSTED: every amount in this finding is under \$1,000\.00, so it was lowered from HIGH to MEDIUM automatically\./);
+  assert.strictEqual(calibrateSmallDollarSeverity({}).adjusted, 0);
+});
