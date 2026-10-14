@@ -940,4 +940,7 @@ test("el 1125-E reportado como faltante con ingresos totales por debajo de $500.
   assert.strictEqual(big.corrected + big.removed, 0);
   // Sin un 1120 que leer, tampoco.
   assert.strictEqual(verifyConditionalFormClaims(review, [RETURN]).corrected, 0);
+  // La otra forma de decirlo, la de la segunda corrida real.
+  const otherWording = { issues: [issue({ formOrSchedule: "Form 1120 Line 12 / Form 1125-E", issueDescription: "Compensation of officers rose sharply, but no Form 1125-E is included in the package to break out the officers paid.", evidence: "Form 1120 Line 12; no Form 1125-E in package." })] };
+  assert.strictEqual(verifyConditionalFormClaims(otherWording, [RETURN_1120("6,400.")]).corrected, 1);
 });
