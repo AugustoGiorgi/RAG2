@@ -87,3 +87,208 @@ test("el modulo corre solo sobre la declaracion del año y nunca revienta", () =
   assert.deepStrictEqual(runFormArithmeticChecks([], {}), []);
   assert.deepStrictEqual(runFormArithmeticChecks([{ reviewRole: "current_return", text: "corto" }], {}), []);
 });
+
+/* --- Cuentas que no son "add lines X and Y": rangos, combine, resta compuesta, columnas ------- */
+
+const errorsOf = (lines) => arithmeticErrorsOnPage(["--- Page 9 ---", ...lines].join("\n")).map((e) => `${e.line}${e.column ? `/${e.column}` : ""}:${e.printed}:${e.computed}`);
+
+test("un rango de renglones: total de deducciones del 1120", () => {
+  const page = (total) => [
+    "Form 1120 (2025) Page 1",
+    "12 Compensation of officers . . . . . . 12 90,000.",
+    "13 Salaries and wages (less employment credits) . . . . 13 40,000.",
+    "14 Repairs and maintenance . . . . . . 14",
+    "15 Bad debts . . . . . . . . . 15",
+    "16 Rents . . . . . . . . . . 16 24,000.",
+    "17 Taxes and licenses . . . . . . . 17 6,500.",
+    "18 Interest . . . . . . . . . 18",
+    "19 Charitable contributions . . . . . . 19",
+    "20 Depreciation from Form 4562 not claimed on Form 1125-A or elsewhere on return . . 20 3,100.",
+    "21 Depletion . . . . . . . . . 21",
+    "22 Advertising . . . . . . . . . 22 1,400.",
+    "23 Pension, profit-sharing, etc., plans . . . . 23",
+    "24 Employee benefit programs . . . . . . 24",
+    "25 Energy efficient commercial buildings deduction (attach Form 7205) . . . 25",
+    "26 Other deductions (attach statement) . . . . . . 26 12,000.",
+    `27 Total deductions. Add lines 12 through 26 . . . . . . . . 27 ${total}`,
+  ];
+  assert.deepStrictEqual(errorsOf(page("177,000.")), []);
+  assert.deepStrictEqual(errorsOf(page("165,000.")), ["27:165000:177000"], "falta un renglon en la suma");
+  // Un renglon del rango que no se lee: no se afirma nada.
+  assert.deepStrictEqual(errorsOf(page("165,000.").map((l) => l.replace("16 24,000.", "16 24,0"))), []);
+});
+
+test("la columna de la derecha del 1065 y el importe que cae en la linea siguiente", () => {
+  const page = (total) => [
+    "Form 1065 (2025) Page 1",
+    "8 Total income (loss). Combine lines 3 through 7 . . . . . . 8 300,000.",
+    "9 Salaries and wages (other than to partners) (less employment credits) . . . . 9 120,000.",
+    "10 Guaranteed payments to partners . . . . . 10",
+    "11 Repairs and maintenance . . . . . . 11 5,000.",
+    "12 Bad debts . . . . . . 12",
+    "13 Rent . . . . . . . 13 36,000.",
+    "14 Taxes and licenses . . . . . 14 9,000.",
+    "15 Interest (see instructions) . . . . . 15",
+    "16 a Depreciation (if required, attach Form 4562) . . . . 16a 8,000.",
+    "b Less depreciation reported on Form 1125-A and elsewhere on return . . . . 16b 16c 8,000.",
+    "17 Depletion (Do not deduct oil and gas depletion.) . . . . 17",
+    "18 Retirement plans, etc . . . . . 18",
+    "19 Employee benefit programs . . . . . 19",
+    "20 Energy efficient commercial buildings deduction (attach Form 7205) . . . 20",
+    "21 Other deductions (att stmt) . . . . . . . . See Statement 1",
+    "21 22,000.",
+    "22 Total deductions. Add the amounts shown in the far right column for lines 9 through 21 . . . . 22",
+    total,
+    "23 Ordinary business income (loss). Subtract line 22 from line 8 . . . . . . 23 100,000.",
+  ];
+  assert.deepStrictEqual(errorsOf(page("200,000.")), []);
+  // El 16 impreso como "16 a ..." se lee como renglon sin importe: el total 22 no se afirma
+  // (fail-closed), pero el 23 se comprueba con el 22 que esta impreso.
+  assert.deepStrictEqual(errorsOf(page("210,000.")), ["23:100000:90000"]);
+});
+
+test("restas compuestas, \"less\", \"add line X to line Y\" y multiplicar por un porcentaje", () => {
+  assert.deepStrictEqual(errorsOf([
+    "34 Net business income apportioned. Multiply line 32 by the percent on line 33 . . . . X 34 0.",
+    "35 Income allocated to the state. See instructions . . . . X 35",
+    "36 Net operating loss carryover . . . . 36 600.",
+    "37 State taxable income. Add lines 34 and 35, then subtract line 36 . . . . X 37 -600.",
+  ]), [], "0 + 0 - 600");
+  assert.deepStrictEqual(errorsOf([
+    "10 Net tax . . . . . 10 4300.",
+    "11 Total payments . . . . . 11 4295.",
+    "12 Penalty . . . . . 12",
+    "13 Interest . . . . . 13",
+    "16 Total amount due (overpaid) (add Lines 10, 12, and 13, subtract Line 11) . . . . 16 50.",
+  ]), ["16:50:5"]);
+  assert.deepStrictEqual(errorsOf([
+    "7 Add lines 5 and 6 . . . . . . 7 3,000.",
+    "4 Add lines 1, 2, and 3 . . . . . . 40,000. 8 Balance at end of year (line 4 less line 7) . . . . 37,000.",
+  ]), [], "dos renglones en la misma linea, como el M-2");
+  assert.deepStrictEqual(errorsOf([
+    "9 Taxable income . . . . 9 1,000",
+    "10 Other additions . . . . 10 250",
+    "11 TOTAL - Add Line 9 to Line 10 11 1,300",
+  ]), ["11:1300:1250"]);
+  assert.deepStrictEqual(errorsOf([
+    "1 Tax for the current year . . . . . 1 2,700.",
+    "43 Multiply line 1 by 80% (0.8) . . . . . 43 2,160.",
+  ]), []);
+  assert.deepStrictEqual(errorsOf([
+    "1 Tax for the current year . . . . . 1 2,700.",
+    "43 Multiply line 1 by 80% (0.8) . . . . . 43 2,700.",
+  ]), ["43:2700:2160"]);
+});
+
+test("rangos con renglones con letra: \"14 through 17a\" y el 38a dentro de \"33 through 39\"", () => {
+  assert.deepStrictEqual(errorsOf([
+    "14 Pension exclusion . . . . 14 1,000",
+    "15 Social security . . . . 15 2,000",
+    "16 Other . . . . 16",
+    "17 Interest . . . . 17 300",
+    "17a Dividends . . . . 17a 40",
+    "18 Total (add lines 14 through 17a) . . . . 18 3,340",
+  ]), []);
+  assert.deepStrictEqual(errorsOf([
+    "33 Interest on other states' obligations 33 1,000",
+    "34 Exempt-interest dividends 34 0",
+    "35 Lump-sum distributions 35 0",
+    "36 Fiduciary adjustment 36 0",
+    "37 Loss on sale of bonds 37 0",
+    "38 Bonus depreciation 38 0",
+    "38a 80% of Section 179 deduction. 38a 5,000",
+    "39 Other- specify 39 0",
+    "40 Total additions: Add Lines 33 through 39. 40 6,000",
+  ]), []);
+});
+
+test("columnas: dos importes por casilla o una casilla por columna (Nueva York)", () => {
+  assert.deepStrictEqual(errorsOf([
+    "13 Total current assets . . . . . . 250,000 310,000",
+    "19 Total other assets . . . . . . 40,000 45,000",
+    "20 Total assets (add lines 13 and 19) . . . . . . 290,000 355,000",
+  ]), []);
+  assert.deepStrictEqual(errorsOf([
+    "17 Add lines 1 through 11 and 13 through 16 . . . . 17 190000 .00 17 70000 .00",
+    "18 Total federal adjustments to income . . . . 18 12000 .00 18 4000 .00",
+    "19 Federal adjusted gross income (subtract line 18 from line 17) 19 178000 .00 19 65000 .00",
+    "21 Public employee contributions . . . 21 .00 21 .00",
+  ]), ["19/2:65000:66000"]);
+});
+
+test("un signo que el formulario no imprime: perdidas sin parentesis y \"combine\"", () => {
+  // Como el Schedule E-2 de Massachusetts: la perdida se imprime sin signo y el total en negativo.
+  assert.deepStrictEqual(errorsOf([
+    "1 Passive loss allowed 1 7,700",
+    "3 Non-passive loss 3",
+    "4 Section 179 expense deduction 4 300",
+    "7 Combine lines 1, 3 and 4 7 -8,000",
+  ]), []);
+  assert.deepStrictEqual(errorsOf([
+    "2a Activities with net income . . . . 2a 300 .00",
+    "2b Activities with net loss . . . . 2b 4500 .00",
+    "2c Prior years unallowed losses . . . . 2c 3800 .00",
+    "2d Add lines 2a, 2b, and 2c . . . . 2d -8000 .00",
+  ]), [], "las perdidas en positivo se restan");
+  // Un renglon comun (sin "loss") conserva su signo: aca la suma esta mal.
+  assert.deepStrictEqual(errorsOf([
+    "4 Schedule E income . . . . 4 160,000",
+    "9 Other business income . . . . - . 9 20,000",
+    "10 Total business income (add lines 1 through 9) . . . . 10 140,000",
+  ]), [], "la casilla de signo de Ohio marca el 9 como negativo");
+});
+
+test("lo que el preparador anoto o el formulario manda saltear no se juzga", () => {
+  // Vacio con "SEE STATEMENT 1" al lado: el importe esta en la nota, no es cero.
+  assert.deepStrictEqual(errorsOf([
+    "9 Balance of tax due . . . . 9 600",
+    "12 Penalty and interest due (see instructions) . . . . SEE STATEMENT 1 12",
+    "13 Total balance due – Add lines 9 and 12 . . . . 13 640",
+  ]), []);
+  // Una nota del preparador junto al resultado: el importe no sale de la cuenta.
+  assert.deepStrictEqual(errorsOf([
+    "35 Subtract line 34 from line 33 . . . . 35 100,000.",
+    "36 Allowable credit from passive activities . . . . 36",
+    "38 Total. Add line 35 through line 36 . . . . SEC 41(G) 38 11,000.",
+  ]), []);
+  // "skip line 8 and line 9": en cero, salteado; con importe, se comprueba.
+  const skip = (nine) => [
+    "7 Combine line 2 through line 6 . . . . 7 1,700.",
+    "If line 7 is a gain and you have no prior losses, skip line 8 and line 9.",
+    "8 Nonrecaptured losses from prior years . . . . 8",
+    `9 Subtract line 8 from line 7. If zero or less, enter -0- . . . . 9 ${nine}`,
+  ];
+  assert.deepStrictEqual(errorsOf(skip("0.")), []);
+  assert.deepStrictEqual(errorsOf(skip("900.")), ["9:900:1700"]);
+});
+
+test("las casillas sueltas de dos columnas y los cuadros que repiten numeros en la misma hoja", () => {
+  assert.deepStrictEqual(errorsOf([
+    "1z Add lines 1a through 1h . . . . 1z 80,000.",
+    "2a Tax-exempt interest . . 2a 1,200. b Taxable interest . . 2b 5,600.",
+    "3a Qualified dividends . . 3a 900. b Ordinary dividends . . 3b 2,400.",
+    "9 Add lines 1z, 2b, and 3b. This is your total income . . . . 9 88,000.",
+  ]), []);
+  // Schedule L y Schedule M-2 en la misma pagina, cada uno numerado desde 1.
+  const m2 = (end) => [
+    "Schedule L Balance Sheets per Books Beginning of tax year End of tax year",
+    "1 Cash . . . . . . 10,000. 12,000.",
+    "5 Tax-exempt securities . . . . . .",
+    "8 Other investments . . . . . . 1,000. 2,000.",
+    "Schedule M-2 Analysis of Partners' Capital Accounts",
+    "1 Balance at beginning of year . . . . 50,000.",
+    "3 Net income (loss) (see instructions) . . . . 20,000.",
+    "5 Add lines 1 through 4 . . . . 70,000.",
+    "8 Add lines 6 and 7 . . . . 15,000.",
+    `9 Balance at end of year. Subtract line 8 from line 5 . . . . ${end}`,
+  ];
+  assert.deepStrictEqual(errorsOf(m2("55,000.")), []);
+  assert.deepStrictEqual(errorsOf(m2("60,000.")), ["9:60000:55000"]);
+});
+
+test("menos de $100 de diferencia es LOW; desde $10.000, HIGH", () => {
+  const page = (total) => `--- Page 3 ---\nForm 1032 (2025)\n11 Balance of tax due . . . . 11 0\n12 Penalty and interest due . . . . 12 14\n13 Total balance due – Add line 11 and line 12 . . . . 13 ${total}\n${PAD}`;
+  assert.strictEqual(checkPrintedArithmetic(page("0"))[0].severity, "LOW");
+  assert.deepStrictEqual(checkPrintedArithmetic(page("14")), []);
+  assert.strictEqual(checkPrintedArithmetic(page("514"))[0].severity, "MEDIUM");
+});
