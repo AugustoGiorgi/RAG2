@@ -52,6 +52,7 @@ const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
 const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
 const { runCarryforwardChecks } = require("./lib/carryforward-checks");
 const { runFormArithmeticChecks } = require("./lib/form-arithmetic-checks");
+const { runNonresidentChecks } = require("./lib/nonresident-checks");
 const { runPackageChecks } = require("./lib/package-checks");
 const { runIndividualChecks } = require("./lib/individual-checks");
 const { runK1Checks } = require("./lib/k1-checks");
@@ -11982,6 +11983,7 @@ function automatedFindingsFor(payload) {
     () => runCrossDocumentChecks(files, metadata),
     () => runCarryforwardChecks(files, metadata),
     () => runFormArithmeticChecks(files, metadata),
+    () => runNonresidentChecks(files, metadata),
     () => runIndividualChecks(files, metadata),
     () => runK1Checks(files, metadata),
     () => runEntityExtraChecks(files, metadata),
@@ -12223,6 +12225,9 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   // aparece; y la cuenta que cada renglon imprime en su rotulo, hecha con sus propios importes.
   const carryforwardChecks = runCarryforwardChecks(payload?.files, payload?.metadata || {});
   const arithmeticChecks = runFormArithmeticChecks(payload?.files, payload?.metadata || {});
+  // Lo propio del 1040-NR (dias de presencia, deduccion, creditos, tratado, FICA del
+  // estudiante) y el 1040 que trae papeles de no residente.
+  const nonresidentChecks = runNonresidentChecks(payload?.files, payload?.metadata || {});
   // Lo que viene del año anterior y se pierde en silencio, y cada documento contra su renglon
   // (1040); cada socio contra si mismo el año anterior y los K-1 recibidos contra lo cargado
   // (entidades); y que el paquete sea el que se cree que es (todos los tipos).
@@ -12243,7 +12248,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   // El paquete va justo antes de la identidad: un archivo ilegible o un tipo de declaracion
   // equivocado se lee antes que cualquier cruce que dependa de ellos.
-  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...carryforwardChecks, ...arithmeticChecks, ...form1040Checks, ...k1Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
+  const bridged = [...individualChecks, ...entityChecks, ...consistencyChecks, ...corporateChecks, checkUnusedReconcilingLines(payload?.files), depreciationCheck, ...stateChecks, ...answerChecks, ...crossDocChecks, ...carryforwardChecks, ...arithmeticChecks, ...nonresidentChecks, ...form1040Checks, ...k1Checks, ...entityOwnerChecks, ...packageChecks, ...identityChecks].filter(Boolean);
   bridged.identified = individualChecks.identified || entityChecks.identified;
   if (bridged.length) {
     normalized.issues = Array.isArray(normalized.issues) ? normalized.issues : [];
@@ -12299,6 +12304,7 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     ["cross-document", crossDocChecks.length],
     ["carryforwards and prior payments", carryforwardChecks.length],
     ["form arithmetic", arithmeticChecks.length],
+    ["nonresident", nonresidentChecks.length],
     ["1040 carryovers and documents", form1040Checks.length],
     ["K-1s received", k1Checks.length],
     ["entity owners and K-1s", entityOwnerChecks.length],
