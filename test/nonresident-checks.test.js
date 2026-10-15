@@ -174,3 +174,50 @@ test("un 1040 con un 1042-S o un 8843 en el paquete pide confirmar la residencia
   assert.deepStrictEqual(runNonresidentChecks(filesOf(resident), { taxYear: "2025" }), []);
   assert.deepStrictEqual(runNonresidentChecks([], {}), []);
 });
+
+/* --- Lo que la Review hace despues con los hallazgos de un 1040-NR ----------------------------- */
+// Frases tal cual las escribio el modelo en la prueba del 1040-NR inventado (contribuyente y
+// cifras ficticios).
+
+test("una ausencia en la declaracion no la contradice que la cifra este en el workpaper", () => {
+  const { verifyWorkpaperClaims, foldFindingsRepeatedBy } = require("../lib/review-guards");
+  const support = [
+    { name: "workpaper.xlsx", reviewRole: "supporting_document", text: "--- Sheet: Return summary ---\n,8,Schedule 1 - taxable state refund,310.00,1099-G\n,12,Itemized deductions (Schedule A (Form 1040-NR)),250.00,Sch A NR\n,25g,Withholding on Forms 1042-S,300.00,1042-S\n,26,2024 overpayment applied,600.00,2024 return\n".repeat(3) },
+    { name: "docs.zip", reviewRole: "supporting_document", text: "--- ZIP ENTRY: W2.pdf ---\nc Employer's name\n600 CONGRESS AVE STE 1400\n--- ZIP ENTRY: 1042-S.pdf ---\n7a Federal tax withheld 300.00\n10 Total withholding credit 300.00\n--- ZIP ENTRY: 1099-G.pdf ---\n2 State or local income tax refunds, credits, or offsets $ 310.00" },
+  ];
+  const mk = (issueDescription, evidence) => ({ priority: "MEDIUM", formOrSchedule: "x", issueDescription, evidence, riskAnalysis: "", source: "model" });
+  const review = { issues: [
+    mk("Workpaper identifies a taxable $310 Illinois state refund (2024 Schedule A deduction) to be reported on Schedule 1 line 1, but the return's total ECI of $46,420 does not include it and no Schedule 1 is in the forms list.", "1099-G Box 2 $310.00; workpaper Line 8 $310.00; return forms list does not include Schedule 1; return Line 9 $46,420"),
+    mk("Workpaper computes itemized deductions of $250 (cash gifts only, no Texas state tax) which should replace the disallowed $15,750 standard deduction flagged separately, but Schedule A (Form 1040-NR) is not included in the return's forms list.", "Workpaper itemized deductions $250.00; return forms list omits Schedule A (1040-NR); return Line 12 shows $15,750"),
+    mk("1042-S Box 10 shows $300 of total withholding credit and the workpaper includes it in total payments, but return Line 25g is blank and total payments shown is only $5,400.", "1042-S Box 10 $300.00; workpaper Line 25g $300.00; return Line 25g blank, Line 33 $5,400"),
+    mk("2024 return Line 36 shows $600 applied to 2025 estimated tax, and the workpaper includes it in total payments, but return Line 26 is blank.", "2024 return Line 36 $600.00; workpaper Line 26 $600.00; return Line 26 blank"),
+    // El reclamo de siempre sobre los libros sigue bajando.
+    mk("Rent of $24,000 on the return vs $12,000 in the workpaper: $12,000 difference unexplained.", ""),
+  ] };
+  support[0].text += "\nRent,12000\nRent - second office,12000\n";
+  const out = verifyWorkpaperClaims(review, support);
+  assert.deepStrictEqual(out.issues.map((i) => i.priority), ["MEDIUM", "MEDIUM", "MEDIUM", "MEDIUM", "LOW"]);
+
+  // El modelo repite el cruce del FICA con una cifra en comun y el mismo tema: baja a LOW.
+  const [fica] = runNonresidentChecks(filesOf(nrReturn({ days: "2023 0 , 2024 0 , and 2025 100 .", line12: "4,100.", visa: "F-1" }), [{
+    name: "W-2.pdf",
+    text: "Form W-2 Wage and Tax Statement 2025\n1 Wages, tips, other compensation 2 Federal income tax withheld\n52000.00 5400.00\n3 Social security wages 4 Social security tax withheld\n52000.00 3224.00",
+  }]), { taxYear: "2025" });
+  assert.match(fica.title, /on an F visa/);
+  const repeated = foldFindingsRepeatedBy([
+    { priority: "HIGH", formOrSchedule: "Social Security withholding refund mechanism — Form 843 / Form 8316", issueDescription: "Per the automated finding, the $3,224 Social Security tax withheld on the F-1 visa W-2 is exempt; the workpaper notes the client should request a refund from the employer or file Form 843/8316.", evidence: "W-2 Box 4 $3,224.00", source: "W-2.pdf" },
+    { priority: "HIGH", formOrSchedule: "Wages — Form 1040-NR Line 1a", issueDescription: "W-2 Box 1 shows $52,000 but return Line 1a shows $46,000 and workpaper computes $47,000 (wages less $5,000 treaty exemption).", evidence: "", source: "W-2.pdf" },
+  ], [fica]);
+  assert.deepStrictEqual(repeated.issues.map((i) => i.priority), ["LOW", "HIGH"]);
+});
+
+test("la fila del tie-out que repite una cuenta mal hecha que ya marco el codigo baja a LOW", () => {
+  const { foldTieOutIssuesExplainedBy } = require("../lib/tie-out");
+  const arithmetic = { title: "1040-NR line 24 — amount does not follow the form's own arithmetic", detail: "1040-NR line 24 prints $1,242 where its own instruction (\"add lines 22 and 23d\") gives $742." };
+  const issues = [
+    { priority: "MEDIUM", issueDescription: "The return reports $1,242 on this line and the supporting documents add to $742: the return is $500 higher than the support.", source: "Tie-out computed by RAG Tax AI" },
+    { priority: "MEDIUM", issueDescription: "The return reports $5,400 on this line and the supporting documents add to $6,300: the return is $900 lower than the support.", source: "Tie-out computed by RAG Tax AI" },
+  ];
+  const out = foldTieOutIssuesExplainedBy(issues, [arithmetic]);
+  assert.deepStrictEqual(out.issues.map((i) => i.priority), ["LOW", "MEDIUM"]);
+});
