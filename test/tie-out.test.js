@@ -474,3 +474,14 @@ test("una fila del tie-out que repite la diferencia de un hallazgo del codigo ba
   assert.strictEqual(out.issues.find((i) => /Taxes/.test(i.formOrSchedule)).priority, "HIGH", "otra diferencia sigue como estaba");
   assert.strictEqual(tieOut.foldTieOutIssuesExplainedBy(issues, []).folded, 0);
 });
+
+test("un respaldo de 0 cuya propia nota dice que el workpaper no trae la cifra no se compara", () => {
+  const row = (workpaperAmount, note, extra = {}) => enforceTieOutVerdicts([{ lineItem: "Form 1040 Line 24 - Total tax", returnAmount: "7401", workpaperAmount, status: "OUT_OF_BALANCE", note, ...extra }]).rows[0].status;
+  // Corrida real de un 1040 del banco: la fila termino como HIGH "$7,401 mas alto que el respaldo".
+  assert.strictEqual(row(0, "Workpaper does not independently state a Line 24 total tax figure; tax must be recomputed."), "NOT VERIFIED");
+  assert.strictEqual(row("0", "The workpaper does not show a total tax amount."), "NOT VERIFIED");
+  // Un cero que es un cero sigue descuadrando.
+  assert.strictEqual(row(0, "Workpaper does not show any interest income."), "OUT_OF_BALANCE");
+  assert.strictEqual(row(0, "No estimated payments in the package."), "OUT_OF_BALANCE");
+  assert.strictEqual(row(0, "Workpaper does not state a figure.", { supportByCode: true }), "OUT_OF_BALANCE");
+});

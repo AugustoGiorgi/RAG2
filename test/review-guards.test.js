@@ -963,3 +963,47 @@ test("un HIGH del modelo con todas sus cifras por debajo de $1.000 pasa a MEDIUM
   assert.match(out.issues[0].riskAnalysis, /^SEVERITY ADJUSTED: every amount in this finding is under \$1,000\.00, so it was lowered from HIGH to MEDIUM automatically\./);
   assert.strictEqual(calibrateSmallDollarSeverity({}).adjusted, 0);
 });
+
+test("una cita numerada a un hallazgo automatico pasa a nombrarlo: el informe los reordena", () => {
+  const { nameAutomatedReferences } = require("../lib/review-guards");
+  const titles = [
+    "1040-NR line 24 — amount does not follow the form's own arithmetic",
+    "Schedule OI — substantial presence test met and no Form 8843 to exclude the days",
+    "Form 8863 — education credit on a nonresident alien return",
+    "Form 8863 — the student is the filer",
+  ];
+  const review = {
+    executiveSummary: "Automated finding 1 drives the balance due.",
+    issues: [
+      { priority: "MEDIUM", issueDescription: "Line 24 prints 1,242.00 (already flagged as automated finding #1).", evidence: "See automated findings 1 and 2.", proposedSolution: "Fix line 24." },
+      { priority: "MEDIUM", issueDescription: "Not eligible, as already flagged in automated finding 3; confirm.", evidence: "Ties to automated finding 9." },
+    ],
+    checkboxReview: [{ box: "Schedule OI item I", explanation: "Prior return in the package (see automated finding 2)." }],
+    openQuestions: ["Is the 2024 count right? Automated checks 2024 is not a citation."],
+  };
+  const out = nameAutomatedReferences(review, titles);
+  assert.strictEqual(out.review.executiveSummary, "The automated finding on 1040-NR line 24 drives the balance due.");
+  assert.strictEqual(out.review.issues[0].issueDescription, "Line 24 prints 1,242.00 (already flagged as the automated finding on 1040-NR line 24).");
+  assert.strictEqual(out.review.issues[0].evidence, "See the automated findings on 1040-NR line 24 and on Schedule OI.");
+  // Dos hallazgos con el mismo formulario: va el titulo entero, para que no quede ambiguo.
+  assert.strictEqual(out.review.issues[1].issueDescription, "Not eligible, as already flagged in the automated finding \"Form 8863 — education credit on a nonresident alien return\"; confirm.");
+  // Un numero que no existe no apunta a ningun lado: se saca.
+  assert.strictEqual(out.review.issues[1].evidence, "Ties to the automated finding.");
+  assert.strictEqual(out.review.checkboxReview[0].explanation, "Prior return in the package (see the automated finding on Schedule OI).");
+  assert.strictEqual(out.review.openQuestions[0], review.openQuestions[0]);
+  assert.strictEqual(out.renamed, 6);
+  assert.strictEqual(review.issues[0].evidence, "See automated findings 1 and 2.", "no toca el objeto original");
+  assert.strictEqual(nameAutomatedReferences(review, []).renamed, 0);
+});
+
+test("la frase de faltante tiene que ser del formulario que nombra, no del siguiente", () => {
+  const filler = "x ".repeat(300);
+  const files = [{ role: "current_return", text: `Form 1040 U.S. Individual Income Tax Return 2025\n${filler}\nForm 4868 Application for extension\n` }];
+  const priority = (issueDescription, evidence = "") => verifyAttachmentClaims({ issues: [{ priority: "HIGH", issueDescription, evidence }] }, files).issues[0].priority;
+  // Corrida real de un 1040 del banco: el hallazgo del Form 2441 bajo a LOW por "Form 1040 Line 1e blank; ... does not include Form 2441".
+  assert.strictEqual(priority("W-2 box 10 reports $5,000 of dependent care benefits, which requires Form 2441, but Form 2441 is not listed among forms needed.", "W-2 Box 10 = $5,000.00; Form 1040 Line 1e blank; forms needed list does not include Form 2441."), "HIGH");
+  assert.strictEqual(priority("Form 1040 is blank and the forms needed list does not include Form 2441."), "HIGH");
+  // Lo que el guarda tiene que seguir bajando.
+  assert.strictEqual(priority("Form 4868 is not attached to the return."), "LOW");
+  assert.strictEqual(priority("Form 4868 not attached; Form 8829 also missing."), "LOW");
+});

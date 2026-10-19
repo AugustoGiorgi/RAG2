@@ -9578,6 +9578,10 @@ function normalizeReviewIssueForExport(issue = {}) {
     authority: safeText(issue.authority || issue.citation || issue.taxAuthority),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
     needsMoreInfo: safeText(issue.needsMoreInfo || issue.needsClientInfo || issue.missingInformation),
+    // The server's estimate of the tax effect (lib/tax-impact.js); without these two the card chip and
+    // the "Tax effect (estimate)" line never reach the screen or the Word report.
+    taxImpact: Number(issue.taxImpact) >= 1 ? Math.round(Number(issue.taxImpact)) : null,
+    taxImpactLabel: safeText(issue.taxImpactLabel),
   };
 }
 
