@@ -1,0 +1,72 @@
+{
+ "id": "990",
+ "titulo": "990 — fundacion cultural publica (Illinois)",
+ "returnType": "990",
+ "taxYear": "2025",
+ "esperado": {},
+ "clave": [
+  {
+   "id": "E1",
+   "error": "Parte I renglon 19 (año corriente) 55,000; la resta da 45,000",
+   "codigo": {
+    "source": "amount does not follow the form.s own arithmetic",
+    "flags": "i"
+   },
+   "detalle": {
+    "source": "line 19 \\(column 2\\) prints \\$55,000",
+    "flags": ""
+   }
+  },
+  {
+   "id": "E2",
+   "error": "Parte I renglon 22 al cierre 610,000; la resta da 600,000",
+   "codigo": {
+    "source": "amount does not follow the form.s own arithmetic",
+    "flags": "i"
+   },
+   "detalle": {
+    "source": "line 22 \\(column 2\\) prints \\$610,000",
+    "flags": ""
+   }
+  },
+  {
+   "id": "E3",
+   "error": "Falta el Schedule A (estaba en 2024 y Parte IV linea 1 dice Yes)",
+   "codigo": null,
+   "detalle": null
+  },
+  {
+   "id": "E4",
+   "error": "Parte IV linea 2 dice No y un donante dio 250,000: falta el Schedule B",
+   "codigo": null,
+   "detalle": null
+  },
+  {
+   "id": "E5",
+   "error": "Los activos netos abren en 560,000 y el cambio del año es 45,000: cierran en 605,000, no en 610,000",
+   "codigo": null,
+   "detalle": null
+  }
+ ],
+ "tolerados": [],
+ "files": [
+  {
+   "name": "Lakeshore Community Arts Foundation 2025 Form 990.pdf",
+   "role": "current_return",
+   "encoding": "pdf-text",
+   "text": "--- Page 1 ---\n2025 TAX RETURN SUMMARY PAGE 1\nLAKESHORE COMMUNITY ARTS FOUNDATION 99-6781234\nFEDERAL\nTOTAL REVENUE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 770,000\nTOTAL EXPENSES . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 725,000\nNET ASSETS END OF YEAR . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 610,000\n2025 TAX RETURN SUMMARY PAGE 1\n\n--- Page 2 ---\n2025 GENERAL INFORMATION PAGE 1\nLAKESHORE COMMUNITY ARTS FOUNDATION 99-6781234\nFORMS NEEDED FOR THIS RETURN\nFEDERAL: 990, SCH D, SCH O, 8868\nILLINOIS: AG990-IL\n2025 GENERAL INFORMATION PAGE 1\n\n--- Page 3 ---\nDepartment of the Treasury - Internal Revenue Service\nForm 990 Return of Organization Exempt From Income Tax 2025 OMB No. 1545-0047\nUnder section 501(c), 527, or 4947(a)(1) of the Internal Revenue Code (except private foundations)\nA For the 2025 calendar year, or tax year beginning , 2025, and ending , 20\nC Name of organization LAKESHORE COMMUNITY ARTS FOUNDATION D Employer identification number 99-6781234\nNumber and street 1200 LAKESHORE DR E Telephone number (312) 555-0100\nCity or town, state or province, country, and ZIP or foreign postal code CHICAGO, IL 60610 G Gross receipts $ 770,000.\nI Tax-exempt status: X 501(c)(3) 501(c) ( ) (insert no.) 4947(a)(1) or 527\nPart I Summary\n1 Briefly describe the organization's mission or most significant activities: COMMUNITY ART CLASSES AND EXHIBITIONS\n3 Number of voting members of the governing body (Part VI, line 1a) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3 7\n5 Total number of individuals employed in calendar year (Part V, line 2a) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5 6\nPrior Year Current Year\n8 Contributions and grants (Part VIII, line 1h) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8 520,000. 610,000.\n9 Program service revenue (Part VIII, line 2g) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9 140,000. 150,000.\n10 Investment income (Part VIII, column (A), lines 3, 4, and 7d) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10 8,000. 10,000.\n11 Other revenue (Part VIII, column (A), lines 5, 6d, 8c, 9c, 10c, and 11e) . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11 0. 0.\n12 Total revenue-add lines 8 through 11 (must equal Part VIII, column (A), line 12) . . . . . . . . . . . . . . . . . . . . 12 668,000. 770,000.\n13 Grants and similar amounts paid (Part IX, column (A), lines 1-3) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13 60,000. 70,000.\n15 Salaries, other compensation, employee benefits (Part IX, column (A), lines 5-10) . . . . . . . . . . . . . . . . . . . 15 380,000. 420,000.\n17 Other expenses (Part IX, column (A), lines 11a-11d, 11f-24e) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 215,000. 235,000.\n18 Total expenses. Add lines 13-17 (must equal Part IX, column (A), line 25) . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 655,000. 725,000.\n19 Revenue less expenses. Subtract line 18 from line 12 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 13,000. 55,000.\nBeginning of Current Year End of Year\n20 Total assets (Part X, line 16) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 700,000. 760,000.\n21 Total liabilities (Part X, line 26) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 140,000. 160,000.\n22 Net assets or fund balances. Subtract line 21 from line 20 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 560,000. 610,000.\nForm 990 (2025) Page 1\n\n--- Page 4 ---\nForm 990 (2025) Page 3\nPart IV Checklist of Required Schedules\n1 Is the organization described in section 501(c)(3) or 4947(a)(1) (other than a private foundation)? If \"Yes,\" complete Schedule A . . . X Yes No\n2 Is the organization required to complete Schedule B, Schedule of Contributors? See instructions . . . Yes X No\nPart VII Compensation of Officers, Directors, Trustees, Key Employees\n(A) Name and title (B) Average hours per week (D) Reportable compensation from the organization (W-2/1099-MISC/1099-NEC)\nANNA K FERRIS EXECUTIVE DIRECTOR 40.00 128,000.\nTHOMAS R BLY BOARD CHAIR 2.00 0.\nForm 990 (2025) Page 2"
+  },
+  {
+   "name": "Lakeshore Community Arts Foundation - 2024 Form 990.pdf",
+   "role": "prior_return",
+   "encoding": "pdf-text",
+   "text": "--- Page 1 ---\n2024 TAX RETURN SUMMARY PAGE 1\nLAKESHORE COMMUNITY ARTS FOUNDATION 99-6781234\nFEDERAL\nTOTAL REVENUE . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 668,000\nTOTAL EXPENSES . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 655,000\nNET ASSETS END OF YEAR . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 560,000\n2024 TAX RETURN SUMMARY PAGE 1\n\n--- Page 2 ---\n2024 GENERAL INFORMATION PAGE 1\nLAKESHORE COMMUNITY ARTS FOUNDATION 99-6781234\nFORMS NEEDED FOR THIS RETURN\nFEDERAL: 990, SCH A, SCH B, SCH D, SCH O, 8868\nILLINOIS: AG990-IL\n2024 GENERAL INFORMATION PAGE 1\n\n--- Page 3 ---\nDepartment of the Treasury - Internal Revenue Service\nForm 990 Return of Organization Exempt From Income Tax 2024 OMB No. 1545-0047\nUnder section 501(c), 527, or 4947(a)(1) of the Internal Revenue Code (except private foundations)\nA For the 2024 calendar year, or tax year beginning , 2024, and ending , 20\nC Name of organization LAKESHORE COMMUNITY ARTS FOUNDATION D Employer identification number 99-6781234\nNumber and street 1200 LAKESHORE DR E Telephone number (312) 555-0100\nCity or town, state or province, country, and ZIP or foreign postal code CHICAGO, IL 60610 G Gross receipts $ 668,000.\nI Tax-exempt status: X 501(c)(3) 501(c) ( ) (insert no.) 4947(a)(1) or 527\nPart I Summary\n1 Briefly describe the organization's mission or most significant activities: COMMUNITY ART CLASSES AND EXHIBITIONS\n3 Number of voting members of the governing body (Part VI, line 1a) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 3 7\n5 Total number of individuals employed in calendar year (Part V, line 2a) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 5 6\nPrior Year Current Year\n8 Contributions and grants (Part VIII, line 1h) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 8 480,000. 520,000.\n9 Program service revenue (Part VIII, line 2g) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 9 130,000. 140,000.\n10 Investment income (Part VIII, column (A), lines 3, 4, and 7d) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 10 6,000. 8,000.\n11 Other revenue (Part VIII, column (A), lines 5, 6d, 8c, 9c, 10c, and 11e) . . . . . . . . . . . . . . . . . . . . . . . . . . . . 11 0. 0.\n12 Total revenue-add lines 8 through 11 (must equal Part VIII, column (A), line 12) . . . . . . . . . . . . . . . . . . . . 12 616,000. 668,000.\n13 Grants and similar amounts paid (Part IX, column (A), lines 1-3) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 13 55,000. 60,000.\n15 Salaries, other compensation, employee benefits (Part IX, column (A), lines 5-10) . . . . . . . . . . . . . . . . . . . 15 360,000. 380,000.\n17 Other expenses (Part IX, column (A), lines 11a-11d, 11f-24e) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 17 205,000. 215,000.\n18 Total expenses. Add lines 13-17 (must equal Part IX, column (A), line 25) . . . . . . . . . . . . . . . . . . . . . . . . . . . 18 620,000. 655,000.\n19 Revenue less expenses. Subtract line 18 from line 12 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 (4,000.) 13,000.\nBeginning of Current Year End of Year\n20 Total assets (Part X, line 16) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 20 680,000. 700,000.\n21 Total liabilities (Part X, line 26) . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 133,000. 140,000.\n22 Net assets or fund balances. Subtract line 21 from line 20 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 547,000. 560,000.\nForm 990 (2024) Page 1\n\n--- Page 4 ---\nForm 990 (2024) Page 3\nPart IV Checklist of Required Schedules\n1 Is the organization described in section 501(c)(3) or 4947(a)(1) (other than a private foundation)? If \"Yes,\" complete Schedule A . . . X Yes No\n2 Is the organization required to complete Schedule B, Schedule of Contributors? See instructions . . . Yes X No\nPart VII Compensation of Officers, Directors, Trustees, Key Employees\n(A) Name and title (B) Average hours per week (D) Reportable compensation from the organization (W-2/1099-MISC/1099-NEC)\nANNA K FERRIS EXECUTIVE DIRECTOR 40.00 121,000.\nTHOMAS R BLY BOARD CHAIR 2.00 0.\nForm 990 (2024) Page 2"
+  },
+  {
+   "name": "Lakeshore Community Arts Foundation_workpaper-2025.xlsx",
+   "role": "supporting_document",
+   "encoding": "xlsx-text",
+   "text": "--- Sheet: Statement of activities ---\nLakeshore Community Arts Foundation,\nStatement of activities,\n\"January-December, 2025\",\nContributions - individuals,\"360,000.00\"\nContributions - Lakeview Family Trust (single donor),\"250,000.00\"\nProgram fees (classes),\"150,000.00\"\nInterest and dividends,\"10,000.00\"\nTotal revenue,\"770,000.00\"\nGrants to artists,\"70,000.00\"\nSalaries and benefits,\"420,000.00\"\nOccupancy,\"120,000.00\"\nOther expenses,\"115,000.00\"\nTotal expenses,\"725,000.00\"\nChange in net assets,\"45,000.00\""
+  }
+ ]
+}

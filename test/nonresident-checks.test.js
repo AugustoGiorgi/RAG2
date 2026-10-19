@@ -154,7 +154,7 @@ test("tratado, creditos de educacion y seguridad social retenida al estudiante",
     text: [
       "Form W-2 Wage and Tax Statement 2025",
       "1 Wages, tips, other compensation 2 Federal income tax withheld",
-      "12000.00 900.00",
+      "12000.00 2500.00",
       "3 Social security wages 4 Social security tax withheld 3 Social security wages 4 Social security tax withheld",
       "12000.00 744.00 12000.00 744.00",
     ].join("\n"),

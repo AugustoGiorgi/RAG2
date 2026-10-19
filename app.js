@@ -7756,6 +7756,7 @@ function sanitizeIssue(issue = {}) {
     authority: safeText(issue.authority || issue.citation || issue.taxAuthority),
     source: stripDocumentPrefix(issue.source || issue.document || issue.reference),
     needsMoreInfo: safeText(issue.needsMoreInfo),
+    taxImpactLabel: safeText(issue.taxImpactLabel),
   };
 }
 
@@ -10112,6 +10113,7 @@ function renderIssueCard(issue, index) {
         <span class="tag ${isResolved ? "success" : priorityClass}">${escapeHtml(isResolved ? "RESOLVED" : issue.priority || issue.severity || "Info")}</span>
         <strong>${escapeHtml(issue.areaReviewed || issue.category || "Review Area")}</strong>
         ${formName ? `<span class="metric-chip">${escapeHtml(formName)}</span>` : ""}
+        ${Number(issue.taxImpact) >= 1 ? `<span class="metric-chip tax-effect" title="${escapeHtml(issue.taxImpactLabel || "")}">≈ $${Math.round(Number(issue.taxImpact)).toLocaleString("en-US")} tax effect</span>` : ""}
         <span class="issue-status ${resolution.status || "open"}">${escapeHtml(statusLabel)}</span>
       </div>
       ${briefText ? `<span class="issue-brief">${escapeHtml(briefText)}${briefText.length >= 160 ? "…" : ""}</span>` : ""}
@@ -10120,6 +10122,7 @@ function renderIssueCard(issue, index) {
       <dl>
         ${renderDefinition("Form or schedule", issue.formOrSchedule)}
         ${renderDefinition("Issue", issue.issueDescription || issue.title || issue.detail)}
+        ${renderDefinition("Tax effect (estimate)", issue.taxImpactLabel)}
         ${renderDefinition("Evidence", issue.evidence)}
         ${renderDefinition("Risk analysis", issue.riskAnalysis || issue.whyItMatters)}
         ${renderDefinition("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation)}
@@ -10856,6 +10859,7 @@ function toCleanWrittenReview(response, metadata = {}) {
     issues.forEach((issue, index) => {
       lines.push(`Issue ${index + 1}: [${issue.priority}] ${issue.area}`);
       lines.push(`Issue: ${issue.description}`);
+      if (issue.taxImpactLabel) lines.push(`Tax effect (estimate): ${issue.taxImpactLabel}`);
       if (issue.evidence) lines.push(`Evidence: ${issue.evidence}`);
       if (issue.riskAnalysis || issue.whyItMatters) lines.push(`Risk analysis: ${issue.riskAnalysis || issue.whyItMatters}`);
       if (issue.proposedSolution || issue.recommendedAction) lines.push(`Proposed solution: ${issue.proposedSolution || issue.recommendedAction}`);
@@ -11304,6 +11308,7 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
       const form = safeText(issue.formOrSchedule || issue.form || issue.schedule);
       parts.push(dxP(`${n + 1}.  [${priority}] ${safeText(issue.areaReviewed || issue.category) || "Issue"}${form ? ` — ${form}` : ""}`, { bold: true, size: 22, color: "FFFFFF", shd: fill, before: 200, after: 90, keepNext: true }));
       parts.push(dxLabel("Issue", issue.issueDescription || issue.title || issue.detail));
+      parts.push(dxLabel("Tax effect (estimate)", issue.taxImpactLabel));
       parts.push(dxLabel("Evidence", issue.evidence));
       parts.push(dxLabel("Risk", issue.riskAnalysis || issue.whyItMatters));
       parts.push(dxLabel("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation));

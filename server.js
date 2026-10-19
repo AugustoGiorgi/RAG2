@@ -28,7 +28,7 @@ const planningStrategies = require("./lib/planning-strategies");
 const { readBalanceSheetEquity, equityFactsPrompt, fixRetainedEarningsInGuide, retainedEarningsNote } = require("./lib/balance-sheet-equity");
 const { canonicalizeWorkbookSheets, injectSectionTotalFormulas, injectFinancialStatementFormulas, linkEntryGuideToWorkpaper } = require("./lib/workbook-postprocess");
 const { buildK1Sheet } = require("./lib/k1-builder");
-const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage, issuesFromOutOfBalanceRows, keepTieOutIssuesInTable, foldTieOutIssuesExplainedBy } = require("./lib/tie-out");
+const { enforceNumericVerdicts, ensureRequiredTieOutRows, tieOutChecklistPromptLines, detectReturnTypeFromFiles, auditDocumentCoverage, issuesFromOutOfBalanceRows, keepTieOutIssuesInTable, foldTieOutIssuesExplainedBy, canonicalLineKey: tieOutCanonicalLineKey } = require("./lib/tie-out");
 const { runPriorYearChecks } = require("./lib/prior-year-bridge");
 const { runEntityReturnChecks } = require("./lib/entity-return-checks");
 const { runReturnConsistencyChecks } = require("./lib/return-consistency-checks");
@@ -53,6 +53,7 @@ const { runCrossDocumentChecks } = require("./lib/cross-document-checks");
 const { runCarryforwardChecks } = require("./lib/carryforward-checks");
 const { runFormArithmeticChecks } = require("./lib/form-arithmetic-checks");
 const { runNonresidentChecks } = require("./lib/nonresident-checks");
+const { taxProfile, attachTaxImpact, promptLine: taxImpactPromptLine } = require("./lib/tax-impact");
 const { runPackageChecks } = require("./lib/package-checks");
 const { runIndividualChecks } = require("./lib/individual-checks");
 const { runK1Checks } = require("./lib/k1-checks");
@@ -11448,7 +11449,9 @@ function buildDirectReviewSystemPrompt(returnType, state, files) {
   // always compare the same lines instead of each run picking its own set.
   // With the package's files, so the state return's lines are on the list when it carries one.
   const checklist = tieOutChecklistPromptLines(returnType, files);
-  const checklistBlock = checklist.length ? `\n\n${checklist.join("\n")}` : "";
+  // La tasa marginal la calcula el codigo; el modelo la usa para estimar el efecto de cada hallazgo.
+  const taxLine = taxImpactPromptLine(taxProfile(files, returnType, {}));
+  const checklistBlock = `${checklist.length ? `\n\n${checklist.join("\n")}` : ""}${taxLine ? `\n\n${taxLine}` : ""}`;
   return `You are a senior tax return reviewer at a CPA firm with 20+ years of experience reviewing ${returnType || "US tax"} returns. You review with meticulous attention to detail - you catch errors a partner would catch and the ones they would miss.
 
 WRITE LIKE A BUSY PARTNER, NOT A TREATISE. Every finding must be scannable in seconds. issueDescription is ONE short sentence naming what disagrees and the two amounts. Example of the ONLY acceptable style: "W-2 Box 1 shows $81,824.69 but return Line 1a shows $91,825; verify the entry." Do NOT write background, do NOT restate the same numbers in multiple fields, do NOT speculate about what an error "might indicate," do NOT chain hypotheticals. A finding longer than two sentences is wrong. Half-page findings are a failure.
@@ -12274,6 +12277,8 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
         authority: finding.authority,
         source: "Automated cross-year check",
         needsMoreInfo: "",
+        // Lo que el cruce sabe que mueve: tipo (credito, pago, ingreso...) e importe.
+        ...(finding.impact ? { impact: finding.impact } : {}),
       });
     }
     console.log(`[Review] ${bridged.length} deterministic cross-year finding(s) added.`);
@@ -12389,6 +12394,14 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
   }
   mergeComputedIdentityRows(normalized, payload);
   mergeComputedCheckboxRows(normalized, payload);
+  // El efecto estimado en el impuesto de cada hallazgo, y el orden por plata dentro de cada
+  // prioridad. Al final, sobre la lista que ya no cambia.
+  if (Array.isArray(normalized.issues) && normalized.issues.length) {
+    const profile = taxProfile(payload?.files, payload?.metadata?.returnType || payload?.returnType || detectReturnTypeFromFiles(payload?.files), payload?.metadata || {});
+    const impact = attachTaxImpact(normalized.issues, profile, { canonicalLineKey: tieOutCanonicalLineKey });
+    normalized.issues = impact.issues;
+    if (impact.estimated) console.log(`[Review] tax effect estimated on ${impact.estimated} finding(s)${profile && profile.basis ? ` (${profile.basis})` : ""}.`);
+  }
   enforceFilingReadinessConsistency(normalized);
   return normalized;
 }
@@ -12449,8 +12462,12 @@ function mergeComputedCheckboxRows(normalized, payload) {
     const key = checkboxQuestionKey(box);
     return key.length >= 15 && keys.some((other) => other.includes(key) || key.includes(other));
   };
+  // El estado civil leido por codigo reemplaza la fila del modelo sobre lo mismo: en una prueba
+  // el modelo leyo Single donde la X marcaba Married filing separately.
+  const codeStatus = changes.some((row) => /^Filing status \(read by code/.test(String(row.box || "")));
   const fromModel = (Array.isArray(normalized.checkboxReview) ? normalized.checkboxReview : [])
-    .filter((row) => !sameQuestion(row?.box));
+    .filter((row) => !sameQuestion(row?.box))
+    .filter((row) => !(codeStatus && /filing status/i.test(String(row?.box || ""))));
   normalized.checkboxReview = [...changes, ...fromModel, ...scope];
   console.log(`[Review] ${changes.length} checkbox change(s) vs the prior year and ${scope.length ? scope[0].currentState : 0} unchanged box(es) computed in code.`);
 }
@@ -15106,7 +15123,7 @@ async function structureReviewTextWithClaude(apiKey, payload, reviewText) {
 }
 
 function reviewJsonSchemaText() {
-  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"infoConsistency":[{"item":"string","returnValue":"string","sourceValue":"string","source":"string","status":"MATCH|MISMATCH","note":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
+  return '{"clientName":"string","returnType":"string","taxYear":"string","reviewStage":"string","generatedDate":"string","reviewerName":"string","executiveSummary":"string","filingReadiness":"READY|NOT READY|READY WITH CONDITIONS","overallRiskScore":"string","documentsRead":[{"filename":"string","role":"prior_return|current_return|prior_workpaper|current_workpaper|supporting_document","summary":"string"}],"feedbackApplied":["string"],"issues":[{"priority":"HIGH|MEDIUM|LOW","category":"string","areaReviewed":"string","formOrSchedule":"string","issueDescription":"string","evidence":"string","riskAnalysis":"string","proposedSolution":"string","authority":"string","source":"string","needsMoreInfo":"string","taxImpact":"number|null"}],"checkboxReview":[{"box":"string","currentState":"string","shouldBe":"string","explanation":"string"}],"infoConsistency":[{"item":"string","returnValue":"string","sourceValue":"string","source":"string","status":"MATCH|MISMATCH","note":"string"}],"tieOutResults":[{"lineItem":"string","returnAmount":0,"workpaperAmount":0,"difference":0,"status":"TIE|OUT_OF_BALANCE","note":"string"}],"balanceSheetCheck":{"totalAssets":0,"totalLiabEquity":0,"balanced":true,"difference":0,"note":"string"},"openQuestions":["string"],"verifiedItems":["string"],"missingDocuments":["string"],"finalConclusion":"string"}';
 }
 
 async function callClaudeContentWithFallbacks(apiKey, content, context, options = {}) {
