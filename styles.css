@@ -8712,3 +8712,21 @@ body {
 .password-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .password-dialog-actions button { min-height: 40px; padding: 8px 13px; border: 1px solid #b8c6d6; border-radius: 6px; background: #fff; color: #173e73; font-weight: 700; cursor: pointer; }
 .password-dialog-actions button[value="confirm"] { border-color: #173e73; background: #173e73; color: #fff; }
+
+/* ── Review result (#results only: the other tabs share .results) ─────────────────── */
+/* A grid track takes the width of its widest child: one long table made the column 795px wide
+   inside a 403px panel, and half of every finding card sat out of view. The column now keeps its
+   width and each table scrolls inside its own box. */
+#results { grid-template-columns: minmax(0, 1fr); }
+#results > article, #results .issue-card { min-width: 0; }
+#results .review-detail-table { min-width: 640px; }
+#results .issue-card, #results .issue-brief, #results .issue-todo, #results dd, #results .client-list li { overflow-wrap: anywhere; }
+#results .issue-number { min-width: 22px; font-weight: 800; color: #1f3864; }
+#results .issue-todo { margin: 8px 0 4px; padding: 7px 10px; border-radius: 8px; background: #eaf1fb; color: #1f2937; font-size: 0.88rem; line-height: 1.5; }
+#results .issue-todo strong { color: #1f3864; }
+#results .review-limits { margin: 10px 0 0; padding: 8px 11px; border-radius: 8px; background: #fdecea; color: #7f1d1d; font-size: 0.85rem; line-height: 1.5; }
+#results .client-list h4 { margin: 12px 0 4px; font-size: 0.9rem; color: #1f3864; }
+#results .client-list ol { margin: 0; padding-left: 22px; }
+#results .client-list li { margin: 4px 0; color: #1f2937; font-size: 0.88rem; line-height: 1.5; }
+#results .client-list-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+#results .client-list-status { font-size: 0.82rem; color: #475467; }

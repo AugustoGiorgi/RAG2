@@ -20,6 +20,8 @@ const { build, infoLabel, checkboxLabel, checkboxRows } = eval(`(() => {
   ${grab("dxP")}
   ${grab("dxH")}
   ${grab("dxLabel")}
+  ${grab("safePriority")}
+  ${grab("dxAmount")}
   ${grab("dxTable")}
   ${src.match(/^const REVIEW_SCOPE_ROW = .*$/m)[0]}
   ${grab("reviewScopeCount")}

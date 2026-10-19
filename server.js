@@ -41,7 +41,7 @@ const { DOCX_MIME, REVIEW_FOLDER_NAME, MAX_UPLOAD_BYTES, reviewDriveFileName, dr
 const { budgetPools } = require("./lib/spend-budget");
 const { stripCostData } = require("./lib/cost-privacy");
 const { SECTIONS, firmKey, sectionsForRoute, normalizeSections, allowedSections, setFirmSections } = require("./lib/firm-access");
-const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice, returnStates, omittedFiles, omissionNote } = require("./lib/package-trim");
+const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice, dropPrintedPages, printedPagesNotice, returnStates, omittedFiles, omissionNote } = require("./lib/package-trim");
 const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
@@ -11128,11 +11128,12 @@ async function handleReview(req, res) {
         console.log(`[Review] pasada ${pass}${REVIEW_SECOND_LOOK ? " (segunda mirada)" : ""}: ${Number(passUsage.output_tokens || 0).toLocaleString("en-US")} tokens de salida, cache leido ${Number(passUsage.cache_read_input_tokens || 0).toLocaleString("en-US")}.`);
         extraUsage.push(again.data.usage || {});
         const passReview = normalizeDirectReview(parseClaudeJson(extractTextBlocksOnly(again.data)), reviewRequest);
-        if (hasDirectReviewContent(passReview)) extraReviews.push(passReview);
+        if (hasDirectReviewContent(passReview)) extraReviews.push(tagReviewPass(passReview, pass));
       }
     }
     if (extraReviews.length) {
-      const united = mergeReviews([review, ...extraReviews]);
+      const united = mergeReviews([tagReviewPass(review, 1), ...extraReviews]);
+      logReviewPassYield(united.review);
       const before = Array.isArray(review.issues) ? review.issues.length : 0;
       review = united.review;
       // Un hallazgo de tie-out vale mientras su renglon siga sin cerrar en la tabla que quedo.
@@ -11304,17 +11305,24 @@ function compactReviewDocuments(documents = [], limits = {}) {
   // Se limpia SOLO lo que va al modelo. originalText, que es lo que leen los cruces en codigo,
   // queda crudo: varios de esos cruces limpian las guias por su cuenta y con su propio criterio,
   // y no hay ninguna razon para hacerles cambiar el texto debajo de los pies.
-  const cleaned = dedupePages(documents.map((file) => ({
+  const deduped = dedupePages(documents.map((file) => ({
     name: String(file.name || ""),
+    role: String(file.reviewRole || file.role || ""),
     text: collapseLeaders(String(file.extractedText || "")),
   })));
+  // Y lo que el IRS imprime igual en todas las copias (instrucciones al receptor, codigos del
+  // K-1) mas los tramites estatales: hasta 17% de un paquete con soporte, sin un dato del cliente.
+  const cleaned = dropPrintedPages(deduped.documents);
   const modelText = cleaned.documents.map((doc) => doc.text);
-  const duplicateNotes = cleaned.documents.map((doc) => duplicateNotice(doc.duplicates));
-  if (cleaned.removedPages) {
+  const duplicateNotes = cleaned.documents.map((doc) => duplicateNotice(doc.duplicates) + printedPagesNotice(doc.printed));
+  if (deduped.removedPages) {
     console.log(
-      `[Review] limpieza: ${cleaned.removedPages} pagina(s) identicas a otras del mismo paquete`
-      + ` (${cleaned.removedChars.toLocaleString("en-US")} caracteres) se mandan una sola vez.`
+      `[Review] limpieza: ${deduped.removedPages} pagina(s) identicas a otras del mismo paquete`
+      + ` (${deduped.removedChars.toLocaleString("en-US")} caracteres) se mandan una sola vez.`
     );
+  }
+  if (cleaned.removedPages) {
+    console.log(`[Review] limpieza: ${cleaned.removedPages} pagina(s) de instrucciones impresas o tramites estatales (${cleaned.removedChars.toLocaleString("en-US")} caracteres) no se mandan.`);
   }
 
   // El presupuesto de entrada es el 92% del costo de una revision — la salida, con el
@@ -11940,6 +11948,31 @@ function structureModelCandidates() {
     "claude-haiku-4-5-20251001",
     ...reviewModelCandidates(),
   ].filter(Boolean)));
+}
+
+// Each model finding carries the pass that found it (the history keeps it; the report does not
+// show it). The second pass costs a quarter of every review, and whether it earns that has to be
+// read from real reviews, not assumed. The code's findings are in every pass and are not counted.
+function tagReviewPass(review, pass) {
+  if (!review || !Array.isArray(review.issues)) return review;
+  const byCode = /^(?:Automated cross-year check|Tie-out computed by RAG Tax AI)$/;
+  review.issues = review.issues.map((issue) => (issue && typeof issue === "object" && !byCode.test(String(issue.source || "")) ? { ...issue, foundInPass: issue.foundInPass ?? pass } : issue));
+  return review;
+}
+
+function logReviewPassYield(review) {
+  const issues = (Array.isArray(review?.issues) ? review.issues : []).filter((issue) => issue && issue.foundInPass !== undefined);
+  const byPass = new Map();
+  for (const issue of issues) {
+    const row = byPass.get(issue.foundInPass) || { total: 0, HIGH: 0, MEDIUM: 0, LOW: 0, lowered: 0 };
+    row.total += 1;
+    const priority = String(issue.priority || "").toUpperCase();
+    if (row[priority] !== undefined) row[priority] += 1;
+    if (issue.contradictedByGuard || /^[A-Z][A-Z ,'-]{5,}:/.test(String(issue.riskAnalysis || ""))) row.lowered += 1;
+    byPass.set(issue.foundInPass, row);
+  }
+  const parts = [...byPass].sort((a, b) => a[0] - b[0]).map(([pass, r]) => `pasada ${pass}: ${r.total} (${r.HIGH} HIGH, ${r.MEDIUM} MEDIUM, ${r.LOW} LOW; ${r.lowered} bajados por un control)`);
+  if (parts.length) console.log(`[Review] hallazgos del modelo por pasada — ${parts.join(" · ")}.`);
 }
 
 function normalizeDirectReview(review, reviewRequest) {
@@ -12669,6 +12702,9 @@ function hasBalanceSheetRelevantFiles(payload = {}) {
   // balance-sheet relevance was flagging "OUT OF BALANCE" on every run.
   const returnType = String(payload.metadata?.returnType || "").toLowerCase().replace(/\s+/g, "");
   if (/^(1120|1120s|1120-s|1065|1041)$/.test(returnType)) return true;
+  // An individual return has no Schedule L, whatever its files are called: a 1040 package with a
+  // "workpaper" file got "Complete and document the Schedule L balance sheet tie-out" every run.
+  if (/^1040(?:-?(?:sr|nr))?$/.test(returnType)) return false;
   const text = JSON.stringify((payload.files || []).map((file) => ({ name: file.name, role: file.reviewRole || file.canonicalRole || file.role }))).toLowerCase();
   return /\bworkpaper\b|\bbalance sheet\b|\bschedule l\b/.test(text);
 }

@@ -2356,7 +2356,7 @@ function renderPtoPanel() {
 }
 
 function renderPtoEntryRow(entry) {
-  return `<div class="pto-entry-row"><div class="pto-entry-icon">${escapeHtml(ptoTypeEmoji(entry.type))}</div><div class="pto-entry-info"><div class="pto-entry-title">${escapeHtml(ptoTypeLabel(entry.type))} Â· ${escapeHtml(entry.startDate)} â†’ ${escapeHtml(entry.endDate)} (${entry.totalDays} days)</div><div class="pto-entry-dates">${escapeHtml(entry.userName)} <span class="pto-badge pto-badge-${escapeHtml(entry.status)}">${escapeHtml(entry.status)}</span></div>${entry.note ? `<div class="pto-entry-note">${escapeHtml(entry.note)}</div>` : ""}</div><div class="pto-entry-actions"><button class="pto-action-btn" data-delete-pto="${escapeHtml(entry.id)}" type="button">Delete</button></div></div>`;
+  return `<div class="pto-entry-row"><div class="pto-entry-icon">${escapeHtml(ptoTypeEmoji(entry.type))}</div><div class="pto-entry-info"><div class="pto-entry-title">${escapeHtml(ptoTypeLabel(entry.type))} · ${escapeHtml(entry.startDate)} → ${escapeHtml(entry.endDate)} (${entry.totalDays} days)</div><div class="pto-entry-dates">${escapeHtml(entry.userName)} <span class="pto-badge pto-badge-${escapeHtml(entry.status)}">${escapeHtml(entry.status)}</span></div>${entry.note ? `<div class="pto-entry-note">${escapeHtml(entry.note)}</div>` : ""}</div><div class="pto-entry-actions"><button class="pto-action-btn" data-delete-pto="${escapeHtml(entry.id)}" type="button">Delete</button></div></div>`;
 }
 
 function monthDateCells(year, month) {
@@ -3399,7 +3399,7 @@ function renderQBOReportList(category = "all") {
     const selected = qboState.selectedReports.has(report.id);
     return `<label class="qbo-report-item ${selected ? "selected" : ""}">
       <input type="checkbox" data-qbo-report="${escapeHtml(report.id)}" ${selected ? "checked" : ""} />
-      <span class="qbo-report-info"><strong>${escapeHtml(report.name)}</strong><small>${report.dateRange ? "Date range" : report.asOfDate ? "As-of date" : "No date filter"}${report.supportsComparative ? " Â· comparative" : ""}</small></span>
+      <span class="qbo-report-info"><strong>${escapeHtml(report.name)}</strong><small>${report.dateRange ? "Date range" : report.asOfDate ? "As-of date" : "No date filter"}${report.supportsComparative ? " · comparative" : ""}</small></span>
     </label>`;
   }).join("") || `<p class="muted-note">No reports in this category.</p>`;
   els.qboReportList.querySelectorAll("[data-qbo-report]").forEach((input) => input.addEventListener("change", () => {
@@ -5442,7 +5442,7 @@ function renderNoticeFileList(list, file, emptyText) {
     <li>
       <div>
         <div class="file-name">${escapeHtml(displayFileName(file))}${file.source === "quickbooks_online" || file.source === "accounting_software" ? ` <span class="qbo-badge">${escapeHtml(file.accountingSoftwareName || "QBO")}</span>` : ""}</div>
-        <div class="file-meta">${formatBytes(file.size)} Â· ${escapeHtml(fileExtension(file.name))}</div>
+        <div class="file-meta">${formatBytes(file.size)} · ${escapeHtml(fileExtension(file.name))}</div>
       </div>
     </li>`;
 }
@@ -6852,7 +6852,7 @@ function renderSimpleFileList(list, files, type) {
     <li>
       <div>
         <div class="file-name">${escapeHtml(displayFileName(file))}</div>
-        <div class="file-meta">${formatBytes(file.size)} Â· ${escapeHtml(fileExtension(file.name))}</div>
+        <div class="file-meta">${formatBytes(file.size)} · ${escapeHtml(fileExtension(file.name))}</div>
       </div>
       <button class="remove-file" type="button" data-prep-type="${type}" data-index="${index}">Remove</button>
     </li>
@@ -8519,7 +8519,7 @@ function renderDeliverableFiles() {
       <span class="drive-file-icon">${deliverableFileIcon(item.mimeType)}</span>
       <div class="drive-file-info">
         <div class="drive-file-name">${escapeHtml(item.name)} ${item.source === "google_drive" ? '<span class="qbo-badge">DRIVE</span>' : ""}</div>
-        <div class="drive-file-meta">${formatBytes(item.size)} Â· ${escapeHtml(item.mimeType || "")}</div>
+        <div class="drive-file-meta">${formatBytes(item.size)} · ${escapeHtml(item.mimeType || "")}</div>
       </div>
       <select class="deliverable-file-type-select" data-file-type-index="${index}">
         ${["Tax Return", "Workpaper", "Engagement Letter", "Invoice", "Organizer / Checklist", "Notice Response", "Supporting Document", "Other"].map((type) => `<option${item.docType === type ? " selected" : ""}>${type}</option>`).join("")}
@@ -9324,7 +9324,7 @@ function renderFiles() {
         <li>
           <div>
             <div class="file-name">${escapeHtml(displayFileName(file))}</div>
-            <div class="file-meta">${formatBytes(file.size)} Â· ${escapeHtml(ext)} Â· ${readabilityLabel(ext)}</div>
+            <div class="file-meta">${formatBytes(file.size)} · ${escapeHtml(ext)} · ${readabilityLabel(ext)}</div>
             ${type === "taxReturns" ? renderTaxReturnRole(file) : ""}
           </div>
           <button class="remove-file" type="button" data-type="${type}" data-index="${index}">Remove</button>
@@ -9450,6 +9450,7 @@ function renderReviewResult(payload, metadata) {
     els.results.innerHTML = `
       ${renderReviewVerdict(structured, payload, client, taxYear)}
       ${renderIssueSection("Issues and response tracking", structured.issues)}
+      ${renderClientListSection(structured)}
       ${renderCheckboxReviewSection(structured.checkboxReview)}
       ${renderInfoConsistencySection(structured.infoConsistency)}
       ${renderTieOutSection(structured.tieOutResults)}
@@ -9934,9 +9935,13 @@ function renderCheckboxReviewSection(rows) {
   return renderReviewTable("Checkbox Review", ["Box", "Current State", "Should Be", "Explanation"], rows.map((row) => [row.box, row.currentState, row.shouldBe, row.explanation]));
 }
 
+// What does not tie first, then what nobody verified, then what ties, as in the Word appendix.
 function renderTieOutSection(rows) {
   if (!Array.isArray(rows) || !rows.length) return "";
-  return renderReviewTable("Numeric Tie-Out", ["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"], rows.map((row) => [row.lineItem, row.returnAmount, row.workpaperAmount, row.difference, row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("OUT") ? "danger-row" : "");
+  const rank = (status) => { const s = safeText(status).toUpperCase(); return /OUT/.test(s) ? 0 : /NOT\s*VERIFIED/.test(s) ? 1 : /^TIES?$/.test(s) ? 3 : 2; };
+  const ordered = rows.map((row, i) => ({ row, i })).sort((a, b) => rank(a.row.status) - rank(b.row.status) || a.i - b.i).map(({ row }) => row);
+  const money = (value) => dxAmount(value) ?? value;
+  return renderReviewTable("Numeric Tie-Out", ["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"], ordered.map((row) => [row.lineItem, money(row.returnAmount), money(row.workpaperAmount), money(row.difference), row.status, row.note]), (row) => safeText(row.status).toUpperCase().includes("OUT") ? "danger-row" : "");
 }
 
 function renderInfoConsistencySection(rows) {
@@ -10016,8 +10021,60 @@ function renderIssueSection(title, issues) {
         ${chip("info", "Info", counts.INFO)}
         ${chip("open", "Open only", 0)}
       </div>
-      <div class="issue-stack">${issues.map((issue, index) => renderIssueCard(issue, index)).join("")}</div>
+      <div class="issue-stack">${reviewIssuesInReportOrder(issues).map(({ issue, index, number }) => renderIssueCard(issue, index, number)).join("")}</div>
     </article>`;
+}
+
+// The open questions split from the server's notices of what the review never read (those go
+// up top), and the documents to request. The Word prints the same three lists.
+const REVIEW_LIMIT_NOTE = /\bnot read by this review\b|\bnot listed as read by this review\b/i;
+function reviewClientList(structured = {}) {
+  const open = (Array.isArray(structured.questions) && structured.questions.length)
+    ? structured.questions
+    : (Array.isArray(structured.openQuestions) ? structured.openQuestions : []);
+  const texts = open.map((q) => safeText(q)).filter(Boolean);
+  return {
+    limits: texts.filter((q) => REVIEW_LIMIT_NOTE.test(q)),
+    questions: texts.filter((q) => !REVIEW_LIMIT_NOTE.test(q)),
+    documents: (Array.isArray(structured.missingDocuments) ? structured.missingDocuments : []).map((d) => safeText(d)).filter(Boolean),
+  };
+}
+
+function reviewClientListText(structured = {}) {
+  const list = reviewClientList(structured);
+  const lines = [];
+  if (list.questions.length) lines.push("Questions:", ...list.questions.map((q, i) => `${i + 1}. ${q}`));
+  if (list.documents.length) lines.push(...(lines.length ? [""] : []), "Documents to request:", ...list.documents.map((d, i) => `${i + 1}. ${d}`));
+  return lines.join("\n");
+}
+
+// On screen, not only in the Word: it is the part of the review that goes to the client.
+function renderClientListSection(structured = {}) {
+  const list = reviewClientList(structured);
+  if (!list.questions.length && !list.documents.length) return "";
+  const block = (title, items) => (items.length ? `<h4>${escapeHtml(title)} (${items.length})</h4><ol>${items.map((text) => `<li>${escapeHtml(text)}</li>`).join("")}</ol>` : "");
+  return `
+    <article class="client-list">
+      <span class="tag neutral">To ask and request</span>
+      <h3>Open questions and documents to request</h3>
+      ${block("Questions", list.questions)}
+      ${block("Documents to request", list.documents)}
+      <div class="client-list-actions">
+        <button type="button" class="ghost-button small-button" data-copy-client-list>Copy list</button>
+        <span class="client-list-status" aria-live="polite"></span>
+      </div>
+    </article>`;
+}
+
+// HIGH, then MEDIUM, then LOW, each in the order the server left them (by tax effect), numbered
+// as the Word numbers them, so "finding 3" is the same one on screen and on paper. `index` stays
+// the position in the review, which is what responses and resolutions are keyed by.
+function reviewIssuesInReportOrder(issues = []) {
+  const rank = { HIGH: 0, MEDIUM: 1, LOW: 2, INFO: 3 };
+  return (Array.isArray(issues) ? issues : [])
+    .map((issue, index) => ({ issue, index }))
+    .sort((a, b) => (rank[safePriority(a.issue.priority || a.issue.severity)] ?? 9) - (rank[safePriority(b.issue.priority || b.issue.severity)] ?? 9))
+    .map((item, n) => ({ ...item, number: n + 1 }));
 }
 
 function issuePriorityCounts(issues = []) {
@@ -10055,9 +10112,10 @@ function renderReviewVerdict(structured, payload, client, taxYear) {
   const counts = issuePriorityCounts(issues);
   const resolved = issues.filter((_, index) => issueResolutionState[index]?.status === "resolved").length;
   const percent = issues.length ? Math.round((resolved / issues.length) * 100) : 0;
-  const risk = calculateAuditRisk(structured);
-  const riskClass = /high/i.test(risk.label) ? "risk-high" : /med/i.test(risk.label) ? "risk-medium" : "risk-low";
   const metric = (cls, label, value) => (value ? `<span class="metric-chip ${cls}"><strong>${value}</strong> ${escapeHtml(label)}</span>` : "");
+  // What to ask and request instead of an "audit risk" the browser summed from the counts (3 a
+  // HIGH, 1 a MEDIUM): it read HIGH on nearly every review and told the reviewer nothing.
+  const list = reviewClientList(structured);
   return `
     <article class="resolution-summary">
       <div class="review-verdict-head">
@@ -10066,14 +10124,15 @@ function renderReviewVerdict(structured, payload, client, taxYear) {
         <button id="downloadResolutionReport" class="primary-button small-button" type="button" style="margin-left:auto">Resolution Report</button>
       </div>
       <p>${escapeHtml(structured.executiveSummary || structured.summary || "Review complete.")}</p>
+      ${list.limits.map((text, i) => `<p class="review-limits">${i === 0 ? "<strong>Limits of this review:</strong> " : ""}${escapeHtml(text)}</p>`).join("")}
       <div class="review-verdict-metrics">
         ${metric("high", counts.HIGH === 1 ? "high issue" : "high issues", counts.HIGH)}
         ${metric("medium", "medium", counts.MEDIUM)}
         ${metric("low", "low", counts.LOW)}
         ${metric("", "informational", counts.INFO)}
-        <span class="metric-chip ${riskClass}">Audit risk: ${escapeHtml(risk.label)} (${escapeHtml(String(risk.score))})</span>
+        ${metric("", list.questions.length === 1 ? "open question" : "open questions", list.questions.length)}
+        ${metric("", list.documents.length === 1 ? "document to request" : "documents to request", list.documents.length)}
         ${issues.length ? `<span class="metric-chip">${resolved}/${issues.length} resolved</span>` : ""}
-        ${structured.overallRiskScore ? `<span class="metric-chip">Overall: ${escapeHtml(structured.overallRiskScore)}</span>` : ""}
       </div>
       ${issues.length ? `<div class="resolution-progress" aria-label="Issue resolution progress"><span style="width: ${percent}%"></span></div>` : ""}
       ${renderCostSummary(payload)}
@@ -10103,33 +10162,39 @@ function renderResolutionSummary(structured, metadata) {
     </article>`;
 }
 
-function renderIssueCard(issue, index) {
+function renderIssueCard(issue, index, number = index + 1) {
   const priority = normalizedPriority(issue);
   const priorityClass = priority === "high" ? "danger" : priority === "medium" ? "warning" : priority === "low" ? "neutral" : "success";
   const resolution = issueResolutionState[index] || { status: "open" };
   const isResolved = resolution.status === "resolved";
   const statusLabel = isResolved ? "RESOLVED" : resolution.status === "responded" ? "RESPONDED" : "OPEN";
   const formName = issue.formOrSchedule || issue.form || issue.schedule || "";
-  const briefText = safeText(issue.issueDescription || issue.title || issue.detail || "").slice(0, 160);
+  // The whole finding: the server already holds it to two sentences and 320 characters, and
+  // cutting it again at 160 made the reader open the card to finish a sentence.
+  const briefText = safeText(issue.issueDescription || issue.title || issue.detail || "");
+  const todo = safeText(issue.proposedSolution || issue.recommendedAction || issue.recommendation);
+  // The fixed sentence every code finding carries says nothing about this one.
+  const risk = safeText(issue.riskAnalysis || issue.whyItMatters);
+  const authority = safeText(issue.authority);
   return `
     <div class="issue-card ${priority} ${isResolved ? "resolved" : ""}" data-issue-card="${index}" data-priority="${priority}" data-resolution="${resolution.status || "open"}">
       <div class="issue-heading">
+        <span class="issue-number">${number}</span>
         <span class="tag ${isResolved ? "success" : priorityClass}">${escapeHtml(isResolved ? "RESOLVED" : issue.priority || issue.severity || "Info")}</span>
         <strong>${escapeHtml(issue.areaReviewed || issue.category || "Review Area")}</strong>
         ${formName ? `<span class="metric-chip">${escapeHtml(formName)}</span>` : ""}
         ${Number(issue.taxImpact) >= 1 ? `<span class="metric-chip tax-effect" title="${escapeHtml(issue.taxImpactLabel || "")}">≈ $${Math.round(Number(issue.taxImpact)).toLocaleString("en-US")} tax effect</span>` : ""}
         <span class="issue-status ${resolution.status || "open"}">${escapeHtml(statusLabel)}</span>
       </div>
-      ${briefText ? `<span class="issue-brief">${escapeHtml(briefText)}${briefText.length >= 160 ? "…" : ""}</span>` : ""}
-      <details class="issue-body"${priority === "high" && !isResolved ? " open" : ""}>
+      ${briefText ? `<span class="issue-brief">${escapeHtml(briefText)}</span>` : ""}
+      ${todo ? `<p class="issue-todo"><strong>What to do:</strong> ${escapeHtml(todo)}</p>` : ""}
+      <details class="issue-body">
       <summary>Details, evidence &amp; response</summary>
       <dl>
-        ${renderDefinition("Form or schedule", issue.formOrSchedule)}
-        ${renderDefinition("Issue", issue.issueDescription || issue.title || issue.detail)}
         ${renderDefinition("Tax effect (estimate)", issue.taxImpactLabel)}
         ${renderDefinition("Evidence", issue.evidence)}
-        ${renderDefinition("Risk analysis", issue.riskAnalysis || issue.whyItMatters)}
-        ${renderDefinition("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation)}
+        ${/^This check runs deterministically\b/i.test(risk) ? "" : renderDefinition("Risk analysis", risk)}
+        ${/^(?:n\/?a|none|not applicable)\.?$/i.test(authority) ? "" : renderDefinition("Authority", authority)}
         ${renderDefinition("Reviewer comment", issue.reviewerComment)}
         ${renderDefinition("Source", issue.source)}
         ${renderDefinition("Needs more info?", issue.needsMoreInfo)}
@@ -10211,6 +10276,17 @@ function bindReviewEnhancementActions() {
   const reportButton = document.getElementById("downloadResolutionReport");
   if (reportButton) reportButton.addEventListener("click", downloadResolutionReport);
   document.getElementById("prefillDiagnosticsFromReview")?.addEventListener("click", prefillDiagnosticsFromReview);
+  document.querySelectorAll("[data-copy-client-list]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const status = button.parentElement?.querySelector(".client-list-status");
+      try {
+        await navigator.clipboard.writeText(reviewClientListText(lastReview?.response?.structured || {}));
+        if (status) status.textContent = "Copied.";
+      } catch (_) {
+        if (status) status.textContent = "Could not copy: select the list and copy it by hand.";
+      }
+    });
+  });
   // Priority filter chips: show/hide issue cards without re-rendering (state preserved).
   document.querySelectorAll("[data-issue-filter]").forEach((chip) => {
     chip.addEventListener("click", () => {
@@ -10435,7 +10511,7 @@ async function downloadReview(type) {
     const structured = lastReview.response.structured;
     if (structured && hasSeniorReviewSubstance(structured)) {
       try {
-        const blob = await createDocxBlob("", buildStructuredReviewDocxXml(structured, metadata));
+        const blob = await createDocxBlob("", buildStructuredReviewDocxXml(structured, metadata), { footerText: reviewDocxFooterText(metadata) });
         downloadBlob(`${baseName}.docx`, blob, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         saveReviewToDrive(blob, baseName);
         return;
@@ -11100,15 +11176,48 @@ function addMarkdownList(lines, title, items) {
   items.forEach((item) => lines.push(`- ${item}`));
 }
 
-async function createDocxBlob(reviewText, prebuiltDocumentXml = null) {
+// The review report's own parts: a declared font and heading styles (Word's navigation pane
+// lists the sections), settings that keep Word out of "Compatibility Mode", and a footer with the
+// client, the return and the page number. Other Word exports (letters, checklists) go without.
+function reviewDocxParts(footerText) {
+  const W = `xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"`;
+  const heading = (id, name, level, size, before) => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="${before}" w:after="120"/><w:outlineLvl w:val="${level}"/></w:pPr><w:rPr><w:b/><w:color w:val="1F3864"/><w:sz w:val="${size}"/></w:rPr></w:style>`;
+  const small = `<w:rPr><w:color w:val="8A93A3"/><w:sz w:val="15"/></w:rPr>`;
+  return {
+    styles: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="21"/><w:szCs w:val="21"/><w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="80" w:line="252" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>${heading("Heading1", "heading 1", 0, 26, 280)}${heading("Heading2", "heading 2", 1, 22, 160)}<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style></w:styles>`,
+    settings: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings ${W}><w:defaultTabStop w:val="720"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`,
+    footer: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr ${W}><w:p><w:pPr><w:tabs><w:tab w:val="right" w:pos="10080"/></w:tabs><w:spacing w:after="0"/></w:pPr><w:r>${small}<w:t xml:space="preserve">${escapeXml(footerText || "RAG Tax AI  ·  Senior review")}</w:t></w:r><w:r>${small}<w:tab/><w:t xml:space="preserve">Page </w:t></w:r><w:r>${small}<w:fldChar w:fldCharType="begin"/></w:r><w:r>${small}<w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r>${small}<w:fldChar w:fldCharType="separate"/></w:r><w:r>${small}<w:t>1</w:t></w:r><w:r>${small}<w:fldChar w:fldCharType="end"/></w:r></w:p></w:ftr>`,
+  };
+}
+
+function reviewDocxFooterText(metadata = {}) {
+  return [
+    "RAG Tax AI  ·  Senior review",
+    safeText(metadata.entityName || metadata.clientName),
+    safeText(metadata.returnType),
+    safeText(metadata.taxYear) ? `Tax year ${safeText(metadata.taxYear)}` : "",
+    new Date().toISOString().slice(0, 10),
+  ].filter(Boolean).join("  ·  ");
+}
+
+async function createDocxBlob(reviewText, prebuiltDocumentXml = null, options = {}) {
   const JSZip = window.JSZip;
   if (!JSZip) throw new Error("DOCX engine is not loaded.");
   const zip = new JSZip();
+  const documentXml = prebuiltDocumentXml || buildDocxDocumentXml(reviewText);
+  // The structured review points its section at a footer; only then do its parts travel.
+  const review = /r:id="rIdFooter1"/.test(documentXml) ? reviewDocxParts(options.footerText) : null;
   zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>${review ? `
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+  <Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>` : ""}
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
   <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
 </Types>`);
@@ -11130,40 +11239,73 @@ async function createDocxBlob(reviewText, prebuiltDocumentXml = null) {
 <Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>RAG Tax AI</Application>
 </Properties>`);
-  zip.folder("word").file("document.xml", prebuiltDocumentXml || buildDocxDocumentXml(reviewText));
-  zip.folder("word").folder("_rels").file("document.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  zip.folder("word").file("document.xml", documentXml);
+  if (review) {
+    zip.folder("word").file("styles.xml", review.styles);
+    zip.folder("word").file("settings.xml", review.settings);
+    zip.folder("word").file("footer1.xml", review.footer);
+  }
+  zip.folder("word").folder("_rels").file("document.xml.rels", review ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>
+  <Relationship Id="rIdFooter1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>
+</Relationships>` : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`);
   return zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
 }
 
 // ---- Styled review DOCX (built from the structured JSON, not from plain text) ---------
+// Brand: blue, whites and greys. Red marks HIGH and "not ready"; yellow is only for buttons.
 function dxP(text, o = {}) {
-  const rPr = `<w:rPr>${o.bold ? "<w:b/>" : ""}${o.italic ? "<w:i/>" : ""}<w:sz w:val="${o.size || 22}"/>${o.color ? `<w:color w:val="${o.color}"/>` : ""}</w:rPr>`;
-  const shd = o.shd ? `<w:shd w:val="clear" w:fill="${o.shd}"/>` : "";
-  return `<w:p><w:pPr>${shd}${o.keepNext ? "<w:keepNext/>" : ""}<w:spacing w:before="${o.before || 0}" w:after="${o.after ?? 120}"/></w:pPr><w:r>${rPr}<w:t xml:space="preserve">${escapeXml(String(text ?? ""))}</w:t></w:r></w:p>`;
+  const rPr = `<w:rPr>${o.bold ? "<w:b/>" : ""}${o.italic ? "<w:i/>" : ""}${o.color ? `<w:color w:val="${o.color}"/>` : ""}<w:sz w:val="${o.size || 22}"/></w:rPr>`;
+  const shd = o.shd ? `<w:shd w:val="clear" w:color="auto" w:fill="${o.shd}"/>` : "";
+  return `<w:p><w:pPr>${o.style ? `<w:pStyle w:val="${o.style}"/>` : ""}${o.keepNext ? "<w:keepNext/>" : ""}${shd}<w:spacing w:before="${o.before || 0}" w:after="${o.after ?? 120}"/></w:pPr><w:r>${rPr}<w:t xml:space="preserve">${escapeXml(String(text ?? ""))}</w:t></w:r></w:p>`;
 }
-function dxH(text) { return dxP(text, { bold: true, size: 26, color: "1F3864", before: 280, after: 120 }); }
+// A real heading style, so Word's navigation pane lists the sections.
+function dxH(text) { return dxP(text, { style: "Heading1", bold: true, size: 26, color: "1F3864", before: 280, after: 120, keepNext: true }); }
 function dxLabel(label, value) {
   const text = safeText(value);
   if (!text) return "";
   return `<w:p><w:pPr><w:spacing w:after="60"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="21"/></w:rPr><w:t xml:space="preserve">${escapeXml(label)}: </w:t></w:r><w:r><w:rPr><w:sz w:val="21"/></w:rPr><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
 }
-function dxTable(headers, rows, statusCol = -1) {
+// A figure in a money column — "81825", "-5000", "(218)", "$1,733.04" — with thousands separators.
+// Anything else (blank, "N/A", a note) comes back as null and prints as it is.
+function dxAmount(value) {
+  const text = safeText(value).trim();
+  if (!/^\(?-?\$?\d[\d,]*(\.\d+)?\)?$/.test(text)) return null;
+  const n = Number(text.replace(/[()$,-]/g, ""));
+  if (!Number.isFinite(n)) return null;
+  const shown = n.toLocaleString("en-US", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 });
+  return n && (/^\(.*\)$/.test(text) || text.startsWith("-")) ? `-${shown}` : shown;
+}
+// Cells get padding and the header row repeats on every page; money columns (amountCols) print
+// with thousands separators, aligned right, so two neighbouring figures never read as one.
+function dxTable(headers, rows, statusCol = -1, amountCols = [], widths = null) {
   const borders = `<w:tblBorders>${["top", "left", "bottom", "right", "insideH", "insideV"].map((side) => `<w:${side} w:val="single" w:sz="4" w:color="D9D9D9"/>`).join("")}</w:tblBorders>`;
-  const cell = (text, opts = {}) => `<w:tc><w:tcPr>${opts.fill ? `<w:shd w:val="clear" w:fill="${opts.fill}"/>` : ""}</w:tcPr><w:p><w:pPr><w:spacing w:after="40"/></w:pPr><w:r><w:rPr>${opts.bold ? "<w:b/>" : ""}<w:sz w:val="19"/>${opts.color ? `<w:color w:val="${opts.color}"/>` : ""}</w:rPr><w:t xml:space="preserve">${escapeXml(safeText(text))}</w:t></w:r></w:p></w:tc>`;
-  const headRow = `<w:tr>${headers.map((h) => cell(h, { bold: true, fill: "1F3864", color: "FFFFFF" })).join("")}</w:tr>`;
-  const bodyRows = rows.map((row) => `<w:tr>${row.map((value, i) => {
+  const padding = `<w:tblCellMar><w:top w:w="40" w:type="dxa"/><w:left w:w="90" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/><w:right w:w="90" w:type="dxa"/></w:tblCellMar>`;
+  // Fixed column widths (twips) when given: Word's automatic layout squeezed the line-item column.
+  const fixed = Array.isArray(widths) && widths.length === headers.length;
+  const cell = (text, opts = {}, i = 0) => `<w:tc><w:tcPr>${fixed ? `<w:tcW w:w="${widths[i]}" w:type="dxa"/>` : ""}${opts.fill ? `<w:shd w:val="clear" w:color="auto" w:fill="${opts.fill}"/>` : ""}</w:tcPr><w:p><w:pPr><w:spacing w:after="0"/>${opts.right ? `<w:jc w:val="right"/>` : ""}</w:pPr><w:r><w:rPr>${opts.bold ? "<w:b/>" : ""}${opts.color ? `<w:color w:val="${opts.color}"/>` : ""}<w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">${escapeXml(safeText(text))}</w:t></w:r></w:p></w:tc>`;
+  const headRow = `<w:tr><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>${headers.map((h, i) => cell(h, { bold: true, fill: "1F3864", color: "FFFFFF", right: amountCols.includes(i) }, i)).join("")}</w:tr>`;
+  const bodyRows = rows.map((row) => `<w:tr><w:trPr><w:cantSplit/></w:trPr>${row.map((value, i) => {
     if (i === statusCol) {
       const upper = safeText(value).toUpperCase();
       const unverified = /NOT\s*VERIFIED/.test(upper);
       const bad = !unverified && /NEEDS|MISMATCH|OUT|FAIL|MISSING|ERROR/.test(upper);
       const ok = /^(OK|TIE|TIES|MATCH|PASS|BALANCED)$/.test(upper);
-      if (unverified) return cell(value, { fill: "FFF4CE", color: "8A6D00", bold: true });
-      return cell(value, { fill: bad ? "FDECEA" : ok ? "E7F4EC" : undefined, color: bad ? "B3261E" : ok ? "1D6F42" : undefined, bold: bad || ok });
+      if (unverified) return cell(value, { fill: "EEF0F4", color: "5A6577", bold: true }, i);
+      return cell(value, { fill: bad ? "FDECEA" : ok ? "E7F4EC" : undefined, color: bad ? "B3261E" : ok ? "1D6F42" : undefined, bold: bad || ok }, i);
     }
-    return cell(value);
+    if (amountCols.includes(i)) {
+      const amount = dxAmount(value);
+      return cell(amount ?? value, { right: amount !== null }, i);
+    }
+    return cell(value, {}, i);
   }).join("")}</w:tr>`).join("");
-  return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr>${headRow}${bodyRows}</w:tbl><w:p/>`;
+  const layout = fixed ? `<w:tblLayout w:type="fixed"/>` : "";
+  const grid = fixed ? `<w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>` : "";
+  return `<w:tbl><w:tblPr><w:tblW w:w="${fixed ? widths.reduce((a, b) => a + b, 0) : 5000}" w:type="${fixed ? "dxa" : "pct"}"/>${borders}${layout}${padding}</w:tblPr>${grid}${headRow}${bodyRows}</w:tbl><w:p/>`;
 }
 
 // The review condenses what checks out into one final "scope row" per table — "Boxes verified
@@ -11279,14 +11421,104 @@ function reviewCheckboxDocxRows(rows) {
 }
 
 function buildStructuredReviewDocxXml(structured, metadata = {}) {
+  // Layout: page 1 is the verdict with its counts, what the review could not read, and the two
+  // tables the firm's client asked to see first (identity data and checkboxes, with their scores).
+  // Then the summary, the HIGH findings in one table, every finding as a card ("What to do"
+  // highlighted, LOW in a compact table), one list of questions and documents to request, and
+  // the long tables in an appendix. Only presentation: the review's data does not change.
+  const RED = "B3261E";
+  const BLUE = "1F3864";
+  const MID_BLUE = "2F5597";
+  const GREY = "5A6577";
+  const LIGHT = "8A93A3";
+  const BAND = { HIGH: RED, MEDIUM: MID_BLUE, LOW: LIGHT, INFO: LIGHT };
+  const WIDTH = 10080; // Letter, 0.75" margins
+  const FIXED_RISK = /^This check runs deterministically\b/i;
+  const CODE_EVIDENCE = /^Computed by RAG Tax AI directly from the filed returns\b/i;
+  const NO_AUTHORITY = /^(?:n\/?a|none|not applicable|tie-out of the return to its source documents)\.?$/i;
+  const GUARD_NOTE = /^[A-Z][A-Z0-9 ,'’()&/-]{5,}:/;
+  // The server writes these at the top of the open questions: what the review never read.
+  const LIMIT_NOTE = /\bnot read by this review\b|\bnot listed as read by this review\b/i;
+
+  const run = (text, o = {}) => `<w:r><w:rPr>${o.bold ? "<w:b/>" : ""}${o.italic ? "<w:i/>" : ""}${o.caps ? "<w:caps/>" : ""}${o.color ? `<w:color w:val="${o.color}"/>` : ""}<w:sz w:val="${o.size || 20}"/></w:rPr><w:t xml:space="preserve">${escapeXml(String(text ?? ""))}</w:t></w:r>`;
+  const para = (runs, o = {}) => `<w:p><w:pPr>${o.style ? `<w:pStyle w:val="${o.style}"/>` : ""}${o.keepNext ? "<w:keepNext/>" : ""}${o.shd ? `<w:shd w:val="clear" w:color="auto" w:fill="${o.shd}"/>` : ""}<w:spacing w:before="${o.before || 0}" w:after="${o.after ?? 60}"/>${o.jc ? `<w:jc w:val="${o.jc}"/>` : ""}</w:pPr>${runs}</w:p>`;
+  const cell = (width, inner, o = {}) => `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${o.fill ? `<w:shd w:val="clear" w:color="auto" w:fill="${o.fill}"/>` : ""}<w:tcMar><w:top w:w="${o.pad ?? 50}" w:type="dxa"/><w:left w:w="${o.padLeft ?? o.pad ?? 90}" w:type="dxa"/><w:bottom w:w="${o.pad ?? 50}" w:type="dxa"/><w:right w:w="${o.pad ?? 90}" w:type="dxa"/></w:tcMar>${o.center ? `<w:vAlign w:val="center"/>` : ""}</w:tcPr>${inner || "<w:p/>"}</w:tc>`;
+  const grid = (widths, rowsXml, o = {}) => {
+    const line = o.borders ? `w:val="single" w:sz="4" w:color="D9D9D9"` : `w:val="nil"`;
+    const borders = ["top", "left", "bottom", "right", "insideH", "insideV"].map((side) => `<w:${side} ${line}/>`).join("");
+    return `<w:tbl><w:tblPr><w:tblW w:w="${widths.reduce((a, b) => a + b, 0)}" w:type="dxa"/><w:tblBorders>${borders}</w:tblBorders><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>${rowsXml}</w:tbl>`;
+  };
+  const row = (cells, o = {}) => `<w:tr><w:trPr><w:cantSplit/>${o.header ? "<w:tblHeader/>" : ""}</w:trPr>${cells}</w:tr>`;
+  // A table of fixed columns: a navy header and small text, for the HIGH list and the LOW list.
+  const listTable = (headers, widths, rows) => grid(widths, [
+    row(headers.map((h, i) => cell(widths[i], para(run(h, { bold: true, color: "FFFFFF", size: 17 }), { after: 0 }), { fill: BLUE })).join(""), { header: true }),
+    ...rows.map((values) => row(values.map((v, i) => cell(widths[i], para(Array.isArray(v) ? v.join("") : run(v, { size: 17, bold: i === 0 }), { after: 0 }))).join(""))),
+  ].join(""), { borders: true }) + "<w:p/>";
+
+  const priorityOf = (issue) => safePriority(issue?.priority || issue?.severity);
+  // "Form 1040-NR line 19 — dependent credit claimed by..." is where and what; a model finding
+  // with a bare form name takes its area as the what.
+  const titleOf = (issue) => {
+    const form = safeText(issue.formOrSchedule || issue.form || issue.schedule);
+    const area = safeText(issue.areaReviewed || issue.category);
+    const cut = form.indexOf(" — ");
+    if (cut > 0) return { where: form.slice(0, cut), what: form.slice(cut + 3) };
+    // "Schedule L total liabilities and capital does not open where..." is a form and what is wrong with it.
+    const lead = /^((?:Form|Schedule)\s+[A-Z0-9][\w-]*(?:\s*\(Form\s+[\w-]+\))?(?:,?\s+(?:lines?|Lines?|Part|item|Item)\s+[\w().-]+(?:\s+(?:and|through)\s+[\w().-]+)?)?)\s+(?=[a-z])/.exec(form);
+    if (lead) return { where: lead[1], what: form.slice(lead[0].length) };
+    return { where: form || area || "Review item", what: form && area && area !== form ? area : "" };
+  };
+  const firstSentence = (text) => {
+    const s = safeText(text);
+    const end = s.search(/[.;](\s|$)/);
+    const cut = end > 20 ? s.slice(0, end + 1) : s;
+    return cut.length > 150 ? `${cut.slice(0, 147)}…` : cut;
+  };
+  const sourceText = (issue) => safeText(issue.source);
+  const madeBy = (issue) => /^Automated cross-year check$/i.test(sourceText(issue)) ? "computed by code"
+    : /^Tie-out computed by RAG Tax AI$/i.test(sourceText(issue)) ? "tie-out" : "";
+  const sourceOf = (issue) => (madeBy(issue) ? "" : sourceText(issue)
+    .replace(/\bcurrent_return\b/g, "this year's return")
+    .replace(/\bprior_return\b/g, "last year's return")
+    .replace(/\bsupporting_document\b/g, "support"));
+  const taxChip = (issue) => (Number(issue.taxImpact) >= 1 ? `≈ $${Math.round(Number(issue.taxImpact)).toLocaleString("en-US")}` : "");
+
+  const issues = Array.isArray(structured.issues) ? structured.issues : [];
+  const rank = { HIGH: 0, MEDIUM: 1, LOW: 2, INFO: 3 };
+  const sorted = issues.map((issue, i) => ({ issue, i })).sort((a, b) => (rank[priorityOf(a.issue)] ?? 9) - (rank[priorityOf(b.issue)] ?? 9)).map((x, n) => ({ ...x, n: n + 1 }));
+  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
+  sorted.forEach(({ issue }) => { counts[priorityOf(issue)] = (counts[priorityOf(issue)] || 0) + 1; });
+  // `questions` first: normalizeReviewForExport renames openQuestions to questions on its way
+  // here, so reading only the original name meant this section never rendered at all.
+  const openQuestions = (Array.isArray(structured.questions) && structured.questions.length)
+    ? structured.questions
+    : (Array.isArray(structured.openQuestions) ? structured.openQuestions : []);
+  const limits = openQuestions.filter((q) => LIMIT_NOTE.test(safeText(q)));
+  const questions = openQuestions.filter((q) => !LIMIT_NOTE.test(safeText(q)));
+  const documents = Array.isArray(structured.missingDocuments) ? structured.missingDocuments : [];
+
   const parts = [];
-  parts.push(dxP("RAG Tax AI — Senior Tax Return Review", { bold: true, size: 34, color: "1F3864", after: 40 }));
-  parts.push(dxP(`${safeText(metadata.entityName || metadata.clientName) || "Client"}  ·  ${safeText(metadata.returnType) || "Return"}  ·  Tax year ${safeText(metadata.taxYear) || "—"}  ·  ${new Date().toISOString().slice(0, 10)}`, { size: 20, color: "5A6577", after: 220 }));
+  const client = safeText(metadata.entityName || metadata.clientName) || "Client";
+  parts.push(para(run("RAG Tax AI  ·  Senior tax return review", { bold: true, color: GREY, size: 15, caps: true }), { after: 20 }));
+  parts.push(para(run(`${client}  ·  ${safeText(metadata.returnType) || "Return"}  ·  Tax year ${safeText(metadata.taxYear) || "—"}  ·  ${new Date().toISOString().slice(0, 10)}`, { bold: true, color: BLUE, size: 30 }), { after: 160 }));
+
+  // Verdict and counts in one band.
   const readiness = safeText(structured.filingReadiness);
-  const readinessBad = /not\s*ready/i.test(readiness);
-  parts.push(dxP(`FILING READINESS: ${readiness || "Review complete"}`, { bold: true, size: 24, color: readinessBad ? "B3261E" : "1D6F42", shd: readinessBad ? "FDECEA" : "E7F4EC", after: 220 }));
-  // These two go first, each with its score next to the title: the client reads identity data
-  // and checkboxes before anything else.
+  const notReady = /not\s*ready/i.test(readiness);
+  const count = (value, label, fill, color) => cell(1680, para(run(String(value), { bold: true, color, size: 34 }), { jc: "center", after: 0 }) + para(run(label, { color: GREY, size: 13, caps: true }), { jc: "center", after: 0 }), { fill, center: true, pad: 70 });
+  parts.push(grid([3360, 1680, 1680, 1680, 1680], row([
+    cell(3360, para(run("FILING READINESS", { bold: true, color: "FFFFFF", size: 15 }), { after: 20 }) + para(run(readiness || "Review complete", { bold: true, color: "FFFFFF", size: 28 }), { after: 0 }), { fill: notReady ? RED : "1D6F42", center: true, pad: 120 }),
+    count(counts.HIGH, "High", "FDECEA", RED),
+    count(counts.MEDIUM, "Medium", "E9EEF7", MID_BLUE),
+    count(counts.LOW + counts.INFO, "Low", "F1F3F6", GREY),
+    count(questions.length + documents.length, "Questions & documents", "F1F3F6", BLUE),
+  ].join(""))));
+  parts.push(para("", { after: 100 }));
+  // What the review never read changes what everything else is worth: it goes on page 1.
+  limits.forEach((text, i) => parts.push(para(`${i === 0 ? run("Limits of this review: ", { bold: true, color: RED, size: 18 }) : ""}${run(text, { size: 18 })}`, { shd: "FDECEA", after: i === limits.length - 1 ? 160 : 40 })));
+
+  // These two go first, each with its score next to the title: a client of the firm asked to
+  // read identity data and checkboxes before anything else.
   if (Array.isArray(structured.infoConsistency) && structured.infoConsistency.length) {
     parts.push(dxH(`Informational Data Consistency — ${reviewInfoMatchLabel(structured.infoConsistency)}`));
     parts.push(dxTable(["Item", "Return Value", "Source Value", "Status", "Note"],
@@ -11299,82 +11531,134 @@ function buildStructuredReviewDocxXml(structured, metadata = {}) {
   }
   if (safeText(structured.executiveSummary || structured.summary)) {
     parts.push(dxH("Executive Summary"));
-    parts.push(dxP(structured.executiveSummary || structured.summary));
+    parts.push(dxP(structured.executiveSummary || structured.summary, { size: 21 }));
   }
-  const issues = Array.isArray(structured.issues) ? structured.issues : [];
-  if (issues.length) {
-    parts.push(dxH(`Issues — ${issuePriorityCountLabel(issues)}`));
-    const rank = { HIGH: 0, MEDIUM: 1, LOW: 2, INFO: 3 };
-    const sorted = issues.map((issue, i) => ({ issue, i })).sort((a, b) => (rank[safePriority(a.issue.priority || a.issue.severity)] ?? 9) - (rank[safePriority(b.issue.priority || b.issue.severity)] ?? 9));
-    sorted.forEach(({ issue }, n) => {
-      const priority = safePriority(issue.priority || issue.severity);
-      const fill = priority === "HIGH" ? "B3261E" : priority === "MEDIUM" ? "BF8712" : "1F3864";
-      const form = safeText(issue.formOrSchedule || issue.form || issue.schedule);
-      parts.push(dxP(`${n + 1}.  [${priority}] ${safeText(issue.areaReviewed || issue.category) || "Issue"}${form ? ` — ${form}` : ""}`, { bold: true, size: 22, color: "FFFFFF", shd: fill, before: 200, after: 90, keepNext: true }));
-      parts.push(dxLabel("Issue", issue.issueDescription || issue.title || issue.detail));
-      parts.push(dxLabel("Tax effect (estimate)", issue.taxImpactLabel));
-      parts.push(dxLabel("Evidence", issue.evidence));
-      parts.push(dxLabel("Risk", issue.riskAnalysis || issue.whyItMatters));
-      parts.push(dxLabel("Proposed solution", issue.proposedSolution || issue.recommendedAction || issue.recommendation));
-      parts.push(dxLabel("Authority", issue.authority));
-      parts.push(dxLabel("Source", issue.source));
-    });
+
+  const high = sorted.filter(({ issue }) => priorityOf(issue) === "HIGH");
+  if (high.length) {
+    parts.push(dxH(`Fix Before Filing — ${high.length} high finding${high.length === 1 ? "" : "s"}`));
+    parts.push(listTable(["#", "Where", "What is wrong", "Tax effect"], [500, 2700, 5480, 1400], high.map(({ issue, n }) => {
+      const { where, what } = titleOf(issue);
+      const wrong = what || firstSentence(issue.issueDescription);
+      return [String(n), where, wrong.charAt(0).toUpperCase() + wrong.slice(1), taxChip(issue)];
+    })));
   }
-  if (Array.isArray(structured.tieOutResults) && structured.tieOutResults.length) {
-    parts.push(dxH("Numeric Tie-Out"));
-    // The note carries the app's own determinations ("Cannot tie…", "Support not
-    // evidenced…", "Not verified…"), so it has to travel into the deliverable.
-    parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"],
-      structured.tieOutResults.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status, r.note]), 4));
+
+  if (sorted.length) {
+    const label = [["HIGH", "high"], ["MEDIUM", "medium"], ["LOW", "low"], ["INFO", "info"]].filter(([key]) => counts[key]).map(([key, word]) => `${counts[key]} ${word}`).join(" · ");
+    parts.push(dxH(`Findings — ${label}`));
+    const card = ({ issue, n }) => {
+      const priority = priorityOf(issue);
+      const { where, what } = titleOf(issue);
+      const by = madeBy(issue);
+      const tax = taxChip(issue);
+      const body = [para(`${run(`${n}   `, { bold: true, color: BAND[priority], size: 21 })}${run(where, { bold: true, color: BLUE, size: 21 })}${what ? run(`  —  ${what}`, { bold: true, size: 21 }) : ""}${tax ? run(`     ${tax} tax effect`, { bold: true, color: MID_BLUE, size: 17 }) : ""}${by ? run(`     ${by}`, { color: LIGHT, size: 15, caps: true }) : ""}`, { keepNext: true, after: 60 })];
+      body.push(para(run(issue.issueDescription || issue.title || issue.detail, { size: 20 }), { after: 60 }));
+      const risk = safeText(issue.riskAnalysis || issue.whyItMatters);
+      if (risk && !FIXED_RISK.test(risk)) body.push(para(`${run(GUARD_NOTE.test(risk) ? "Checked by the app: " : "Why it matters: ", { bold: true, color: GREY, size: 18 })}${run(risk, { color: GREY, size: 18 })}`, { after: 60 }));
+      const todo = safeText(issue.proposedSolution || issue.recommendedAction || issue.recommendation);
+      if (todo) body.push(para(`${run("What to do: ", { bold: true, color: BLUE, size: 20 })}${run(todo, { size: 20 })}`, { shd: "EAF1FB", after: 60 }));
+      const evidence = safeText(issue.evidence);
+      const authority = safeText(issue.authority);
+      [["Tax effect (estimate)", safeText(issue.taxImpactLabel)], ["Evidence", CODE_EVIDENCE.test(evidence) ? "" : evidence], ["Authority", NO_AUTHORITY.test(authority) ? "" : authority], ["Source", sourceOf(issue)]]
+        .filter(([, value]) => value)
+        .forEach(([name, value]) => body.push(para(`${run(`${name}: `, { bold: true, color: GREY, size: 16 })}${run(value, { color: GREY, size: 16 })}`, { after: 20 })));
+      return grid([110, WIDTH - 110], row(cell(110, "<w:p/>", { fill: BAND[priority], pad: 0 }) + cell(WIDTH - 110, body.join(""), { pad: 60, padLeft: 200 }))) + para("", { after: 100 });
+    };
+    const groups = [
+      ["HIGH", "High — fix before filing"],
+      ["MEDIUM", "Medium — resolve or document"],
+    ];
+    for (const [key, heading] of groups) {
+      const list = sorted.filter(({ issue }) => priorityOf(issue) === key);
+      if (!list.length) continue;
+      parts.push(para(run(`${heading} (${list.length})`, { bold: true, color: BLUE, size: 22 }), { style: "Heading2", keepNext: true, before: 160, after: 80 }));
+      list.forEach((item) => parts.push(card(item)));
+    }
+    // LOW in one compact table: the finding and what to do, and why the app lowered it.
+    const low = sorted.filter(({ issue }) => ["LOW", "INFO"].includes(priorityOf(issue)));
+    if (low.length) {
+      parts.push(para(run(`Low — for the file (${low.length})`, { bold: true, color: BLUE, size: 22 }), { style: "Heading2", keepNext: true, before: 160, after: 80 }));
+      parts.push(listTable(["#", "Where", "Finding", "Note"], [500, 2400, 5180, 2000], low.map(({ issue, n }) => {
+        const { where, what } = titleOf(issue);
+        const todo = safeText(issue.proposedSolution || issue.recommendedAction || issue.recommendation);
+        const risk = safeText(issue.riskAnalysis);
+        const note = GUARD_NOTE.test(risk) ? risk.replace(/\s*Lowered to LOW automatically;?[^.]*\.?/i, "").trim() : "";
+        return [
+          String(n),
+          `${where}${what ? ` — ${what}` : ""}`,
+          [run(safeText(issue.issueDescription || issue.title || issue.detail), { size: 17 }), todo ? run(`  What to do: ${todo}`, { size: 17, color: GREY }) : ""],
+          [run(note, { size: 15, color: GREY })],
+        ];
+      })));
+    }
   }
-  if (structured.balanceSheetCheck) {
-    const check = structured.balanceSheetCheck;
-    parts.push(dxH("Balance Sheet Check (Schedule L)"));
-    parts.push(dxLabel("Total Assets", check.totalAssets));
-    parts.push(dxLabel("Total Liabilities & Equity", check.totalLiabEquity));
-    parts.push(dxLabel("Status", check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${safeText(check.difference)}` : ""}`));
-    parts.push(dxLabel("Note", check.note));
+
+  // One list to work from: what to ask and what to request, numbered, with a box to tick.
+  if (questions.length || documents.length) {
+    parts.push(dxH("Open Questions and Documents to Request"));
+    let k = 0;
+    const item = (text) => { k += 1; return para(`${run("☐  ", { color: BLUE, size: 21 })}${run(`${k}.  `, { bold: true, size: 20 })}${run(safeText(text), { size: 20 })}`, { after: 60 }); };
+    if (questions.length) {
+      parts.push(para(run("Questions", { bold: true, color: BLUE, size: 21 }), { keepNext: true, after: 60 }));
+      questions.forEach((q) => parts.push(item(q)));
+    }
+    if (documents.length) {
+      parts.push(para(run("Documents to request", { bold: true, color: BLUE, size: 21 }), { keepNext: true, before: 120, after: 60 }));
+      documents.forEach((d) => parts.push(item(d)));
+    }
   }
-  // `questions` first: normalizeReviewForExport renames openQuestions to questions on its way
-  // here, so reading only the original name meant this section never rendered at all. Every
-  // open question the reviewer was meant to see — and every server-side warning written into
-  // that field, including which uploaded documents were never read — was dropped silently
-  // from the exported document.
-  const openQuestions = (Array.isArray(structured.questions) && structured.questions.length)
-    ? structured.questions
-    : (Array.isArray(structured.openQuestions) ? structured.openQuestions : []);
-  if (openQuestions.length) {
-    parts.push(dxH("Open Questions"));
-    openQuestions.forEach((q) => parts.push(dxP(`•  ${safeText(q)}`, { size: 21, after: 60 })));
-  }
+
+  // Appendix: the long tables, read when a finding sends the reviewer there.
+  const tieOut = Array.isArray(structured.tieOutResults) ? structured.tieOutResults : [];
+  const check = structured.balanceSheetCheck;
+  const hasBalance = check && (dxAmount(check.totalAssets) || dxAmount(check.totalLiabEquity)) && ![check.totalAssets, check.totalLiabEquity].every((v) => Number(safeText(v).replace(/[$,()]/g, "")) === 0);
   // Verified items were never printed either — the second field in this document found to be
   // populated and then dropped. It is where the review records what it checked and found
-  // correct, where a user's explicitly requested output lands, and where the page-by-page
-  // inventory of each scanned attachment goes. A reviewer needs to see what was checked, not
-  // only what failed: a short list of confirmations is how they judge the scope of the review.
+  // correct, and where the page-by-page inventory of each scanned attachment goes.
   const verified = (Array.isArray(structured.reviewerComments) && structured.reviewerComments.length)
     ? structured.reviewerComments
     : (Array.isArray(structured.verifiedItems) ? structured.verifiedItems : []);
+  if (tieOut.length || hasBalance || verified.length || safeText(structured.finalConclusion)) {
+    parts.push(`<w:p><w:r><w:br w:type="page"/></w:r></w:p>`);
+    parts.push(dxP("Appendix", { style: "Heading1", bold: true, size: 26, color: GREY, after: 60, keepNext: true }));
+  }
+  if (tieOut.length) {
+    const statusRank = (status) => { const s = safeText(status).toUpperCase(); return /OUT/.test(s) ? 0 : /NOT\s*VERIFIED/.test(s) ? 1 : /^TIES?$/.test(s) ? 3 : 2; };
+    const rows = tieOut.map((r, i) => ({ r, i })).sort((a, b) => statusRank(a.r.status) - statusRank(b.r.status) || a.i - b.i).map(({ r }) => r);
+    const ties = rows.filter((r) => statusRank(r.status) === 3).length;
+    const out = rows.filter((r) => statusRank(r.status) === 0).length;
+    const unverified = rows.filter((r) => statusRank(r.status) === 1).length;
+    parts.push(dxH(`Numeric Tie-Out — ${ties} of ${rows.length} tie${out ? ` · ${out} out of balance` : ""}${unverified ? ` · ${unverified} not verified` : ""}`));
+    // The note carries the app's own determinations ("Cannot tie…", "Support not
+    // evidenced…", "Not verified…"), so it has to travel into the deliverable.
+    parts.push(dxTable(["Line Item", "Return", "Workpaper", "Difference", "Status", "Note"],
+      rows.map((r) => [r.lineItem, r.returnAmount, r.workpaperAmount, r.difference, r.status, r.note]), 4, [1, 2, 3], [2300, 1050, 1050, 1050, 1350, 3280]));
+  }
+  if (hasBalance) {
+    parts.push(dxH("Balance Sheet Check (Schedule L)"));
+    parts.push(dxLabel("Total Assets", dxAmount(check.totalAssets) ?? check.totalAssets));
+    parts.push(dxLabel("Total Liabilities & Equity", dxAmount(check.totalLiabEquity) ?? check.totalLiabEquity));
+    parts.push(dxLabel("Status", check.balanced ? "BALANCED" : `OUT OF BALANCE${check.difference ? ` by ${dxAmount(check.difference) ?? safeText(check.difference)}` : ""}`));
+    parts.push(dxLabel("Note", check.note));
+  }
   if (verified.length) {
     parts.push(dxH("Verified Items"));
-    verified.forEach((v) => parts.push(dxP(`•  ${safeText(v)}`, { size: 21, after: 60 })));
-  }
-  if (Array.isArray(structured.missingDocuments) && structured.missingDocuments.length) {
-    parts.push(dxH("Missing Documents"));
-    structured.missingDocuments.forEach((d) => parts.push(dxP(`•  ${safeText(d)}`, { size: 21, after: 60 })));
+    verified.forEach((v) => parts.push(dxP(`•  ${safeText(v)}`, { size: 17, color: GREY, after: 40 })));
   }
   if (safeText(structured.finalConclusion)) {
     parts.push(dxH("Conclusion"));
-    parts.push(dxP(structured.finalConclusion));
+    parts.push(dxP(structured.finalConclusion, { size: 21 }));
   }
-  parts.push(dxP("Generated by RAG Tax AI. The reviewing professional remains responsible for all filed returns.", { italic: true, size: 17, color: "8A93A3", before: 260 }));
+  parts.push(dxP("Generated by RAG Tax AI. The reviewing professional remains responsible for all filed returns.", { italic: true, size: 16, color: LIGHT, before: 260 }));
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <w:body>
     ${parts.filter(Boolean).join("\n")}
     <w:sectPr>
+      <w:footerReference w:type="default" r:id="rIdFooter1"/>
       <w:pgSz w:w="12240" w:h="15840"/>
-      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+      <w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080" w:header="540" w:footer="540" w:gutter="0"/>
     </w:sectPr>
   </w:body>
 </w:document>`;

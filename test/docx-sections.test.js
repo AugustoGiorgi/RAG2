@@ -25,6 +25,8 @@ const build = eval(`(() => {
   ${grab("dxP")}
   ${grab("dxH")}
   ${grab("dxLabel")}
+  ${grab("safePriority")}
+  ${grab("dxAmount")}
   ${grab("dxTable")}
   ${grab("buildStructuredReviewDocxXml")}
   return buildStructuredReviewDocxXml;
