@@ -45,7 +45,7 @@ const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplica
 const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
 const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
-const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, calibrateSmallDollarSeverity, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines, nameAutomatedReferences } = require("./lib/review-guards");
+const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, calibrateSmallDollarSeverity, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines, nameAutomatedReferences, settleChecklistAnswers } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
 const { runStateReturnChecks } = require("./lib/state-return-checks");
 const { runAnswerArithmeticChecks } = require("./lib/answer-arithmetic-checks");
@@ -12434,6 +12434,12 @@ function normalizeSeniorReviewServer(structured, payload = {}) {
     const impact = attachTaxImpact(normalized.issues, profile, { canonicalLineKey: tieOutCanonicalLineKey });
     normalized.issues = impact.issues;
     if (impact.estimated) console.log(`[Review] tax effect estimated on ${impact.estimated} finding(s)${profile && profile.basis ? ` (${profile.basis})` : ""}.`);
+  }
+  // A checklist item answered "nothing to review" is a verified item, not a question for the client.
+  const settled = settleChecklistAnswers(normalized);
+  if (settled.moved) {
+    Object.assign(normalized, settled.review);
+    console.log(`[Review] ${settled.moved} checklist answer(s) that found nothing moved from open questions to verified items.`);
   }
   // "Automated finding #5" is the number the first request gave it, not its place in this report.
   if (REVIEW_AUTOMATED_FACTS) {

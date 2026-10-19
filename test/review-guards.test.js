@@ -1007,3 +1007,19 @@ test("la frase de faltante tiene que ser del formulario que nombra, no del sigui
   assert.strictEqual(priority("Form 4868 is not attached to the return."), "LOW");
   assert.strictEqual(priority("Form 4868 not attached; Form 8829 also missing."), "LOW");
 });
+
+test("una respuesta del checklist que no encontro nada pasa a verificados; la que pregunta o marca algo se queda", () => {
+  const { settleChecklistAnswers } = require("../lib/review-guards");
+  const open = [
+    "PASS-THROUGH ENTITIES: No Schedule E, K-1s, or Form 7203 appear anywhere in the return — there are no pass-through entities to review for this taxpayer this year.",
+    "DIGITAL ASSETS / FOREIGN ACCOUNTS: The digital assets question is checked 'No' on both returns; no documents indicate any foreign account, so no basis exists to question that answer.",
+    "RESIDENCY: All documents show only Florida addresses — confirm no move occurred during 2025.",
+    "PROPERTY SALES: No closing statement is present; the only capital transaction is the carryover already flagged as missing.",
+    "What is the spouse's correct SSN?",
+  ];
+  const out = settleChecklistAnswers({ openQuestions: open, verifiedItems: ["Line 25d ties."] });
+  assert.strictEqual(out.moved, 2);
+  assert.deepStrictEqual(out.review.openQuestions, open.slice(2));
+  assert.deepStrictEqual(out.review.verifiedItems, ["Line 25d ties.", `Second look — ${open[0]}`, `Second look — ${open[1]}`]);
+  assert.strictEqual(settleChecklistAnswers({ openQuestions: ["Confirm the HDHP coverage type."] }).moved, 0);
+});

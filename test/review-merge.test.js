@@ -214,3 +214,16 @@ test("un renglon que agrego el modelo se sigue uniendo por parecido, como antes"
   const b = revision({ tieOutResults: [{ lineItem: "Charitable contributions per receipts and acknowledgment letters", note: "segunda" }] });
   assert.strictEqual(mergeReviews([a, b]).review.tieOutResults.length, 1);
 });
+
+test("un hallazgo del codigo no se funde con otro que cita sus mismas cifras, solo con su copia de la otra pasada", () => {
+  const { mergeReviews } = require("../lib/review-merge");
+  // Corrida real del 1040 del banco: el tie-out HIGH de la linea 15 citaba 15,750 y 31,500 y se
+  // llevaba puesto el hallazgo del codigo sobre la deduccion estandar.
+  const code = { priority: "MEDIUM", formOrSchedule: "Form 1040 line 12 — standard deduction does not match the filing status", issueDescription: "Line 12 is $15,750; the 2025 standard deduction for Married filing jointly is $31,500.", source: "Automated cross-year check" };
+  const tie = { priority: "HIGH", formOrSchedule: "Form 1040 Line 15 - Taxable income", issueDescription: "The return reports $65,650 on this line and the supporting documents add to $55,900.", evidence: "87,400.00 - 31,500.00 (MFJ standard deduction) = 55,900.00; the return used 15,750.", source: "Tie-out computed by RAG Tax AI" };
+  const model = { priority: "HIGH", formOrSchedule: "Form 1040 Line 12", issueDescription: "Standard deduction of $15,750 is the single amount; MFJ is $31,500.", source: "current_return" };
+  const out = mergeReviews([{ issues: [tie, code, model] }, { issues: [{ ...code }] }]);
+  // El del modelo y el del tie-out se siguen fundiendo entre ellos; el del codigo queda siempre.
+  assert.deepStrictEqual(out.review.issues.map((i) => i.source), ["Tie-out computed by RAG Tax AI", "Automated cross-year check"]);
+  assert.strictEqual(out.review.issues.filter((i) => i.source === "Automated cross-year check").length, 1, "la copia identica de la segunda pasada si se funde");
+});
