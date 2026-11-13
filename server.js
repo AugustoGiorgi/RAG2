@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { argentinaOrigin, reservedArgentinaLogin, readArgentinaBridgeKey, authenticateArgentina } = require("./lib/argentina-login");
 const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
 const net = require("node:net");
@@ -4668,6 +4669,9 @@ function addMonths(date, months) {
 // Authentication
 // ---------------------------------------------------------------------------
 async function handleLoginPage(_req, res) {
+  if (readArgentinaBridgeKey()) {
+    res.setHeader("content-security-policy", String(res.getHeader("content-security-policy")).replace("form-action 'self'", `form-action 'self' ${argentinaOrigin}`));
+  }
   sendHtml(res, 200, buildLoginPage());
 }
 
@@ -4699,6 +4703,22 @@ async function handleLogin(req, res) {
     return;
   }
   const user = getAuthUsers().find((candidate) => candidate.username === username);
+
+  if (!user && reservedArgentinaLogin(username)) {
+    const key = readArgentinaBridgeKey();
+    if (key) {
+      if (!["ragtax-ia.com", "www.ragtax-ia.com"].includes(req.headers.host) || req.headers.origin !== `https://${req.headers.host}` || (req.headers["sec-fetch-site"] && req.headers["sec-fetch-site"] !== "same-origin")) {
+        sendJson(res, 403, { error: "Open the sign-in page on ragtax-ia.com and try again." });
+        return;
+      }
+      if (Buffer.byteLength(password) > 128) { sendJson(res, 401, { error: "Invalid username or password." }); return; }
+      const result = await authenticateArgentina(key, username, password).catch(() => ({ status: 503 }));
+      res.setHeader("cache-control", "no-store");
+      const errors = { 401: "Invalid username or password.", 429: "Too many login attempts. Please wait and try again.", 503: "Argentina sign-in is temporarily unavailable. Please try again." };
+      sendJson(res, result.status, result.status === 200 ? { argentinaCode: result.code } : { error: errors[result.status] });
+      return;
+    }
+  }
 
   if (!user || !verifyPassword(password, user.passwordHash)) {
     appendAuditLog(req, "auth.login_failed", { username });
@@ -5136,6 +5156,7 @@ async function handleAdminUsersApi(req, res, requestUrl) {
       const password = String(payload.password || "");
       const email = normalizedUserEmail(payload.email);
       if (!/^[a-zA-Z0-9_.-]{3,64}$/.test(username)) { sendJson(res, 400, { error: "Username must be 3-64 letters, numbers, dots, hyphens, or underscores." }); return; }
+      if (reservedArgentinaLogin(username)) { sendJson(res, 400, { error: "This username is reserved for RAG Argentina." }); return; }
       if (!validNewPassword(password)) { sendJson(res, 400, { error: "Password must be 12 to 256 characters." }); return; }
       if (!validUserEmail(email)) { sendJson(res, 400, { error: "A valid recovery email is required." }); return; }
       if (store.users.some((user) => user.username === username)) { sendJson(res, 409, { error: "Username already exists." }); return; }
@@ -9187,6 +9208,19 @@ function buildLoginPage(error = "") {
           return;
         }
         if (response.ok) {
+          if (typeof payload.argentinaCode === "string" && /^[A-Za-z0-9_-]{43}$/.test(payload.argentinaCode)) {
+            const target = document.createElement("form");
+            target.method = "POST";
+            target.action = "${argentinaOrigin}/auth/shared-sign-in";
+            const code = document.createElement("input");
+            code.type = "hidden";
+            code.name = "code";
+            code.value = payload.argentinaCode;
+            target.append(code);
+            document.body.append(target);
+            target.submit();
+            return;
+          }
           window.location.href = payload.mustChangePassword ? "/change-password" : "/";
           return;
         }
