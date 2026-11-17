@@ -2905,11 +2905,15 @@ function normalizeEstimatedTaxesPayload(payload = {}) {
   const plFile = payload.plFile || byRole("current_year_pl") || files.find((file) => detectEstimatedDocumentType(file) === "PL_STATEMENT") || null;
   const balanceSheetFile = payload.balanceSheetFile || byRole("current_year_balance_sheet") || null;
   const taxReturnFiles = Array.isArray(payload.taxReturnFiles) ? payload.taxReturnFiles : files.filter((file) => /return/i.test(String(file.role || "")));
+  // Zone 5 ("Additional documents"): W-2s, 1099s, notices, payment confirmations. The screen
+  // sends them, and until now they were dropped here, so the model never saw them.
+  const additionalFiles = (Array.isArray(payload.additionalFiles) ? payload.additionalFiles : files.filter((file) => String(file?.role || "") === "supporting_document")).filter(Boolean);
   const normalizedFiles = [
     templateFile ? { ...templateFile, role: "custom_template" } : null,
     plFile ? { ...plFile, role: "current_year_pl" } : null,
     balanceSheetFile ? { ...balanceSheetFile, role: "current_year_balance_sheet" } : null,
     ...taxReturnFiles.map((file) => ({ ...file, role: file.role || "prior_year_return" })),
+    ...additionalFiles.map((file) => ({ ...file, role: "supporting_document" })),
   ].filter(Boolean);
   return {
     ...payload,
@@ -2924,6 +2928,7 @@ function normalizeEstimatedTaxesPayload(payload = {}) {
     plFile,
     balanceSheetFile,
     taxReturnFiles,
+    additionalFiles,
     files: normalizedFiles,
   };
 }
@@ -3013,7 +3018,7 @@ async function buildEstimatedTaxesCompleteWithClaude(req, payload) {
       type: "text",
       text: withDatabaseContext([
         "You are a senior CPA estimated-tax workpaper preparer.",
-        "You must read the uploaded prior-year template, current-year P&L, optional balance sheet, and tax returns.",
+        "You must read the uploaded prior-year template, current-year P&L, optional balance sheet, tax returns, and any additional supporting documents (Zone 5).",
         "The current-year P&L uploaded in Zone 2 is the authoritative source for current-year income and expenses.",
         "Do not combine current-year P&L data with old P&L/template data. Prior-year template values are structure/context only.",
         "If a current-year amount is absent from the current-year P&L, treat it as zero or missing and flag it. Do not silently reuse the prior-year amount.",
@@ -3080,6 +3085,7 @@ function buildEstimatedTaxesCompletePrompt(payload, fileContext, periodInfo = {}
     "8. Every numeric value must include a source label in the JSON.",
     "9. If an uploaded current-year P&L has a line missing, the current-year amount is zero/missing. Do not use the prior-year amount as current-year support.",
     "10. If multiple P&L files exist, use the file marked current_year_pl / Zone 2 as the only current-year P&L source.",
+    "11. Files with ROLE supporting_document are the Zone 5 additional documents. Use their current-year facts (wages, other income, withholding, payments already made) with a source label; they never replace the Zone 2 P&L. If one shows a payment that differs from PRIOR PAYMENTS, keep the typed amount and flag the difference. Report every one of them in fileReadingLog.additional.",
     "",
     "RETURN JSON SCHEMA. Return ONLY this JSON inside ```json``` fences:",
     `{
@@ -3089,7 +3095,8 @@ function buildEstimatedTaxesCompletePrompt(payload, fileContext, periodInfo = {}
   "fileReadingLog": {
     "pl": {"fileName":"string","periodFound":"string","months":number,"status":"read|limited","notes":"string"},
     "balanceSheet": {"fileName":"string","status":"read|limited|not_uploaded","notes":"string"},
-    "returns": [{"fileName":"string","status":"read|limited|not_used","formsFound":["string"],"notes":"string"}]
+    "returns": [{"fileName":"string","status":"read|limited|not_used","formsFound":["string"],"notes":"string"}],
+    "additional": [{"fileName":"string","documentType":"string","status":"read|limited|not_used","notes":"what was used and where"}]
   },
   "annualizedPL": [{"account":"string","ytdAmount":number,"annFactor":number,"annualizedAmount":number,"source":"file/sheet/line"}],
   "plTotals": {"annualizedRevenue":number,"annualizedExpenses":number,"annualizedNetIncome":number},
@@ -3228,10 +3235,27 @@ function normalizeEstimatedFileReadingLog(log, payload = {}) {
       notes: [Array.isArray(item.formsFound) ? item.formsFound.join(", ") : "", item.notes].filter(Boolean).join(" - "),
     }));
   }
+  if (Array.isArray(log?.additional)) {
+    log.additional.forEach((item) => rows.push({
+      fileName: item?.fileName || "Additional document",
+      purpose: ["Additional document", item?.documentType].filter(Boolean).join(" - "),
+      status: item?.status || "read",
+      notes: item?.notes || "",
+    }));
+  }
   if (!rows.length) {
     if (payload.templateFile) rows.push({ fileName: payload.templateFile.name || "Custom template", purpose: "Template", status: "read", notes: "Custom template uploaded." });
     else rows.push({ fileName: path.basename(estimatedTemplatePathForEntity(payload.entityType) || "standard template"), purpose: "Template", status: "read", notes: "Standard template selected by entity type." });
     if (payload.plFile) rows.push({ fileName: payload.plFile.name || "Current-year P&L", purpose: "Current-year P&L", status: "read", notes: "" });
+  }
+  // Every Zone 5 file gets a row, so the preparer sees when the AI said nothing about one.
+  const nameKey = (value) => String(value || "").toLowerCase().replace(/\.[a-z0-9]{2,5}$/, "").replace(/[^a-z0-9]+/g, "");
+  const logged = rows.map((row) => nameKey(row.fileName || row.name)).filter(Boolean);
+  for (const file of Array.isArray(payload.additionalFiles) ? payload.additionalFiles : []) {
+    const key = nameKey(file?.name);
+    if (!key || logged.some((other) => other === key || (key.length >= 4 && other.includes(key)) || (other.length >= 4 && key.includes(other)))) continue;
+    rows.push({ fileName: file.name, purpose: "Additional document", status: "not reported", notes: "The AI did not say whether it used this file. Check it by hand." });
+    logged.push(key);
   }
   return rows;
 }
@@ -3880,11 +3904,24 @@ function detectEstimatedDocumentType(file = {}) {
   const name = String(file.name || "").toLowerCase();
   const text = String(file.text || "").slice(0, 120000).toLowerCase();
   const haystack = `${name}\n${text}`;
+  if (String(file.role || "").toLowerCase() === "supporting_document") return detectEstimatedSupportingDocType(name, text);
   if (/form\s*1040|u\.?s\.?\s+individual income tax return/.test(haystack)) return "1040_RETURN";
   if (/form\s*1120-?s|u\.?s\.?\s+income tax return for an s corporation|s corporation/.test(haystack)) return "1120S_RETURN";
   if (/\bw-?2\b|wage and tax statement|box\s*1|box\s*2|box\s*16|box\s*17/.test(haystack)) return "W2_DOCUMENT";
   if (/(estimated tax|estimate).*(template|workpaper|prior)|prior.*(estimated tax|estimate|template)|\bq[1-4]\b.*(estimate|template|workpaper)/.test(haystack)) return "PRIOR_YEAR_TEMPLATE";
   if (/(profit\s+(and|&)\s+loss|p\s*&\s*l|income statement|statement of operations)/.test(haystack) && /(ytd|year to date|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|20\d{2})/.test(haystack)) return "PL_STATEMENT";
+  return "OTHER";
+}
+
+// A Zone 5 file. W-2s and 1099s print "Form 1040" in their instructions, so the general check
+// above would call them returns; here the form's own title decides. Never PL_STATEMENT, so an
+// extra file can't compete with the Zone 2 P&L.
+function detectEstimatedSupportingDocType(name = "", text = "") {
+  if (/wage and tax statement/.test(text) || /\bw-?2\b/.test(name)) return "W2_DOCUMENT";
+  if (/u\.?s\.?\s+individual income tax return/.test(text)) return "1040_RETURN";
+  if (/income tax return for an s corporation/.test(text)) return "1120S_RETURN";
+  if (/\bform\s*1099\b|\b1099-(?:int|div|b|misc|nec|r|k|g|oid|sa|q)\b/.test(text) || /\b1099\b/.test(name)) return "1099_DOCUMENT";
+  if (/schedule\s*k-?1\b/.test(text) || /\bk-?1\b/.test(name)) return "K1_DOCUMENT";
   return "OTHER";
 }
 
@@ -3900,6 +3937,9 @@ function classifyEstimatedTaxFile(file = {}) {
   const name = String(file.name || "").toLowerCase();
   const text = String(file.text || "").slice(0, 5000).toLowerCase();
   const haystack = `${name}\n${text}`;
+  // The preparer put it in Zone 5. A 1040-ES voucher says "estimated tax 2025" and a notice
+  // names months, which made the checks below call them a template or the P&L.
+  if (explicit === "supporting_document") return "supporting_document";
   if (explicit === "prior_year_template" || /\b(estimated tax|estimate|workpaper|template|q[1-4])\b/.test(haystack) && /\b(2024|2025|prior|template)\b/.test(haystack)) return "prior_year_template";
   if (/form\s*1040|u\.?s\.?\s+individual income tax return|schedule\s+a|schedule\s+2/i.test(haystack)) return "prior_year_return_1040";
   if (/form\s*1120-?s|s corporation|schedule\s+k-?1/i.test(haystack)) return "prior_year_return_1120s";
@@ -3938,7 +3978,7 @@ function estimatedRolePurpose(role, file = {}) {
     case "financial_report":
       return `This is a current-year financial source unless its text clearly says prior year. Extract all relevant financial data with labels, dates, and sources. Use it for current-year calculations only when the document period matches the target year.${periodText}`;
     case "supporting_document":
-      return "This is a supporting document. Review for relevant facts and note explicitly if no relevant estimate data was found.";
+      return "The preparer uploaded this as an ADDITIONAL SUPPORTING DOCUMENT (Zone 5), for example a W-2, 1099, K-1, IRS/state notice, or payment confirmation. First say what it is and which tax year it covers. Use its current-year facts (wages, other income, federal/state withholding, estimated or extension payments already made, balances due) with a file/box/line source label; use prior-year facts only as prior-year context. It never replaces the Zone 2 P&L for business income and expenses. If an amount is year-to-date for part of the year, say so before annualizing it. If nothing in it affects the estimate, say so explicitly.";
     default:
       return "Review this file according to its user-selected role. Extract any relevant estimate facts with source labels, and do not use unsupported numbers.";
   }
@@ -3983,6 +4023,10 @@ function estimatedDocumentExtractionChecklist(detectedDocType, period) {
       return "Use for workbook structure only: sheet names, row labels, section names, adjustment categories, and formatting. Do not use dollar amounts as current-year data.";
     case "W2_DOCUMENT":
       return "Extract employer, Box 1 wages, Box 2 federal withholding, Box 16 state wages, Box 17 state withholding, tax year, and period if partial-year.";
+    case "1099_DOCUMENT":
+      return "Extract payer, form type (1099-INT, -DIV, -NEC, -MISC, -B, -R, -K, -G...), tax year, each income amount by box, Box 4 federal withholding, and state withholding. Say whether it is current-year or prior-year.";
+    case "K1_DOCUMENT":
+      return "Extract the entity, form (1065 / 1120-S / 1041), tax year, ordinary business income, guaranteed payments, interest, dividends, capital gains, section 179, and other coded items by box and code. Say whether it is current-year or prior-year.";
     default:
       return "Extract all relevant facts and state explicitly if no estimate data was found.";
   }
