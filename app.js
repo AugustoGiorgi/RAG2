@@ -73,6 +73,7 @@ const els = {
   adminDashboard: document.getElementById("admin-dashboard"),
   closeAdminDashboardButton: document.getElementById("closeAdminDashboardButton"),
   adminCreateUserForm: document.getElementById("adminCreateUserForm"),
+  adminNewCountry: document.getElementById("adminNewCountry"),
   adminRefreshUsers: document.getElementById("adminRefreshUsers"),
   adminUsageShell: document.getElementById("adminUsageShell"),
   adminUsageBody: document.getElementById("adminUsageBody"),
@@ -651,6 +652,12 @@ function init() {
   els.adminNavButton?.addEventListener("click", openAdminDashboard);
   els.closeAdminDashboardButton?.addEventListener("click", closeAdminDashboard);
   els.adminRefreshUsers?.addEventListener("click", loadAdminUsers);
+  els.adminNewCountry?.addEventListener("change", () => {
+    if (els.adminUserMessage) els.adminUserMessage.hidden = true;
+    if (els.adminNewPassword) els.adminNewPassword.value = "";
+    configureAdminUserCountry();
+    loadAdminUsers().catch(error => showAdminUserMessage(error.message, "error"));
+  });
   els.adminRefreshUsage?.addEventListener("click", () => loadAdminUsage().catch(() => {}));
   els.adminUsagePeriod?.addEventListener("change", () => loadAdminUsage().catch(() => {}));
   els.adminCreateUserForm?.addEventListener("submit", createAdminUser);
@@ -4422,8 +4429,9 @@ async function openAdminDashboard() {
   // Global-only panels/fields stay hidden for a firm administrator: system health,
   // budget groups, role selection, Firm ID (their users always join their own firm) and
   // every money field — what the app costs is for its owners only.
-  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField", "adminFirmAccessShell"];
+  const globalOnly = ["adminHealthPanel", "adminBudgetShell", "adminUsageShell", "adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField", "adminFirmAccessShell", "adminCountryField"];
   globalOnly.forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isGlobalAdmin; });
+  configureAdminUserCountry();
   // A firm administrator also sees their firm's usage by tab (never costs) and its Google Drive.
   const isFirmAdmin = currentUser.role === "firm_admin";
   ["adminFirmUsageShell", "adminFirmDriveShell"].forEach((id) => { const el = document.getElementById(id); if (el) el.hidden = !isFirmAdmin; });
@@ -4604,14 +4612,56 @@ function showAdminUserMessage(message, type = "success") {
   els.adminUserMessage.classList.toggle("error", type === "error");
 }
 
+function adminUserCountry() {
+  return currentUser.role === "admin" && els.adminNewCountry?.value === "ARG" ? "ARG" : "USA";
+}
+
+function configureAdminUserCountry() {
+  const argentina = adminUserCountry() === "ARG";
+  const globalAdmin = currentUser.role === "admin";
+  for (const id of ["adminEmailField", "adminPasswordField"]) {
+    const field = document.getElementById(id);
+    if (field) field.hidden = argentina;
+    const input = field?.querySelector("input");
+    if (input) { input.required = !argentina; input.disabled = argentina; }
+  }
+  for (const id of ["adminRoleField", "adminFirmIdField", "adminSpendLimitField", "adminBudgetGroupField", "adminBudgetShell", "adminUsageShell", "adminFirmAccessShell"]) {
+    const field = document.getElementById(id);
+    if (field) field.hidden = !globalAdmin || argentina;
+  }
+  if (els.adminNewCountry && !globalAdmin) els.adminNewCountry.value = "USA";
+}
+
+let adminUsersLoad = 0;
+
 async function loadAdminUsers() {
   if (!els.adminUsersList) return [];
+  const country = adminUserCountry();
+  const load = ++adminUsersLoad;
   els.adminUsersList.innerHTML = `<div class="admin-user-row">Loading users...</div>`;
-  const response = await fetch(`${API_BASE_URL}/api/admin/users`);
+  const route = country === "ARG" ? "/api/admin/argentina-users" : "/api/admin/users";
+  const response = await fetch(`${API_BASE_URL}${route}`);
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Could not load users.");
-  renderAdminUsers(payload.users || []);
+  if (load !== adminUsersLoad || country !== adminUserCountry()) return [];
+  if (!response.ok) {
+    els.adminUsersList.textContent = payload.error || "Could not load users.";
+    throw new Error(payload.error || "Could not load users.");
+  }
+  if (country === "ARG") renderArgentinaAdminUsers(payload.users || []);
+  else renderAdminUsers(payload.users || []);
   return payload.users || [];
+}
+
+function renderArgentinaAdminUsers(users) {
+  els.adminUsersList.innerHTML = users.length ? users.map(user => `
+    <article class="admin-user-row admin-user-row-argentina">
+      <div class="admin-user-identity">
+        <strong>${escapeHtml(user.username || "")}</strong>
+        <span>${escapeHtml(user.name || "")}</span>
+        <span>Argentina · ${user.role === "admin" ? "Administrator" : "User"} · ${user.active ? "Active" : "Disabled"}</span>
+        ${user.must_change ? "<span>Temporary password pending change</span>" : ""}
+      </div>
+    </article>`).join("") : '<div class="admin-user-row">No Argentina users created yet.</div>';
 }
 
 function renderAdminUsers(users) {
@@ -4725,39 +4775,57 @@ function bindAdminUserActions() {
 
 async function createAdminUser(event) {
   event.preventDefault();
+  const country = adminUserCountry();
   const username = els.adminNewUsername.value.trim();
   const email = els.adminNewEmail.value.trim();
   const password = els.adminNewPassword.value;
   const spendLimitUsd = els.adminNewSpendLimit.value;
-  if (!username || !email || !password) {
-    showAdminUserMessage("Username, recovery email and temporary password are required.", "error");
+  if (!username || (country === "USA" && (!email || !password))) {
+    showAdminUserMessage(country === "ARG" ? "A username is required." : "Username, recovery email and temporary password are required.", "error");
     return;
   }
-  const response = await fetch(`${API_BASE_URL}/api/admin/users`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username,
-      email,
-      password,
-      displayName: els.adminNewDisplayName.value.trim(),
-      role: els.adminNewRole.value || "user",
-      spendLimitUsd,
-      budgetGroupId: els.adminNewBudgetGroup?.value || null,
-      // Empty = default tenant (your firm). A distinct Firm ID isolates an external
-      // client firm: they only see records owned by users of the same firm.
-      tenantId: document.getElementById("adminNewTenantId")?.value.trim().toLowerCase() || undefined,
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    showAdminUserMessage(payload.error || "Could not create user.", "error");
-    return;
+  const button = els.adminCreateUserForm.querySelector('button[type="submit"]');
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Creating...";
+  if (els.adminNewCountry) els.adminNewCountry.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE_URL}${country === "ARG" ? "/api/admin/argentina-users" : "/api/admin/users"}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(country === "ARG" ? { username, displayName: els.adminNewDisplayName.value.trim() } : {
+        username,
+        email,
+        password,
+        displayName: els.adminNewDisplayName.value.trim(),
+        role: els.adminNewRole.value || "user",
+        spendLimitUsd,
+        budgetGroupId: els.adminNewBudgetGroup?.value || null,
+        // Empty = default tenant (your firm). A distinct Firm ID isolates an external
+        // client firm: they only see records owned by users of the same firm.
+        tenantId: document.getElementById("adminNewTenantId")?.value.trim().toLowerCase() || undefined,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showAdminUserMessage(payload.error || "Could not create user.", "error");
+      return;
+    }
+    els.adminCreateUserForm.reset();
+    if (els.adminNewCountry) els.adminNewCountry.value = country;
+    configureAdminUserCountry();
+    if (els.adminNewRole) els.adminNewRole.value = "user";
+    showAdminUserMessage(country === "ARG"
+      ? `User ${payload.username} created. Temporary password: ${payload.temporary}. Password change is required at first sign-in.`
+      : `User ${username} created. Their temporary password must be changed at first sign-in.`);
+    await loadAdminUsers().catch(() => {});
+  } catch (error) {
+    showAdminUserMessage(error.message || "Could not create user. Check the user list before trying again.", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Create User";
+    if (els.adminNewCountry) els.adminNewCountry.disabled = false;
   }
-  els.adminCreateUserForm.reset();
-  if (els.adminNewRole) els.adminNewRole.value = "user";
-  showAdminUserMessage(`User ${username} created. Their temporary password must be changed at first sign-in.`);
-  await loadAdminUsers();
 }
 
 async function updateAdminUser(username) {

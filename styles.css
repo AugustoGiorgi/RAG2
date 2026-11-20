@@ -5319,6 +5319,7 @@ h1 {
 }
 
 .admin-user-message {
+  overflow-wrap: anywhere;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 750;
@@ -5365,6 +5366,10 @@ h1 {
 .admin-user-row:hover {
   border-color: #cbd5e1;
   box-shadow: 0 1px 3px rgba(15, 30, 61, .06);
+}
+
+.admin-user-row.admin-user-row-argentina {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 /* Budget as a bar, not a sentence: three numbers in a row of grey text take a second

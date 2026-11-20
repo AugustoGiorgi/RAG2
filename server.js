@@ -4,6 +4,7 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { argentinaOrigin, reservedArgentinaLogin, readArgentinaBridgeKey, authenticateArgentina } = require("./lib/argentina-login");
+const { manageArgentinaUsers } = require("./lib/argentina-users");
 const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
 const net = require("node:net");
@@ -1086,6 +1087,21 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (requestUrl.pathname.startsWith("/api/admin/budget-groups")) {
       if (!requireAdmin(req, res)) return;
       await handleAdminBudgetGroupsApi(req, res, requestUrl);
+      return;
+    }
+    if (requestUrl.pathname === "/api/admin/argentina-users") {
+      if (!requireAdmin(req, res)) return;
+      if (!["GET", "POST"].includes(req.method)) { sendJson(res, 405, { error: "Method not allowed." }); return; }
+      const key = readArgentinaBridgeKey();
+      if (!key) { sendJson(res, 503, { error: "Argentina user administration is not configured." }); return; }
+      const data = req.method === "POST" ? await readJsonBody(req) : undefined;
+      try {
+        const result = await manageArgentinaUsers(key, { actor: (req.user || getSession(req)).username, action: req.method === "POST" ? "create" : "list", data });
+        if (result.status === 201) appendAuditLog(req, "admin.argentina_user_created", { username: result.payload.username });
+        sendJson(res, result.status, result.payload);
+      } catch {
+        sendJson(res, 503, { error: "Argentina user administration is temporarily unavailable." });
+      }
       return;
     }
     if (requestUrl.pathname.startsWith("/api/admin/users")) {
