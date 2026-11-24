@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check app.js",
+    "check": "node --check server.js && node --check app.js && node --check microsoft.js && node --check lib/microsoft-auth.js && node --check lib/microsoft-graph.js",
     "test": "node --test \"test/**/*.test.js\"",
     "generate-password-hash": "node scripts/generate-password-hash.js",
     "db:setup": "node scripts/setup-supabase.js",
@@ -13,6 +13,7 @@
     "banco:armar": "node scripts/banco/armar.cjs"
   },
   "dependencies": {
+    "@azure/msal-node": "^7.2.3",
     "exceljs": "^4.4.0",
     "intuit-oauth": "^4.0.0",
     "pdf-parse": "^2.4.5",

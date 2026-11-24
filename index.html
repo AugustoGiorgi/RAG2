@@ -194,8 +194,7 @@
           <section class="admin-users-panel">
             <div class="admin-users-list-header">
               <div>
-                <h3>Google Drive for reviews</h3>
-                <p class="admin-usage-note">Save every review Word your users download to a folder in your Google Drive, besides their own computer.</p>
+                <h3>Review storage</h3>
               </div>
             </div>
             <div id="adminFirmDriveBody" class="admin-usage-body">Loading…</div>
@@ -1191,7 +1190,7 @@
           <section id="deliverableClientSection" class="deliverable-section">
             <h2 class="deliverable-section-title"><span id="deliverableClientCheck" class="check" hidden>&#10003;</span>1. Client Information</h2>
             <div class="mode-toggle">
-              <label><input type="radio" name="deliverableClientMode" value="drive" checked /> Load from Google Drive folder</label>
+              <label><input type="radio" name="deliverableClientMode" value="drive" checked /> Load from cloud storage</label>
               <label><input type="radio" name="deliverableClientMode" value="manual" /> Enter manually</label>
             </div>
             <div id="deliverableDriveClientMode">
@@ -1338,9 +1337,10 @@
                 <button id="openDeliverableGmail" class="ghost-button small-button" type="button">Review and Send</button>
               </div>
                 <div class="gmail-send-section">
-                <div class="gmail-send-section-title">Send through Gmail</div>
+                <div class="gmail-send-section-title">Send email</div>
+                <label class="mail-provider-control">Send with <select data-mail-provider="deliverable"><option value="gmail">Gmail</option><option value="outlook">Outlook</option></select></label>
                 <div id="gmailNotConnected" class="gmail-not-connected" hidden>
-                  Gmail is not connected. You can still copy the email and send manually.
+                  <span id="mailNotConnectedText">Gmail is not connected. You can still copy the email and send manually.</span>
                   <button id="connectGmailButton" class="ghost-button small-button" type="button">Connect Gmail</button>
                 </div>
                 <div id="gmailSendForm" hidden>
@@ -1683,9 +1683,10 @@
             </div>
             <div id="estEmailCard" class="gmail-send-section" hidden>
               <div class="gmail-send-section-title">Email to client</div>
+              <label class="mail-provider-control">Send with <select data-mail-provider="estimated"><option value="gmail">Gmail</option><option value="outlook">Outlook</option></select><span data-mail-account="estimated"></span></label>
               <div class="est-reviewed-workpaper-box" data-drive-button-host>
                 <strong>Reviewed workpaper</strong>
-                <p class="muted-note">After you review the downloaded Excel, upload the final version here. It will be attached to the Gmail message.</p>
+                <p class="muted-note">After you review the downloaded Excel, upload the final version here. It will be attached to the email.</p>
                 <button id="estUploadReviewedWorkbook" class="ghost-button small-button" type="button">Upload Reviewed Excel</button>
                 <input id="estReviewedWorkbookFile" type="file" accept=".xlsx,.xls" hidden />
                 <span id="estReviewedWorkbookStatus" class="muted-note">No reviewed workbook uploaded yet.</span>
@@ -2302,6 +2303,8 @@
       </section>
     </main>
 
-    <script src="app.js?v=20261007-zipimages"></script>
+    <link rel="stylesheet" href="microsoft.css?v=1" />
+    <script src="app.js?v=20261124-microsoft"></script>
+    <script src="microsoft.js?v=1"></script>
   </body>
 </html>

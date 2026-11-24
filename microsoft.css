@@ -1,0 +1,24 @@
+.microsoft-file-button { margin: 4px 0 4px 8px; }
+.microsoft-dialog { width: min(760px, calc(100% - 24px)); max-height: calc(100dvh - 32px); padding: 24px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #142744; box-shadow: 0 16px 48px #10213b33; }
+.microsoft-dialog::backdrop { background: #10213b77; }
+.microsoft-dialog h3 { margin: 0; font-size: 21px; }
+.microsoft-dialog p { margin: 6px 0; color: #58667a; overflow-wrap: anywhere; }
+.microsoft-dialog-heading, .microsoft-dialog-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.microsoft-dialog-heading { margin-bottom: 16px; }
+.microsoft-dialog-heading > div { min-width: 0; }
+.microsoft-picker-toolbar { border-block: 1px solid #e1e7ef; padding: 12px 0; }
+.microsoft-picker-toolbar nav { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.microsoft-picker-toolbar form { display: flex; gap: 8px; }
+.microsoft-picker-toolbar input { flex: 1; min-width: 0; }
+.microsoft-items { min-height: 180px; max-height: 42dvh; overflow-y: auto; }
+.microsoft-item { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid #e1e7ef; }
+.microsoft-item > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.microsoft-item > input { width: 18px; height: 18px; flex: 0 0 18px; margin: 0; }
+.microsoft-item > small { color: #58667a; white-space: nowrap; }
+.microsoft-item > button { text-align: left; max-width: 100%; overflow-wrap: anywhere; }
+.microsoft-dialog [data-status] { margin: 12px 0; color: #315982; min-height: 22px; overflow-wrap: anywhere; }
+.microsoft-dialog-footer { margin-top: 16px; padding-top: 16px; border-top: 1px solid #e1e7ef; }
+.mail-provider-control { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.mail-provider-control select { width: auto; min-width: 130px; }
+.microsoft-account { max-width: 520px; }
+@media (max-width: 520px) { .microsoft-dialog { padding: 16px; } .microsoft-dialog-footer { align-items: stretch; flex-direction: column; } .microsoft-item { gap: 8px; } }

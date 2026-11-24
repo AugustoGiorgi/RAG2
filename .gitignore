@@ -7,6 +7,7 @@ npm-debug.log
 data/client_files/
 data/local-secrets.json
 data/google_tokens.json
+data/microsoft-tokens/
 data/qbo_tokens.json
 data/accounting_tokens.json
 data/cost_log.json

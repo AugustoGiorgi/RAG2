@@ -5,6 +5,8 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { argentinaOrigin, reservedArgentinaLogin, readArgentinaBridgeKey, authenticateArgentina } = require("./lib/argentina-login");
 const { manageArgentinaUsers } = require("./lib/argentina-users");
+const { createMicrosoftAuth } = require("./lib/microsoft-auth");
+const { createMicrosoftGraph } = require("./lib/microsoft-graph");
 const childProcess = require("node:child_process");
 const zlib = require("node:zlib");
 const net = require("node:net");
@@ -370,6 +372,16 @@ const ANTHROPIC_API_KEY = String(process.env.ANTHROPIC_API_KEY || LOCAL_SECRETS.
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || LOCAL_SECRETS.googleClientId || "").trim();
 const GOOGLE_CLIENT_SECRET = String(process.env.GOOGLE_CLIENT_SECRET || LOCAL_SECRETS.googleClientSecret || "").trim();
 const GOOGLE_REDIRECT_URI = String(process.env.GOOGLE_REDIRECT_URI || LOCAL_SECRETS.googleRedirectUri || `http://${HOST === "0.0.0.0" ? "127.0.0.1" : HOST}:${PORT}/auth/google/callback`).trim();
+const microsoftAuth = createMicrosoftAuth({
+  clientId: String(process.env.MICROSOFT_CLIENT_ID || "").trim(),
+  clientSecret: String(process.env.MICROSOFT_CLIENT_SECRET || "").trim(),
+  tenant: String(process.env.MICROSOFT_TENANT_ID || "common").trim(),
+  redirectUri: String(process.env.MICROSOFT_REDIRECT_URI || new URL("/auth/microsoft/callback", GOOGLE_REDIRECT_URI)).trim(),
+  directory: path.join(DATA_DIR, "microsoft-tokens"),
+  encryptionReady: Boolean(TOKEN_ENCRYPTION_KEY_BYTES), encrypt: encryptSecretObject, decrypt: decryptSecretObject,
+});
+const microsoftGraph = createMicrosoftGraph({ auth: microsoftAuth });
+const microsoftTransferLimiter = createConcurrencyLimiter({ maxActive: 4, maxQueue: 20, waitMs: 15000 });
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
@@ -924,6 +936,7 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google") { await handleGoogleAuth(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/google/callback") { await handleGoogleCallback(req, res, requestUrl); return; }
+    if (req.method === "GET" && ["/auth/microsoft", "/auth/microsoft/callback"].includes(requestUrl.pathname)) { await handleMicrosoftAuth(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo") { await handleQboAuth(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/auth/qbo/callback") { await handleQboCallback(req, res, requestUrl); return; }
     if (req.method === "GET" && requestUrl.pathname.startsWith("/auth/accounting/")) { await handleAccountingAuthRoute(req, res, requestUrl); return; }
@@ -946,6 +959,7 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     // the budget, the credits and the usage count: a refused call spends and counts nothing.
     if (!requireSectionAccess(req, res, requestUrl)) return;
     if (!requireFineGrainedRateLimit(req, res, requestUrl)) return;
+    if (requestUrl.pathname.startsWith("/api/microsoft/")) { await handleMicrosoftApi(req, res, requestUrl); return; }
     if (isTokenConsumingRoute(req, requestUrl) && !requireUserSpendBudget(req, res)) return;
     if (isTokenConsumingRoute(req, requestUrl) && !(await requireCreditsForRoute(req, res, requestUrl))) return;
     if (isTokenConsumingRoute(req, requestUrl) && !acquireUserSlot(req, res)) return;
@@ -5385,6 +5399,71 @@ async function handleAdminBudgetGroupsApi(req, res, requestUrl) {
   });
 }
 
+function microsoftCallbackHtml(ok, message) {
+  const payload = JSON.stringify({ type: ok ? "microsoft_connected" : "microsoft_oauth_error", message }).replace(/</g, "\\u003c");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Microsoft connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);setTimeout(function(){window.close();},200);}</script></body></html>`;
+}
+
+async function handleMicrosoftAuth(req, res, url) {
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("referrer-policy", "no-referrer");
+  const session = getSession(req);
+  try {
+    if (!session?.username) throw Object.assign(new Error("Sign in to RAG Tax AI before connecting Microsoft."), { statusCode: 401 });
+    if (isRateLimited(req, `microsoft:oauth:${session.username}`, 20, 60000)) throw Object.assign(new Error("Too many connection attempts. Please wait."), { statusCode: 429 });
+    const binding = hmac(parseCookies(req.headers.cookie || "")[SESSION_COOKIE_NAME] || "");
+    if (url.pathname === "/auth/microsoft") {
+      redirect(res, await microsoftAuth.start(session.username, binding, url.searchParams.get("purpose") || "drive"));
+      return;
+    }
+    await microsoftAuth.finish(session.username, binding, Object.fromEntries(url.searchParams));
+    appendAuditLog(session, "microsoft.connected", {});
+    sendHtml(res, 200, microsoftCallbackHtml(true, "Microsoft connected. You can return to RAG Tax AI."));
+  } catch (error) {
+    const message = error.statusCode ? error.message : "Microsoft could not complete sign-in. Check the app registration and try again.";
+    sendHtml(res, error.statusCode || 502, microsoftCallbackHtml(false, message));
+  }
+}
+
+async function handleMicrosoftApi(req, res, url) {
+  res.setHeader("cache-control", "no-store");
+  const username = req.user.username;
+  let release;
+  try {
+    if (req.method === "POST") {
+      const origin = req.headers.origin;
+      const sameHost = origin && ["https:", "http:"].some(protocol => origin === `${protocol}//${req.headers.host}`);
+      if ((origin && !sameHost) || req.headers["sec-fetch-site"] === "cross-site" || !String(req.headers["content-type"] || "").startsWith("application/json")) {
+        sendJson(res, 403, { error: "Only same-site JSON requests are allowed." }); return;
+      }
+    }
+    if (req.method === "POST" && ["/api/microsoft/drive/read-file", "/api/microsoft/mail/send"].includes(url.pathname)) {
+      release = await microsoftTransferLimiter.acquire();
+    }
+    if (req.method === "GET" && url.pathname === "/api/microsoft/status") { sendJson(res, 200, microsoftAuth.status(username)); return; }
+    if (req.method === "POST" && url.pathname === "/api/microsoft/disconnect") {
+      await microsoftAuth.disconnect(username); appendAuditLog(req, "microsoft.disconnected", {}); sendJson(res, 200, { ok: true }); return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/microsoft/drive/list") {
+      sendJson(res, 200, await microsoftGraph.list(username, { folderId: url.searchParams.get("folderId") || "root", query: url.searchParams.get("q") || "", pageToken: url.searchParams.get("pageToken") || "" })); return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/microsoft/drive/read-file") {
+      const payload = await readJsonBody(req);
+      sendJson(res, 200, await microsoftGraph.readFile(username, payload.fileId)); return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/microsoft/mail/send") {
+      if (isRateLimited(req, `microsoft:send:${username}`, 10, 60000)) { sendJson(res, 429, { error: "Too many email requests. Wait before sending another email." }); return; }
+      const result = await microsoftGraph.sendMail(username, await readJsonBody(req));
+      appendAuditLog(req, "microsoft.mail_submitted", { messageId: result.messageId || "", provider: "outlook" });
+      sendJson(res, 200, result); return;
+    }
+    sendJson(res, 404, { error: "Microsoft endpoint not found." });
+  } catch (error) {
+    const queued = ["QUEUE_FULL", "QUEUE_TIMEOUT"].includes(error.code);
+    sendJson(res, queued ? 503 : error.statusCode || 502, { error: queued ? "Microsoft transfers are busy. Wait a moment and try again." : error.statusCode ? error.message : "Microsoft could not complete the operation.", code: error.code, purpose: error.purpose });
+  } finally { release?.(); }
+}
+
 async function handleGoogleAuth(req, res) {
   if (!isGoogleDriveEnabled()) {
     sendHtml(res, 503, "<p>Google Drive is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.</p>");
@@ -7935,7 +8014,8 @@ function driveError(res, data, fallback) {
   return Object.assign(new Error(data?.error?.message || fallback), { statusCode: res.status });
 }
 
-async function createDriveFolder(username, name) {
+async function createDriveFolder(username, name, provider = "google") {
+  if (provider === "microsoft") return microsoftGraph.createFolder(username, name);
   const res = await googleApiFetch("https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink&supportsAllDrives=true", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -7946,14 +8026,16 @@ async function createDriveFolder(username, name) {
   return { id: data.id, name: data.name || name, url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}` };
 }
 
-async function driveFolderUsable(username, folderId) {
+async function driveFolderUsable(username, folderId, provider = "google") {
+  if (provider === "microsoft") return microsoftGraph.folderUsable(username, folderId);
   const res = await googleApiFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}?fields=id,trashed&supportsAllDrives=true`, {}, username);
   if (!res.ok) return false;
   const data = await res.json().catch(() => ({}));
   return Boolean(data.id) && !data.trashed;
 }
 
-async function uploadFileToDrive(username, folderId, fileName, buffer, mimeType) {
+async function uploadFileToDrive(username, folderId, fileName, buffer, mimeType, provider = "google") {
+  if (provider === "microsoft") return microsoftGraph.uploadFile(username, folderId, fileName, buffer, mimeType);
   const { body, contentType } = driveMultipartBody({ name: fileName, parents: [folderId], mimeType }, buffer, mimeType);
   const res = await googleApiFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink", {
     method: "POST",
@@ -7981,6 +8063,9 @@ async function handleFirmDriveApi(req, res, requestUrl) {
     const tokens = session?.username ? readGoogleTokens(session.username) : null;
     sendJson(res, 200, {
       enabled: isGoogleDriveEnabled(),
+      microsoftEnabled: microsoftAuth.enabled,
+      microsoftConnected: microsoftAuth.status(session.username).writeAuthorized,
+      provider: config?.provider || "google",
       configured: Boolean(config?.folderId),
       folderName: config?.folderName || "",
       folderUrl: config?.folderUrl || "",
@@ -7996,21 +8081,28 @@ async function handleFirmDriveApi(req, res, requestUrl) {
 
   if (req.method === "POST" && route === "/api/firm-drive/setup") {
     if (!isFirmAdmin) { sendJson(res, 403, { error: "Only the firm administrator can set up the firm's Google Drive folder." }); return; }
-    if (!isGoogleDriveEnabled()) { sendJson(res, 503, { error: "Google is not configured on this server." }); return; }
+    const payload = await readJsonBody(req);
+    const provider = payload.provider || "google";
+    if (!["google", "microsoft"].includes(provider)) { sendJson(res, 400, { error: "Invalid storage provider." }); return; }
+    if (provider === "microsoft" && !microsoftAuth.status(session.username).writeAuthorized) {
+      sendJson(res, 409, { error: "Connect Microsoft and allow OneDrive file storage first." }); return;
+    }
+    if (provider === "google" && !isGoogleDriveEnabled()) { sendJson(res, 503, { error: "Google is not configured on this server." }); return; }
     const tokens = readGoogleTokens(session.username);
-    if (!tokens || !googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE)) {
+    if (provider === "google" && (!tokens || !googleTokenHasScope(tokens, GOOGLE_DRIVE_SCOPE))) {
       sendJson(res, 409, { code: "GOOGLE_NOT_CONNECTED", error: "Connect your Google account first." });
       return;
     }
     try {
       const existing = firmDriveFor(tenantId);
-      const reuse = existing?.folderId && existing.ownerUsername === session.username
-        && await driveFolderUsable(session.username, existing.folderId).catch(() => false);
+      const reuse = existing?.folderId && (existing.provider || "google") === provider && existing.ownerUsername === session.username
+        && await driveFolderUsable(session.username, existing.folderId, provider).catch(() => false);
       const folder = reuse
         ? { id: existing.folderId, name: existing.folderName, url: existing.folderUrl }
-        : await createDriveFolder(session.username, REVIEW_FOLDER_NAME);
+        : await createDriveFolder(session.username, REVIEW_FOLDER_NAME, provider);
       const now = new Date().toISOString();
       saveFirmDrive(tenantId, {
+        provider,
         folderId: folder.id,
         folderName: folder.name,
         folderUrl: folder.url,
@@ -8058,22 +8150,24 @@ async function handleReviewDriveUpload(req, res) {
   const fileName = reviewDriveFileName(payload.baseName, session.displayName || session.username, payload.localStamp);
   let current = { ...config };
   try {
+    const owner = getAuthUsers().find(user => user.username === current.ownerUsername && user.active !== false);
+    if (!owner || String(owner.tenantId || DEFAULT_TENANT_ID) !== tenantId) throw new Error("The storage account owner is no longer active in this firm. Ask the firm administrator to configure storage again.");
     let file;
     try {
-      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME);
+      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME, current.provider);
     } catch (error) {
       // La carpeta se borro: se crea otra en el mismo Drive y se reintenta una vez.
       if (error.statusCode !== 404) throw error;
-      const folder = await createDriveFolder(current.ownerUsername, REVIEW_FOLDER_NAME);
+      const folder = await createDriveFolder(current.ownerUsername, REVIEW_FOLDER_NAME, current.provider);
       current = { ...current, folderId: folder.id, folderName: folder.name, folderUrl: folder.url };
-      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME);
+      file = await uploadFileToDrive(current.ownerUsername, current.folderId, fileName, buffer, DOCX_MIME, current.provider);
     }
     saveFirmDrive(tenantId, { ...current, lastUploadAt: new Date().toISOString(), lastError: "" });
     appendAuditLog(req, "firm_drive.review_uploaded", { tenantId, fileId: file.id });
-    sendJson(res, 200, { ok: true, fileName, fileUrl: file.url, folderUrl: current.folderUrl });
+    sendJson(res, 200, { ok: true, provider: current.provider || "google", fileName: file.name || fileName, fileUrl: file.url, folderUrl: current.folderUrl });
   } catch (error) {
     const message = error.statusCode === 401
-      ? "The firm's Google Drive connection expired. The firm administrator has to reconnect Google."
+      ? "The firm's cloud storage connection expired. The firm administrator has to reconnect the storage account."
       : (error.message || "Google Drive upload failed.");
     saveFirmDrive(tenantId, { ...current, lastError: `${new Date().toISOString().slice(0, 10)}: ${message}` });
     console.warn(`[FirmDrive] upload for ${tenantId} failed: ${message}`);
@@ -18251,6 +18345,8 @@ async function serveStatic(req, res) {
   const normalizedPath = path.normalize(decodeURIComponent(pathname)).replace(/^(\.\.[\\/])+/, "");
   const filePath = path.join(ROOT, normalizedPath);
   const relativePath = path.relative(ROOT, filePath);
+  const microsoftPrivatePath = path.relative(path.resolve(DATA_DIR, "microsoft-tokens"), path.resolve(filePath));
+  if (!microsoftPrivatePath.startsWith("..") && !path.isAbsolute(microsoftPrivatePath)) { sendText(res, 403, "Forbidden"); return; }
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) { sendText(res, 403, "Forbidden"); return; }
   try {
     const file = await fs.readFile(filePath);

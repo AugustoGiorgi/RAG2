@@ -1943,22 +1943,24 @@ async function sendEstimatedTaxesEmail() {
   const to = estFieldValue("estClientEmail") || result.clientEmail;
   if (!to) return showToast("Add a client email before sending.", "warning");
   if (!estimatedTaxesState.reviewedWorkpaper) return showToast("Upload the reviewed Excel workpaper before sending the client email.", "warning");
-  return runWithGooglePermission("gmail", () => performEstimatedTaxesEmailSend());
+  return runWithEmailPermission("estimated", () => performEstimatedTaxesEmailSend());
 }
 
 async function performEstimatedTaxesEmailSend() {
+  const provider = emailProvider("estimated");
+  const service = provider === "outlook" ? "Outlook" : "Gmail";
   const result = estimatedTaxesState.lastResult;
   const to = estFieldValue("estClientEmail") || result?.clientEmail;
   if (!result || !to || !estimatedTaxesState.reviewedWorkpaper) return;
-  if (!window.confirm(`Send this reviewed email to ${to}? This action sends the message immediately through Gmail.`)) return;
+  if (!window.confirm(`Send this reviewed email to ${to} through ${service} (${emailAccount("estimated").email || "connected account"})?`)) return;
   els.estSendEmail.disabled = true;
   els.estSendEmail.textContent = "Sending email...";
-  const sendingToast = showToast("Sending email through Gmail...", "info", { persistent: true, loading: true });
+  const sendingToast = showToast(`Sending email through ${service}...`, "info", { persistent: true, loading: true });
   try {
     const reviewedFile = estimatedTaxesState.reviewedWorkpaper;
     const attachmentName = displayFileName(reviewedFile);
     const attachmentBase64 = await readAsBase64(reviewedFile);
-    const response = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
+    const response = await fetch(`${API_BASE_URL}${emailSendPath(provider)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1974,8 +1976,8 @@ async function performEstimatedTaxesEmailSend() {
       }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Gmail could not send the email.");
-    showToast("Email sent with the reviewed workpaper attached.", "success");
+    if (!response.ok) throw emailSendError(data, "estimated");
+    showToast(provider === "outlook" ? "Outlook accepted the email with the reviewed workpaper for sending." : "Email sent with the reviewed workpaper attached.", "success");
   } catch (error) {
     showToast(error.message, "error");
   } finally {
@@ -3714,7 +3716,7 @@ async function addFilesToZone(zoneId, driveFiles) {
     organizerFiles.priorYearReturn = files[0] || null;
     renderOrganizerFiles();
   } else if (zoneId === "knowledge-base" || zoneId === "review-examples") {
-    uploadDriveContextFiles(zoneId === "knowledge-base" ? "knowledge_base" : "review_examples", files);
+    await uploadDriveContextFiles(zoneId === "knowledge-base" ? "knowledge_base" : "review_examples", files);
   } else if (zoneId === "presentation") {
     presentationState.files = mergeFiles(presentationState.files, files);
     renderPresentationFiles();
@@ -3734,7 +3736,7 @@ async function addFilesToZone(zoneId, driveFiles) {
       if (els.estReviewedWorkbookStatus) els.estReviewedWorkbookStatus.textContent = `${displayFileName(file)} ready to attach.`;
     }
   }
-  showToast(`${files.length} file${files.length === 1 ? "" : "s"} added from Google Drive.`, "success");
+  if (!files.some(file => file.source === "onedrive")) showToast(`${files.length} file${files.length === 1 ? "" : "s"} added from Google Drive.`, "success");
 }
 
 function normalizeDriveFile(file) {
@@ -3742,7 +3744,8 @@ function normalizeDriveFile(file) {
     name: file.name,
     type: file.type || guessMediaType(file.name),
     size: Number(file.size || 0),
-    source: "google_drive",
+    source: file.source === "onedrive" ? "onedrive" : "google_drive",
+    oneDriveFileId: file.oneDriveFileId,
     content: file.content,
     driveFileId: file.driveFileId,
     driveWebViewLink: file.driveWebViewLink,
@@ -3796,11 +3799,11 @@ function driveFileText(file) {
 }
 
 function isDriveFile(file) {
-  return file?.source === "google_drive";
+  return file?.source === "google_drive" || file?.source === "onedrive";
 }
 
 function isBase64BackedFile(file) {
-  return file?.source === "google_drive" || file?.source === "quickbooks_online" || file?.source === "accounting_software";
+  return file?.source === "google_drive" || file?.source === "onedrive" || file?.source === "quickbooks_online" || file?.source === "accounting_software";
 }
 
 function base64ToArrayBuffer(base64) {
@@ -6124,7 +6127,8 @@ function renderRequestEmailPreview(email) {
     return;
   }
   const clientEmail = requestClientEmail(requestState.selectedClient);
-  const gmail = deliverableState.gmailStatus || {};
+  const gmail = emailAccount("request");
+  const service = emailProvider("request") === "outlook" ? "Outlook" : "Gmail";
   els.requestEmailPreview.innerHTML = `
     <div class="email-preview-card">
       <div class="email-preview-header">
@@ -6144,25 +6148,27 @@ function renderRequestEmailPreview(email) {
       <button class="secondary-button" type="button" id="requestCopyEmail">Copy Email</button>
       <button class="secondary-button" type="button" id="requestOpenGmail">Open in Gmail</button>
     </div>
+    <label class="mail-provider-control">Send with <select data-mail-provider="request"><option value="gmail">Gmail</option><option value="outlook">Outlook</option></select></label>
     ${gmail.authorized ? `
       <div class="gmail-send-section">
-        <div class="gmail-send-section-title">Send via Gmail</div>
+        <div class="gmail-send-section-title">Send via ${service}</div>
         <p>From: ${escapeHtml(gmail.email || "Authorized Gmail account")}</p>
-        <button id="sendRequestButton" class="btn-send-gmail" type="button">Send via Gmail</button>
+        <button id="sendRequestButton" class="btn-send-gmail" type="button">Send via ${service}</button>
       </div>` : `
-      <div class="gmail-not-connected">Gmail is not connected. You can copy the email or open Gmail and attach files manually.</div>
-      <button id="requestConnectGmail" class="secondary-button" type="button">Connect Gmail</button>`}`;
+      <div class="gmail-not-connected">${service} is not connected.</div>
+      <button id="requestConnectGmail" class="secondary-button" type="button">Connect ${service}</button>`}`;
   document.getElementById("requestRegenerate")?.addEventListener("click", generateRequestEmail);
   document.getElementById("requestCopyEmail")?.addEventListener("click", () => copyText(`${document.getElementById("requestEmailSubject")?.value || ""}\n\n${document.getElementById("requestEmailBody")?.value || ""}`));
   document.getElementById("requestOpenGmail")?.addEventListener("click", openRequestMailto);
   document.getElementById("sendRequestButton")?.addEventListener("click", sendRequestEmail);
   document.getElementById("requestConnectGmail")?.addEventListener("click", requestGoogleGmailPermission);
+  window.MicrosoftConnection?.setup();
 }
 
 function requestGoogleGmailPermission() {
-  return runWithGooglePermission("gmail", () => {
+  return runWithEmailPermission("request", () => {
     renderRequestEmailPreview(requestState.generatedEmail);
-    showToast("Gmail is connected and ready to send.", "success");
+    showToast("Email account connected and ready to send.", "success");
   });
 }
 
@@ -6175,18 +6181,21 @@ function openRequestMailto() {
 
 async function sendRequestEmail() {
   if (!requestState.generatedEmail || requestState.isSending) return;
-  return runWithGooglePermission("gmail", () => performRequestEmailSend());
+  return runWithEmailPermission("request", () => performRequestEmailSend());
 }
 
 async function performRequestEmailSend() {
+  const provider = emailProvider("request");
+  const service = provider === "outlook" ? "Outlook" : "Gmail";
   if (!requestState.generatedEmail || requestState.isSending) return;
   const to = document.getElementById("requestEmailTo")?.value || "";
   if (!isValidEmail(to)) return showToast("Enter a valid recipient email before sending.", "warning");
-  if (!window.confirm(`Send this email to ${to}? This action sends the message immediately through Gmail.`)) return;
+  if (!window.confirm(`Send this email to ${to} through ${service} (${emailAccount("request").email || "connected account"})?`)) return;
   requestState.isSending = true;
   const button = document.getElementById("sendRequestButton");
   if (button) button.disabled = true;
   const sendingToast = showToast("Preparing attachments...", "info", { persistent: true, loading: true });
+  let submitted = false;
   try {
     if (button) button.textContent = "Preparing attachments...";
     const readResponse = await fetch(`${API_BASE_URL}/api/requests/read-files`, {
@@ -6201,11 +6210,11 @@ async function performRequestEmailSend() {
     if (!readResponse.ok) throw new Error(readData.error || "Could not read selected files");
     if (readData.errors?.length) showToast(`${readData.errors.length} file(s) could not be read.`, "warning");
 
-    sendingToast.textContent = "Sending email through Gmail...";
+    sendingToast.textContent = `Sending email through ${service}...`;
     if (button) button.textContent = "Sending email...";
     const subject = document.getElementById("requestEmailSubject")?.value || "";
     const bodyText = document.getElementById("requestEmailBody")?.value || "";
-    const sendResponse = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
+    const sendResponse = await fetch(`${API_BASE_URL}${emailSendPath(provider)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -6215,12 +6224,14 @@ async function performRequestEmailSend() {
         bodyText,
         attachments: readData.files || [],
         ccPreparer: !!document.getElementById("requestCcSelf")?.checked,
-        preparerEmail: requestPreparerDefaults().email || deliverableState.gmailStatus?.email || "",
+        preparerEmail: requestPreparerDefaults().email || emailAccount("request").email || "",
         cc: document.getElementById("requestEmailCc")?.value || null,
       }),
     });
     const sendData = await sendResponse.json();
-    if (!sendResponse.ok || !sendData.ok) throw new Error(sendData.error || "Send failed");
+    if (!sendResponse.ok || !sendData.ok) throw emailSendError(sendData, "request");
+    submitted = true;
+    renderRequestSendSuccess({ to, messageId: sendData.messageId, provider });
     await fetch(`${API_BASE_URL}/api/requests/log`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6233,14 +6244,13 @@ async function performRequestEmailSend() {
         gmailMessageId: sendData.messageId,
       }),
     });
-    renderRequestSendSuccess({ to, messageId: sendData.messageId });
-    showToast("Email sent successfully", "success");
+    showToast(provider === "outlook" ? "Outlook accepted the email for sending." : "Email sent successfully", "success");
     await loadDatabaseClients();
   } catch (error) {
-    showToast(`Failed to send: ${error.message}`, "error");
+    showToast(submitted ? "Email submitted, but its local history could not be saved." : `Failed to send: ${error.message}`, submitted ? "warning" : "error");
     if (button) {
       button.disabled = false;
-      button.textContent = "Send via Gmail";
+      button.textContent = `Send via ${service}`;
     }
   } finally {
     dismissToast(sendingToast);
@@ -6248,11 +6258,11 @@ async function performRequestEmailSend() {
   }
 }
 
-function renderRequestSendSuccess({ to, messageId }) {
+function renderRequestSendSuccess({ to, messageId, provider = "gmail" }) {
   if (!els.requestSendSuccess) return;
   els.requestSendSuccess.innerHTML = `
     <div class="send-success-card">
-      <div class="send-success-title">Email sent successfully</div>
+      <div class="send-success-title">${provider === "outlook" ? "Outlook accepted the email for sending" : "Email sent successfully"}</div>
       <div class="send-success-meta">To: ${escapeHtml(to)} | Message ID: ${escapeHtml(messageId || "n/a")}</div>
       <div class="send-success-actions"><button class="secondary-button" type="button" id="requestSendAnother">Send Another Request</button></div>
     </div>`;
@@ -8586,7 +8596,7 @@ function renderDeliverableFiles() {
     <div class="deliverable-file-item" draggable="true" data-deliverable-file="${item.id}">
       <span class="drive-file-icon">${deliverableFileIcon(item.mimeType)}</span>
       <div class="drive-file-info">
-        <div class="drive-file-name">${escapeHtml(item.name)} ${item.source === "google_drive" ? '<span class="qbo-badge">DRIVE</span>' : ""}</div>
+        <div class="drive-file-name">${escapeHtml(item.name)} ${item.source === "google_drive" ? '<span class="qbo-badge">DRIVE</span>' : item.source === "onedrive" ? '<span class="qbo-badge">ONEDRIVE</span>' : ""}</div>
         <div class="drive-file-meta">${formatBytes(item.size)} · ${escapeHtml(item.mimeType || "")}</div>
       </div>
       <select class="deliverable-file-type-select" data-file-type-index="${index}">
@@ -8726,13 +8736,32 @@ function renderDeliverableDraft(response) {
 }
 
 function renderGmailStatus() {
-  const status = deliverableState.gmailStatus || {};
+  const status = emailAccount("deliverable");
   if (els.gmailFrom) els.gmailFrom.textContent = status.email || "Not connected";
   if (els.gmailNotConnected) els.gmailNotConnected.hidden = Boolean(status.authorized);
   if (els.gmailSendForm) els.gmailSendForm.hidden = !status.authorized;
   if (els.gmailAttachmentsSummary) {
-    els.gmailAttachmentsSummary.innerHTML = `<strong>Attachments</strong><ul>${deliverableState.files.map((item) => `<li>${escapeHtml(item.name)} - ${escapeHtml(item.source === "google_drive" ? "Drive" : "Computer")}</li>`).join("")}</ul>`;
+    els.gmailAttachmentsSummary.innerHTML = `<strong>Attachments</strong><ul>${deliverableState.files.map((item) => `<li>${escapeHtml(item.name)} - ${escapeHtml(item.source === "google_drive" ? "Drive" : item.source === "onedrive" ? "OneDrive" : "Computer")}</li>`).join("")}</ul>`;
   }
+  const service = emailProvider("deliverable") === "outlook" ? "Outlook" : "Gmail";
+  if (els.connectGmailButton) els.connectGmailButton.textContent = `Connect ${service}`;
+  const message = document.getElementById("mailNotConnectedText");
+  if (message) message.textContent = `${service} is not connected. You can still copy the email and send manually.`;
+}
+
+function emailProvider(context) { return window.MicrosoftConnection?.provider(context) || "gmail"; }
+function emailAccount(context) { return window.MicrosoftConnection?.emailStatus(context) || deliverableState.gmailStatus || {}; }
+function emailSendPath(provider) { return provider === "outlook" ? "/api/microsoft/mail/send" : "/api/deliverable/send-gmail"; }
+function runWithEmailPermission(context, action) {
+  return emailProvider(context) === "outlook" ? window.MicrosoftConnection.run("mail", action) : runWithGooglePermission("gmail", action);
+}
+function emailSendError(data, context) {
+  if (data.purpose === "mail_large") window.MicrosoftConnection?.grantLargeMail(context);
+  if (data.code === "MICROSOFT_PERMISSION_REQUIRED" && data.purpose !== "mail_large") {
+    // Reconnect only on a new user click; never retry a send after an uncertain outcome.
+    window.MicrosoftConnection?.refresh();
+  }
+  return new Error(data.purpose === "mail_large" ? "Outlook needs additional permission for large attachments. Use Allow large Outlook attachments beside Send with, then review and send again." : data.error || "The email could not be sent.");
 }
 
 function copyDeliverableEmail() {
@@ -8765,7 +8794,7 @@ function buildDeliverableGmailPayload(attachments) {
     to: els.gmailTo.value.trim(),
     cc: els.gmailAdditionalCc.value.trim(),
     ccPreparer: els.gmailCcSelf.checked,
-    preparerEmail: els.deliverableFirmEmail.value.trim() || deliverableState.gmailStatus.email,
+    preparerEmail: els.deliverableFirmEmail.value.trim() || emailAccount("deliverable").email,
     subject: els.emailSubjectDraft.value.trim(),
     bodyText: els.emailBodyDraft.value,
     bodyHtml: plainTextEmailToHtml(els.emailBodyDraft.value),
@@ -8774,9 +8803,9 @@ function buildDeliverableGmailPayload(attachments) {
 }
 
 function requestDeliverableGmailPermission() {
-  return runWithGooglePermission("gmail", () => {
+  return runWithEmailPermission("deliverable", () => {
     renderGmailStatus();
-    showToast("Gmail is connected and ready to send.", "success");
+    showToast("Email account connected and ready to send.", "success");
   });
 }
 
@@ -8790,13 +8819,15 @@ async function sendDeliverableGmail(triggerButton) {
     showToast("Enter a valid recipient email before sending.", "warning");
     return;
   }
-  return runWithGooglePermission("gmail", () => performDeliverableGmailSend(triggerButton));
+  return runWithEmailPermission("deliverable", () => performDeliverableGmailSend(triggerButton));
 }
 
 async function performDeliverableGmailSend(triggerButton) {
+  const provider = emailProvider("deliverable");
+  const service = provider === "outlook" ? "Outlook" : "Gmail";
   if (sendingDeliverableGmail) return;
   const recipient = els.gmailTo.value.trim();
-  if (!window.confirm(`Send this email to ${recipient}? This action sends the message immediately through Gmail.`)) return;
+  if (!window.confirm(`Send this email to ${recipient} through ${service} (${emailAccount("deliverable").email || "connected account"})?`)) return;
   const button = triggerButton || els.sendGmailButton || els.openDeliverableGmail;
   const originalButtonText = button?.textContent || "Send Email";
   sendingDeliverableGmail = true;
@@ -8810,19 +8841,20 @@ async function performDeliverableGmailSend(triggerButton) {
   try {
     const attachments = await collectDeliverableEmailAttachments();
     const payload = buildDeliverableGmailPayload(attachments);
-    sendingToast.textContent = "Sending email through Gmail...";
+    sendingToast.textContent = `Sending email through ${service}...`;
     if (button) button.textContent = "Sending email...";
-    const response = await fetch(`${API_BASE_URL}/api/deliverable/send-gmail`, {
+    const response = await fetch(`${API_BASE_URL}${emailSendPath(provider)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "Gmail could not send the email.");
+    if (!response.ok) throw emailSendError(data, "deliverable");
     emailSent = true;
-    record = { sentAt: new Date().toISOString(), to: payload.to, subject: payload.subject, attachmentNames: attachments.map((item) => item.name), status: "Sent", messageId: data.messageId };
-    els.gmailSendResult.innerHTML = `<div class="send-success-banner">Email sent successfully<br>Sent to: ${escapeHtml(payload.to)}<br>Message ID: ${escapeHtml(data.messageId || "")}</div>`;
-    showToast("Email sent successfully.", "success");
+    record = { sentAt: new Date().toISOString(), to: payload.to, subject: payload.subject, attachmentNames: attachments.map((item) => item.name), status: provider === "outlook" ? "Submitted to Outlook" : "Sent", provider, messageId: data.messageId };
+    const successMessage = provider === "outlook" ? "Outlook accepted the email for sending" : "Email sent successfully";
+    els.gmailSendResult.innerHTML = `<div class="send-success-banner">${successMessage}<br>Sent to: ${escapeHtml(payload.to)}${data.messageId ? `<br>Message ID: ${escapeHtml(data.messageId)}` : ""}</div>`;
+    showToast(successMessage, "success");
     deliverableState.sendHistory.unshift(record);
     renderDeliverableSendHistory();
     try {
@@ -10886,39 +10918,46 @@ async function loadFirmDrive() {
   }
 }
 
+let firmStorageProvider = "google";
 function renderFirmDrive(status) {
   const body = document.getElementById("adminFirmDriveBody");
   if (!body) return;
-  if (!status.enabled) {
-    body.innerHTML = `<div class="admin-usage-empty">Google is not configured on this server. Ask RAG Tax AI support to enable it.</div>`;
+  if (!status.enabled && !status.microsoftEnabled) {
+    body.innerHTML = `<div class="admin-usage-empty">Cloud storage is not configured on this server. Ask RAG Tax AI support to enable it.</div>`;
     return;
   }
   const parts = [];
   const buttons = [];
+  if (status.configured) firmStorageProvider = status.provider || "google";
+  const service = firmStorageProvider === "microsoft" ? "OneDrive" : "Google Drive";
+  const connected = firmStorageProvider === "microsoft" ? status.microsoftConnected : status.googleConnected;
+  if (status.canManage && !status.configured) parts.push(`<label class="mail-provider-control">Storage <select id="firmStorageProvider"><option value="google" ${firmStorageProvider === "google" ? "selected" : ""}>Google Drive</option><option value="microsoft" ${firmStorageProvider === "microsoft" ? "selected" : ""}>OneDrive</option></select></label>`);
   if (status.configured) {
     const folder = status.folderUrl
       ? `<a href="${escapeHtml(status.folderUrl)}" target="_blank" rel="noopener">${escapeHtml(status.folderName || "your Drive folder")}</a>`
       : escapeHtml(status.folderName || "your Drive folder");
-    parts.push(`<p>Every review your users download is also saved to ${folder}${status.connectedBy ? `, in the Google Drive of ${escapeHtml(status.connectedBy)}` : ""}.</p>`);
+    parts.push(`<p>Reviews are saved to ${folder}${status.connectedBy ? `, in ${service} connected by ${escapeHtml(status.connectedBy)}` : ""}.</p>`);
     if (status.lastUploadAt) parts.push(`<p class="admin-usage-note">Last review saved: ${escapeHtml(new Date(status.lastUploadAt).toLocaleString())}</p>`);
     if (status.lastError) parts.push(`<p class="admin-usage-note">Last problem: ${escapeHtml(status.lastError)}</p>`);
-    if (status.isOwner && !status.googleConnected) buttons.push(`<button type="button" class="ghost-button small-button" data-firm-drive="connect">Reconnect Google</button>`);
+    if (status.isOwner && !connected) buttons.push(`<button type="button" class="ghost-button small-button" data-firm-drive="connect">Reconnect ${service}</button>`);
     buttons.push(`<button type="button" class="ghost-button small-button" data-firm-drive="disconnect">Stop saving to Drive</button>`);
-  } else if (!status.googleConnected) {
-    parts.push(`<p>Connect your Google account. The app creates a folder named "RAG Tax AI - Reviews" in your Drive and saves there every review your users download. Their download to the computer does not change.</p>`);
-    buttons.push(`<button type="button" class="primary-button small-button" data-firm-drive="connect">Connect Google</button>`);
+  } else if (!connected) {
+    parts.push(`<p>${service} is not connected for review storage.</p>`);
+    buttons.push(`<button type="button" class="primary-button small-button" data-firm-drive="connect">Connect ${service}</button>`);
   } else {
-    parts.push(`<p>Your Google account is connected. Create the folder where your firm's reviews will be saved.</p>`);
+    parts.push(`<p>${service} is connected. No review folder configured yet.</p>`);
     buttons.push(`<button type="button" class="primary-button small-button" data-firm-drive="setup">Create the reviews folder</button>`);
   }
   if (!status.canManage) buttons.length = 0;
   body.innerHTML = `${parts.join("")}${buttons.length ? `<div class="admin-drive-actions">${buttons.join("")}</div>` : ""}`;
+  body.querySelector("#firmStorageProvider")?.addEventListener("change", event => { firmStorageProvider = event.target.value; renderFirmDrive(status); });
   body.querySelector('[data-firm-drive="connect"]')?.addEventListener("click", connectFirmDrive);
   body.querySelector('[data-firm-drive="setup"]')?.addEventListener("click", () => setupFirmDrive().catch(() => {}));
   body.querySelector('[data-firm-drive="disconnect"]')?.addEventListener("click", () => disconnectFirmDrive().catch(() => {}));
 }
 
 function connectFirmDrive() {
+  if (firmStorageProvider === "microsoft") return window.MicrosoftConnection.run("write", () => loadFirmDrive());
   // Same Google sign-in as the rest of the app; when it finishes, this panel reloads. The
   // popup has to open inside the click, or the browser blocks it.
   pendingGoogleAction = { capability: "drive", action: () => loadFirmDrive() };
@@ -10926,15 +10965,15 @@ function connectFirmDrive() {
 }
 
 async function setupFirmDrive() {
-  const response = await fetch(`${API_BASE_URL}/api/firm-drive/setup`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const response = await fetch(`${API_BASE_URL}/api/firm-drive/setup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: firmStorageProvider }) });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) showToast(result.error || "Could not create the Drive folder.", "error");
-  else showToast("Done: your firm's reviews will be saved to your Google Drive.", "success");
+  else showToast(`Reviews will be saved to your firm's ${firmStorageProvider === "microsoft" ? "OneDrive" : "Google Drive"}.`, "success");
   await loadFirmDrive();
 }
 
 async function disconnectFirmDrive() {
-  if (!window.confirm("Stop saving reviews to Google Drive? The folder and the files already saved stay in your Drive.")) return;
+  if (!window.confirm("Stop saving reviews to cloud storage? The folder and files already saved stay in the connected drive.")) return;
   const response = await fetch(`${API_BASE_URL}/api/firm-drive/disconnect`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) showToast(result.error || "Could not change the Drive setting.", "error");
@@ -10957,8 +10996,8 @@ async function saveReviewToDrive(blob, baseName) {
     });
     const result = await response.json().catch(() => ({}));
     if (result.skipped) return;
-    if (response.ok && result.ok) showToast("Also saved to your firm's Google Drive.", "success");
-    else showToast(`Downloaded to this computer, but not saved to Google Drive: ${result.error || "the upload failed"}.`, "warning");
+    if (response.ok && result.ok) showToast(`Also saved to your firm's ${result.provider === "microsoft" ? "OneDrive" : "Google Drive"}.`, "success");
+    else showToast(`Downloaded to this computer, but not saved to cloud storage: ${result.error || "the upload failed"}.`, "warning");
   } catch (_) {
     showToast("Downloaded to this computer, but not saved to Google Drive (connection problem).", "warning");
   }

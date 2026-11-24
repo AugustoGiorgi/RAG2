@@ -65,8 +65,10 @@ test("all Gmail send workflows share one permission manager and report real deli
   const html = read("index.html");
   const css = read("styles.css");
 
-  assert.ok((app.match(/runWithGooglePermission\("gmail"/g) || []).length >= 5);
-  assert.match(app, /Sending email through Gmail/);
+  for (const context of ["estimated", "request", "deliverable"]) assert.match(app, new RegExp(`runWithEmailPermission\\("${context}"`));
+  assert.match(app, /runWithGooglePermission\("gmail", action\)/);
+  assert.match(app, /function emailSendPath\(provider\).*\/api\/deliverable\/send-gmail/);
+  assert.match(app, /Sending email through \$\{service\}/);
   assert.match(app, /Email sent successfully/);
   assert.match(app, /showToast\("Preparing attachments\.\.\.", "info", \{ persistent: true, loading: true \}\)/);
   assert.match(server, /gmail\.googleapis\.com\/gmail\/v1\/users\/me\/messages\/send/);
