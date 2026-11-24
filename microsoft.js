@@ -21,6 +21,7 @@ window.MicrosoftConnection = (() => {
       header.textContent = status.connected ? `Microsoft: ${status.email || "connected"}` : "Connect Microsoft";
       header.classList.toggle("success", Boolean(status.connected));
     }
+    updateAvailability();
     renderGmailStatus();
     return status;
   }
@@ -68,6 +69,17 @@ window.MicrosoftConnection = (() => {
     return providers[context] === "outlook" ? { authorized: status.mailAuthorized, email: status.email } : deliverableState.gmailStatus || {};
   }
   function provider(context) { return providers[context] || "gmail"; }
+  function updateAvailability() {
+    document.querySelectorAll(".microsoft-file-button, #microsoftHeaderStatus").forEach(button => { button.hidden = !status.enabled; });
+    document.querySelectorAll("[data-mail-provider]").forEach(selectEl => {
+      const option = selectEl.querySelector('option[value="outlook"]');
+      if (option) option.disabled = !status.enabled;
+      // Keep an explicitly selected Outlook sender visible if configuration becomes unavailable.
+      // Never silently replace a selected sender with Gmail.
+      const control = selectEl.closest(".mail-provider-control");
+      if (control) control.hidden = !status.enabled && provider(selectEl.dataset.mailProvider) !== "outlook";
+    });
+  }
   function select(context, value) {
     providers[context] = value === "outlook" ? "outlook" : "gmail";
     renderGmailStatus();
@@ -89,6 +101,7 @@ window.MicrosoftConnection = (() => {
     if (!anchor || document.getElementById(id)) return;
     const button = document.createElement("button");
     button.id = id; button.type = "button"; button.className = "ghost-button small-button microsoft-file-button";
+    button.hidden = !status.enabled;
     button.textContent = label; button.addEventListener("click", action);
     anchor.insertAdjacentElement("afterend", button);
   }
@@ -103,6 +116,7 @@ window.MicrosoftConnection = (() => {
       const google = document.getElementById("driveHeaderStatus");
       const button = document.createElement("button");
       button.id = "microsoftHeaderStatus"; button.className = "topbar-button"; button.type = "button"; button.textContent = "Connect Microsoft";
+      button.hidden = !status.enabled;
       button.onclick = accountDialog;
       google?.insertAdjacentElement("afterend", button);
     }
@@ -110,6 +124,7 @@ window.MicrosoftConnection = (() => {
       selectEl.value = provider(selectEl.dataset.mailProvider);
       selectEl.onchange = () => select(selectEl.dataset.mailProvider, selectEl.value);
     });
+    updateAvailability();
   }
   function accountDialog() {
     const dialog = document.createElement("dialog"); dialog.className = "microsoft-dialog microsoft-account";

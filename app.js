@@ -3530,6 +3530,7 @@ function setupDriveUploadButtons() {
   // Planning was the one tab with an upload box and no way to reach Drive at all.
   addDriveButtonAfterInput("planningFiles", "planning-client");
   addDriveButtonAfterInput("planningLibFile", "planning-library");
+  window.MicrosoftConnection?.setup();
 }
 
 function addDriveButtonAfterInput(inputId, zoneId) {
@@ -10931,7 +10932,7 @@ function renderFirmDrive(status) {
   if (status.configured) firmStorageProvider = status.provider || "google";
   const service = firmStorageProvider === "microsoft" ? "OneDrive" : "Google Drive";
   const connected = firmStorageProvider === "microsoft" ? status.microsoftConnected : status.googleConnected;
-  if (status.canManage && !status.configured) parts.push(`<label class="mail-provider-control">Storage <select id="firmStorageProvider"><option value="google" ${firmStorageProvider === "google" ? "selected" : ""}>Google Drive</option><option value="microsoft" ${firmStorageProvider === "microsoft" ? "selected" : ""}>OneDrive</option></select></label>`);
+  if (status.canManage && !status.configured) parts.push(`<label class="mail-provider-control">Storage <select id="firmStorageProvider"><option value="google" ${firmStorageProvider === "google" ? "selected" : ""}>Google Drive</option><option value="microsoft" ${firmStorageProvider === "microsoft" ? "selected" : ""} ${status.microsoftEnabled ? "" : "disabled"}>OneDrive</option></select></label>`);
   if (status.configured) {
     const folder = status.folderUrl
       ? `<a href="${escapeHtml(status.folderUrl)}" target="_blank" rel="noopener">${escapeHtml(status.folderName || "your Drive folder")}</a>`

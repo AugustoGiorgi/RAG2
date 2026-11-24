@@ -2,8 +2,10 @@
 
 Google's credentials, approved scopes, accounts and recovery-email sender are unchanged.
 Microsoft is an optional, separate delegated connection. With missing Microsoft credentials
-or a missing token-encryption key, connection attempts show a configuration message instead
-of starting OAuth. Argentina is not changed.
+or a missing token-encryption key, Microsoft upload buttons and new Outlook selections are
+hidden/disabled, so existing users retain the Google-only experience. Direct connection attempts
+show a configuration message instead of starting OAuth. An explicitly selected Outlook sender is
+never silently replaced with Gmail if configuration becomes unavailable. Argentina is not changed.
 
 ## App Registration
 
