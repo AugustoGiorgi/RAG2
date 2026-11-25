@@ -126,3 +126,20 @@ test("todo junto sobre un informe", () => {
   assert.strictEqual(review.verifiedItems.length, 1);
   assert.strictEqual(dropped, 4);
 });
+
+test("los digitos de un SSN del paquete se enmascaran aunque lleguen sin guiones ni etiqueta", () => {
+  const { knownSsnsOf, prepareReviewForDelivery } = require("../lib/report-delivery");
+  // Caso real (cifras inventadas): el cliente nombro un archivo con la clave para abrirlo, que
+  // era el SSN, y el informe lo citaba con seis de sus digitos.
+  const ssns = knownSsnsOf(["Your social security number 412-55-7788 Spouse 398-21-6604"]);
+  assert.deepStrictEqual(ssns, ["412557788", "398216604"]);
+  const review = {
+    issues: [{ issueDescription: "557788 to open 2025 K-1 Package.pdf is password-protected; 412557788 to open invoice.pdf too.", evidence: "EIN 95-3699305; total 1,557,788; amount 557789." }],
+    openQuestions: ["Obtain '255778 to open' file."],
+  };
+  const out = prepareReviewForDelivery(review, { knownSsns: ssns }).review;
+  assert.strictEqual(out.issues[0].issueDescription, "**7788 to open 2025 K-1 Package.pdf is password-protected; *****7788 to open invoice.pdf too.");
+  assert.strictEqual(out.issues[0].evidence, "EIN 95-3699305; total 1,557,788; amount 557789.", "un EIN, un importe con comas y otra cifra no se tocan");
+  assert.strictEqual(out.openQuestions[0], "Obtain '****** to open' file.", "un pedazo del medio se enmascara entero");
+  assert.strictEqual(prepareReviewForDelivery(review, {}).review.issues[0].issueDescription, review.issues[0].issueDescription, "sin SSN conocidos queda como estaba");
+});

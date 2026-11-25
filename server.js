@@ -47,7 +47,7 @@ const { stripCostData } = require("./lib/cost-privacy");
 const { SECTIONS, firmKey, sectionsForRoute, normalizeSections, allowedSections, setFirmSections } = require("./lib/firm-access");
 const { selectPages, removalNotice, sizes, collapseLeaders, dedupePages, duplicateNotice, dropPrintedPages, printedPagesNotice, returnStates, omittedFiles, omissionNote } = require("./lib/package-trim");
 const { collectImages, unreadFilesOf, unreadNote, imageDocumentNames } = require("./lib/review-attachments");
-const { prepareReviewForDelivery, maskText: maskSensitiveText } = require("./lib/report-delivery");
+const { prepareReviewForDelivery, maskText: maskSensitiveText, knownSsnsOf } = require("./lib/report-delivery");
 const { fitToCeiling, primaryRates, fallbackExposure } = require("./lib/cost-ceiling");
 const { verifyAbsenceClaims, verifyIdentityAbsenceRows, verifyConditionalFormClaims, calibrateSmallDollarSeverity, verifyAttachmentClaims, verifyWorkpaperClaims, verifyDepreciationClaims, verifyContinuityClaims, verifySupportCoverage, foldFindingsRepeatedBy, checkUnusedReconcilingLines, nameAutomatedReferences, settleChecklistAnswers } = require("./lib/review-guards");
 const { checkListedPropertyDepreciation, verifiedDepreciation } = require("./lib/depreciation-check");
@@ -11338,17 +11338,20 @@ async function handleReview(req, res) {
     // Lo ultimo antes de que el informe salga: se ve en pantalla, se exporta a Word y se guarda
     // en el historial, asi que va sin identificadores completos, sin pedidos que nadie hizo y
     // sin formularios de firma reportados como faltantes. Ver lib/report-delivery.js.
+    // Los SSN impresos en cualquier archivo del paquete (declaraciones, W-2, K-1, un ZIP con
+    // todo): sus digitos se enmascaran tambien cuando el informe los cita sin guiones.
+    const knownSsns = knownSsnsOf((payload?.files || []).map((file) => file?.extractedText || file?.text || ""));
     if (review) {
-      const delivered = prepareReviewForDelivery(review, { userNotes: payload?.metadata?.userNotes });
+      const delivered = prepareReviewForDelivery(review, { userNotes: payload?.metadata?.userNotes, knownSsns });
       review = delivered.review;
       if (delivered.dropped) console.log(`[Review] ${delivered.dropped} linea(s) sacadas antes de entregar: pedidos no hechos o formularios de firma reportados como faltantes.`);
     }
     // El texto crudo del modelo tambien sale: se guarda en el historial y, si el armado fallo,
     // se muestra tal cual. Lleva la misma mascara que el informe.
-    if (rawFallback) rawFallback = maskSensitiveText(rawFallback);
+    if (rawFallback) rawFallback = maskSensitiveText(rawFallback, knownSsns);
 
     const reviewUsage = totalReviewUsage([finalResult.data.usage, ...extraUsage]);
-    const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, maskSensitiveText(rawFallback || textBlocks)) : null;
+    const savedReviewHistory = review ? saveReviewHistoryFromResult(payload, review, maskSensitiveText(rawFallback || textBlocks, knownSsns)) : null;
 
     endHeartbeatResponse(res, {
       ok: true,
