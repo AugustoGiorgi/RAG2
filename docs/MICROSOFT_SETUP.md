@@ -30,6 +30,21 @@ never silently replaced with Gmail if configuration becomes unavailable. Argenti
 
 Official instructions: https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-register-app
 
+### Publisher Domain
+
+After setting `MICROSOFT_CLIENT_ID` on the server, Branding & properties > Publisher
+domain > Verify a new domain can verify `ragtax-ia.com`. The public endpoint
+`https://ragtax-ia.com/.well-known/microsoft-identity-association.json` exposes only
+the configured public application ID. With no configured ID, its application list is empty.
+Do not expose the client secret or token cache in this document.
+
+Domain verification is not Microsoft publisher verification (the verified badge).
+The latter requires a verified Microsoft AI Cloud Partner Program account. External
+organizations can require administrator consent or block unverified publishers;
+do not weaken their consent policies to bypass this requirement.
+See https://learn.microsoft.com/en-us/entra/identity-platform/howto-configure-publisher-domain
+and https://learn.microsoft.com/en-us/entra/identity-platform/publisher-verification-overview.
+
 ## Server Configuration
 
 Set these in the existing protected USA environment file, not in Argentina:

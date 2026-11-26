@@ -56,7 +56,7 @@ before(async () => {
 
   child = spawn(process.execPath, ["server.js"], {
     cwd: ROOT,
-    env: { ...process.env, DATA_DIR: dataDir, PORT: String(PORT), AUTH_SECRET: "test-secret-0123456789-0123456789-xx", DATABASE_URL: "" },
+    env: { ...process.env, DATA_DIR: dataDir, PORT: String(PORT), AUTH_SECRET: "test-secret-0123456789-0123456789-xx", DATABASE_URL: "", MICROSOFT_CLIENT_ID: "11111111-2222-4333-8444-555555555555" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let bootLog = "";
@@ -91,6 +91,15 @@ test("sin sesión: la raíz sirve la landing pública y la API exige auth", asyn
   assert.match(await landing.text(), /RAG Tax AI/);
   const apiRes = await fetch(`${BASE}/api/clients`);
   assert.strictEqual(apiRes.status, 401);
+});
+
+test("Microsoft publisher verification is public and exposes only the client ID", async () => {
+  const response = await fetch(`${BASE}/.well-known/microsoft-identity-association.json`);
+  assert.strictEqual(response.status, 200);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.deepStrictEqual(await response.json(), {
+    associatedApplications: [{ applicationId: "11111111-2222-4333-8444-555555555555" }],
+  });
 });
 
 test("admin crea cliente + sesión + tarea de tracker", async () => {

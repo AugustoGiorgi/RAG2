@@ -946,6 +946,11 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     if (req.method === "GET" && requestUrl.pathname === "/privacy") { servePrivacyPolicy(res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/eula") { serveEula(res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/terms") { serveEula(res); return; }
+    if (req.method === "GET" && requestUrl.pathname === "/.well-known/microsoft-identity-association.json") {
+      const clientId = String(process.env.MICROSOFT_CLIENT_ID || "").trim();
+      sendJson(res, 200, { associatedApplications: clientId ? [{ applicationId: clientId }] : [] });
+      return;
+    }
     if ((req.method === "GET" || req.method === "HEAD") && requestUrl.pathname === "/site.webmanifest") { await serveWebManifest(req, res); return; }
     if (!requireAuthenticated(req, res)) return;
     if (req.user.mustChangePassword) {
