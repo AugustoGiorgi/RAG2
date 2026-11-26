@@ -82,6 +82,12 @@ For localhost development register a separate exact Web redirect and set
   and SharePoint site libraries are not supported by this first version.
 - Authorization uses PKCE, nonce, single-use ten-minute state bound to the current RAG
   session. Only the popup navigates away. Expired sessions require a new sign-in.
+- A per-attempt marker allows the app to detect completed authorization through its
+  authenticated status endpoint when Microsoft severs `window.opener`. Grants from a
+  different attempt cannot resume a pending action.
+- New personal accounts may need to open OneDrive on Microsoft's website once before
+  their storage is available. Personal downloads can use the exact Microsoft Graph
+  redirect host `my.microsoftpersonalcontent.com`; Graph bearer tokens are never sent there.
 - MSAL caches are AES-256-GCM encrypted per RAG username, in
   `DATA_DIR/microsoft-tokens/<sha256-of-username>.json`, with private directory/file modes
   and atomic per-user writes. Tokens never go to the browser. Back up that directory with

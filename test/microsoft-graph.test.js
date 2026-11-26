@@ -31,8 +31,23 @@ test("file download never forwards the bearer token to Microsoft's download host
   assert.equal(result.contentBase64, "YWJj"); assert.equal(f.requests[2].headers, undefined);
   assert.equal(result.oneDriveFileId, "file1");
 });
+
+test("personal OneDrive content downloads without forwarding the Graph token", async () => {
+  const f = fixture(url => url.includes("?$select") ? json({ id: "file1", name: "welcome.pdf", size: 3, file: { mimeType: "application/pdf" } })
+    : url.endsWith("/content") ? new Response(null, { status: 302, headers: { location: "https://my.microsoftpersonalcontent.com/personal/download?token=private" } }) : new Response("abc"));
+  assert.equal((await f.graph.readFile("alice", "file1")).contentBase64, "YWJj");
+  assert.equal(f.requests[2].headers, undefined);
+  assert.equal(f.requests[2].redirect, "manual");
+  assert.throws(() => safeDownloadUrl("https://my.microsoftpersonalcontent.com/upload", true));
+});
+
+test("an uninitialized root drive explains how to activate OneDrive", async () => {
+  const f = fixture(() => json({ error: { code: "itemNotFound" } }, 404));
+  await assert.rejects(f.graph.list("alice"), /Open OneDrive on Microsoft's website once/);
+  await assert.rejects(f.graph.list("alice", { folderId: "deleted" }), /no longer exists/);
+});
 test("download host validation rejects spoofing, credentials and plaintext", () => {
-  for (const url of ["https://sharepoint.com.evil.example/file", "https://u:p@tenant.sharepoint.com/file", "http://tenant.sharepoint.com/file", "https://tenant.sharepoint.com:444/file", "https://127.0.0.1/file"]) assert.throws(() => safeDownloadUrl(url));
+  for (const url of ["https://sharepoint.com.evil.example/file", "https://u:p@tenant.sharepoint.com/file", "http://tenant.sharepoint.com/file", "https://tenant.sharepoint.com:444/file", "https://127.0.0.1/file", "https://my.microsoftpersonalcontent.com.evil.example/file", "https://evil.my.microsoftpersonalcontent.com/file", "https://microsoftpersonalcontent.com/file", "https://u:p@my.microsoftpersonalcontent.com/file", "http://my.microsoftpersonalcontent.com/file", "https://my.microsoftpersonalcontent.com:444/file"]) assert.throws(() => safeDownloadUrl(url));
 });
 test("download stops files exceeding the stream limit even when metadata lies", async () => {
   const f = fixture(url => url.includes("?$select") ? json({ id: "file1", name: "tax.pdf", size: 1, file: {} }) : new Response("123456"), { maxFileBytes: 5 });

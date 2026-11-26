@@ -37,6 +37,7 @@ window.MicrosoftConnection = (() => {
     try {
       if (errorMessage) throw new Error(errorMessage);
       await refresh();
+      if (status.connectionId !== action.attempt) throw new Error("This Microsoft connection was not completed. Start it again from the app.");
       if (!status[purposeFlag[action.purpose]]) throw new Error("Microsoft did not grant the requested permission. Reconnect from the relevant action.");
       showToast(`Microsoft connected${status.email ? " as " + status.email : ""}.`, "success");
       await action.callback?.();
@@ -45,15 +46,31 @@ window.MicrosoftConnection = (() => {
   }
   function connect(purpose = "drive", callback) {
     if (!status.enabled) { showToast("Microsoft is not configured on this server yet. Ask the administrator to complete the Microsoft app registration.", "warning"); return; }
-    if (pending) { try { popup?.focus(); } catch {} return; }
-    popup = window.open("/auth/microsoft?purpose=" + encodeURIComponent(purpose), "microsoft-oauth", "width=540,height=740,scrollbars=yes,resizable=yes");
+    if (pending) {
+      if (!popup?.closed) { try { popup?.focus(); } catch {} return; }
+      pending = null; stop();
+    }
+    const attempt = crypto.randomUUID();
+    popup = window.open("/auth/microsoft?purpose=" + encodeURIComponent(purpose) + "&attempt=" + attempt, "microsoft-oauth", "width=540,height=740,scrollbars=yes,resizable=yes");
     if (!popup) { showToast("Allow pop-ups for this site to connect Microsoft.", "warning"); return; }
-    pending = { purpose, callback };
+    const action = { purpose, callback, attempt };
+    pending = action;
     const started = Date.now();
-    poll = setInterval(() => {
+    let checking = false;
+    poll = setInterval(async () => {
+      if (pending !== action || checking || completing) return;
       if (Date.now() - started > 10 * 60000) { complete("Microsoft connection timed out. Please try again."); return; }
-      if (popup?.closed) complete();
-    }, 700);
+      checking = true;
+      try {
+        // Microsoft can sever window.opener; match this attempt against the authenticated server.
+        const current = await api("/api/microsoft/status");
+        if (pending === action && current.connectionId === attempt && current[purposeFlag[purpose]]) {
+          try { popup?.close(); } catch {}
+          await complete();
+        }
+      } catch { /* Transient status errors can recover until the bounded timeout. */ }
+      finally { checking = false; }
+    }, 1500);
     try { popup.focus(); } catch {}
   }
   window.addEventListener("message", event => {

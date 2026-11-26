@@ -33,8 +33,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     assert.equal((await page.request.post(base + "/api/login", { data: { username: "ui_member", password } })).status(), 200);
     const actualStatus = await page.request.get(base + "/api/microsoft/status"); assert.equal((await actualStatus.json()).enabled, false);
     const denied = await page.request.post(base + "/api/microsoft/disconnect", { data: {}, headers: { Origin: "https://evil.example" } }); assert.equal(denied.status(), 403);
-    let msEnabled = false, msConnected = true, largeMail = false, reads = 0, releaseRead, sentPayload, microsoftSends = 0, gmailSends = 0;
-    await page.route("**/api/microsoft/status", route => route.fulfill({ json: { enabled: msEnabled, connected: msConnected, email: "member@outlook.com", driveAuthorized: msConnected, mailAuthorized: msConnected, writeAuthorized: msConnected, largeMailAuthorized: largeMail } }));
+    let msEnabled = false, msConnected = true, largeMail = false, connectionId = "", reads = 0, releaseRead, sentPayload, microsoftSends = 0, gmailSends = 0;
+    await page.route("**/api/microsoft/status", route => route.fulfill({ json: { enabled: msEnabled, connected: msConnected, connectionId, email: "member@outlook.com", driveAuthorized: msConnected, mailAuthorized: msConnected, writeAuthorized: msConnected, largeMailAuthorized: largeMail } }));
     await page.route("**/api/microsoft/drive/list?*", route => {
       const folder = new URL(route.request().url()).searchParams.get("folderId");
       return route.fulfill({ json: folder === "root" ? { folders: [{ id: "folder1", name: "Tax returns 2026" }], files: [], nextPageToken: null } : { folders: [], files: [{ id: "file1", name: "Reviewed tax return.pdf", size: 3, mimeType: "application/pdf" }], nextPageToken: null } });
@@ -113,8 +113,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     });
     assert.equal(gmailSends, 1); assert.equal(microsoftSends, 3);
     const parentUrl = page.url();
-    await page.context().route("**/auth/microsoft?purpose=mail_large", route => {
+    await page.context().route("**/auth/microsoft?purpose=mail_large&attempt=*", route => {
       largeMail = true;
+      connectionId = new URL(route.request().url()).searchParams.get("attempt");
       return route.fulfill({ contentType: "text/html", body: '<script>window.opener.postMessage({type:"microsoft_connected"},location.origin);setTimeout(()=>window.close(),50)</script>' });
     });
     await page.evaluate(() => { MicrosoftConnection.select("deliverable", "outlook"); emailSendError({ code: "MICROSOFT_PERMISSION_REQUIRED", purpose: "mail_large" }, "deliverable"); });

@@ -5406,7 +5406,7 @@ async function handleAdminBudgetGroupsApi(req, res, requestUrl) {
 
 function microsoftCallbackHtml(ok, message) {
   const payload = JSON.stringify({ type: ok ? "microsoft_connected" : "microsoft_oauth_error", message }).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Microsoft connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);setTimeout(function(){window.close();},200);}</script></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Microsoft connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);}setTimeout(function(){window.close();},200);</script></body></html>`;
 }
 
 async function handleMicrosoftAuth(req, res, url) {
@@ -5418,7 +5418,7 @@ async function handleMicrosoftAuth(req, res, url) {
     if (isRateLimited(req, `microsoft:oauth:${session.username}`, 20, 60000)) throw Object.assign(new Error("Too many connection attempts. Please wait."), { statusCode: 429 });
     const binding = hmac(parseCookies(req.headers.cookie || "")[SESSION_COOKIE_NAME] || "");
     if (url.pathname === "/auth/microsoft") {
-      redirect(res, await microsoftAuth.start(session.username, binding, url.searchParams.get("purpose") || "drive"));
+      redirect(res, await microsoftAuth.start(session.username, binding, url.searchParams.get("purpose") || "drive", url.searchParams.get("attempt") || ""));
       return;
     }
     await microsoftAuth.finish(session.username, binding, Object.fromEntries(url.searchParams));

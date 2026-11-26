@@ -48,8 +48,8 @@ function fixture(t, overrides = {}) {
     ...overrides,
   };
   const auth = createMicrosoftAuth(config);
-  async function connect(username = "alice", binding = "session-a", purpose = "drive") {
-    const url = await auth.start(username, binding, purpose);
+  async function connect(username = "alice", binding = "session-a", purpose = "drive", attempt = "") {
+    const url = await auth.start(username, binding, purpose, attempt);
     return auth.finish(username, binding, { state: new URL(url).searchParams.get("state"), code: "synthetic-code" });
   }
   return { auth, requests, directory, connect, advance: ms => { now += ms; }, account: (account, scopes) => { next = account; granted = scopes; }, silentError: error => { silentError = error; } };
@@ -91,6 +91,22 @@ test("tokens are encrypted, isolated by user, silently refreshed and absent from
   assert.equal(await f.auth.token("alice", "drive"), "PRIVATE_ACCESS_TOKEN");
   await assert.rejects(f.auth.token("bob", "drive"), /Connect Microsoft/);
   await assert.rejects(f.auth.token("alice", "mail"), /Connect Microsoft/);
+});
+
+test("only a completed session-bound attempt changes the public connection marker", async t => {
+  const f = fixture(t);
+  const attempt = crypto.randomUUID();
+  const url = await f.auth.start("alice", "session-a", "drive", attempt);
+  assert.equal(f.auth.status("alice").connectionId, "");
+  const completed = await f.auth.finish("alice", "session-a", { state: new URL(url).searchParams.get("state"), code: "code" });
+  assert.equal(completed.connectionId, attempt);
+  await f.auth.token("alice", "drive");
+  assert.equal(f.auth.status("alice").connectionId, attempt);
+  assert.equal(f.auth.status("bob").connectionId, "");
+  await f.connect("bob", "session-b", "drive", crypto.randomUUID());
+  assert.equal(f.auth.status("alice").connectionId, attempt);
+  await assert.rejects(f.auth.start("alice", "session-a", "drive", "invalid-marker"), /Invalid/);
+  await assert.rejects(f.auth.start("alice", "session-a", "drive", {}), /Invalid/);
 });
 test("switching Microsoft accounts never carries over the old account's permissions", async t => {
   const f = fixture(t); await f.connect();
