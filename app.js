@@ -8857,7 +8857,8 @@ async function performDeliverableGmailSend(triggerButton) {
     els.gmailSendResult.innerHTML = `<div class="send-success-banner">${successMessage}<br>Sent to: ${escapeHtml(payload.to)}${data.messageId ? `<br>Message ID: ${escapeHtml(data.messageId)}` : ""}</div>`;
     showToast(successMessage, "success");
     deliverableState.sendHistory.unshift(record);
-    renderDeliverableSendHistory();
+    try { renderDeliverableSendHistory(); }
+    catch (_) { showToast("Email sent, but its local history could not be displayed.", "warning"); }
     try {
       await autosaveSession({
         deliverableResult: { draft: deliverableState.draft, sent: record },
@@ -12259,6 +12260,13 @@ function normalizedArea(issue) {
   return String(issue.areaReviewed || issue.category || issue.formOrSchedule || "").toLowerCase();
 }
 
+
+function formatDateTime(value) {
+  if (value === undefined || value === null || value === "") return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "-";
+  return date.toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 function formatBytes(bytes) {
   if (!bytes) return "0 KB";
