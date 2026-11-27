@@ -8735,3 +8735,28 @@ body {
 #results .client-list li { margin: 4px 0; color: #1f2937; font-size: 0.88rem; line-height: 1.5; }
 #results .client-list-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 #results .client-list-status { font-size: 0.82rem; color: #475467; }
+
+/* Unfinished-session offer: a bar that does not block the page (it replaced a window.confirm).
+   Bottom left, so it never sits under the toasts on the right. */
+.session-restore-bar {
+  position: fixed;
+  left: 24px;
+  bottom: 24px;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 48px));
+  padding: 12px 14px;
+  background: #ffffff;
+  border: 1px solid #bfdbfe;
+  border-left: 4px solid #1d4ed8;
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  color: #0f172a;
+  font-size: 0.9rem;
+}
+.session-restore-bar span { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 600px) {
+  .session-restore-bar { left: 16px; right: 16px; max-width: none; flex-wrap: wrap; }
+}

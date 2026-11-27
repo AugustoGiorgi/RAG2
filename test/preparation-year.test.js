@@ -84,7 +84,7 @@ const grab = (name) => {
 const buildPreparerContent = new Function(
   "preparationPeriodRule", "equityFactsPrompt", "partialSheetsNote", "softwareDisplayName", "RECONCILIATION_PROMPT_LINES",
   "collectScannedPdfDocuments", "stripAmountsFromTemplate", "csvTextFromTemplates", "stripFinancialAmountsFromText", "safeJsonForPrompt",
-  `${grab("buildPreparerContent")}\nreturn buildPreparerContent;`,
+  `${grab("buildPreparerContent")}\n${grab("preparationImageBlocks")}\nreturn buildPreparerContent;`,
 )(
   preparationPeriodRule, () => "", () => "", () => "ProConnect Tax", [], () => ({ scannedDocs: [], skippedScans: [] }),
   (x) => x, () => "", (x) => x, () => "",

@@ -16204,7 +16204,7 @@ function buildPreparerContent(payload) {
   // Caps stay well under the API's 100-page / request-size limits: max 5 docs, 5 MB each,
   // 15 MB total. Anything beyond the caps is announced as NOT attached so the model
   // flags it instead of silently missing data.
-  const { scannedDocs, skippedScans } = collectScannedPdfDocuments(payload);
+  const { scannedDocs, skippedScans, scannedImages } = collectScannedPdfDocuments(payload);
   if (scannedDocs.length) {
     content.push({
       type: "text",
@@ -16218,8 +16218,35 @@ function buildPreparerContent(payload) {
       });
     }
   }
+  // Photos and screenshots (loose or inside a ZIP). What was skipped is already named above
+  // when there were scanned PDFs.
+  content.push(...preparationImageBlocks(scannedImages, scannedDocs.length ? [] : skippedScans));
 
   return content;
+}
+
+/**
+ * Preparation: the pictures in the package, each after a line with its file name. Before this,
+ * Preparation attached scanned PDFs only, and a W-2 photographed with a phone reached the model
+ * as a bare file name. Images come already shrunk to JPEG by the browser (imageForReview) and
+ * capped by collectImages (lib/review-attachments.js), like the Review's.
+ */
+function preparationImageBlocks(images = [], skipped = []) {
+  const list = Array.isArray(images) ? images : [];
+  const left = Array.isArray(skipped) ? skipped.filter(Boolean) : [];
+  if (!list.length && !left.length) return [];
+  const notAttached = left.length ? ` NOT ATTACHED (size or count limits — flag as pending in aiNotes): ${left.join("; ")}.` : "";
+  const blocks = [{
+    type: "text",
+    text: list.length
+      ? `IMAGE FILES ATTACHED (${list.length}): these uploads are pictures (photos, screenshots or scans saved as images), so nothing printed in them appears in the file text above. Each one follows below, right after a line with its file name. READ THEM VISUALLY and extract every reportable amount exactly as printed (payer or employer, form, box numbers, amounts, withholding, dates). Use them as supporting_document unless the user's instructions say otherwise, and do NOT report them as missing: ${list.map((image) => image.name).join("; ")}.${notAttached}`
+      : notAttached.trim(),
+  }];
+  for (const image of list) {
+    blocks.push({ type: "text", text: `Image file: ${image.name}` });
+    blocks.push({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } });
+  }
+  return blocks;
 }
 
 // Returns true when a cell holds a pure financial amount / date / percentage

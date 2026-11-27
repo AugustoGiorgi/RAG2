@@ -3506,8 +3506,8 @@ const DRIVE_SVG = `<svg viewBox="0 0 87.3 78" aria-hidden="true"><path d="m6.6 6
 // Each list matches what the same box accepts from the computer (its <input accept>): a file
 // type the computer upload takes must not be hidden in the Drive or OneDrive picker.
 const DRIVE_ZONE_CONFIG = {
-  "prep-package": { title: "Select Preparation Files", subtitle: "Select prior-year workpapers, current-year reports, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
-  "review-package": { title: "Select Review Package Files", subtitle: "Select returns, workpapers, support documents, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
+  "prep-package": { title: "Select Preparation Files", subtitle: "Select prior-year workpapers, current-year reports, photos of documents, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip", "image"], multiSelect: true },
+  "review-package": { title: "Select Review Package Files", subtitle: "Select returns, workpapers, support documents, photos, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip", "image"], multiSelect: true },
   "knowledge-base": { title: "Select Knowledge Base Files", subtitle: "Select client-specific technical references", allowedTypes: ["pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "json", "md", "zip"], multiSelect: true },
   "review-examples": { title: "Select Review Example Files", subtitle: "Select sample reviews, notes, or formatting examples", allowedTypes: ["pdf", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
   "notice-document": { title: "Select Notice Document", subtitle: "Select the IRS or state notice", allowedTypes: ["pdf", "image"], multiSelect: false },
@@ -5250,10 +5250,46 @@ async function checkRestoreSession() {
   if (!currentSessionId) return;
   const saved = dashboardSessions.find((session) => session.id === currentSessionId);
   if (!saved || saved.status === "archived") return;
-  const clientName = saved.client?.name || "Unnamed client";
-  if (window.confirm(`You have an unfinished session for ${clientName} - ${saved.returnType || "Return"} ${saved.taxYear || ""}. Continue?`)) {
-    await openSavedSession(currentSessionId);
-  }
+  showSessionRestoreBar(saved);
+}
+
+/**
+ * Offer to resume the unfinished session without blocking the page.
+ *
+ * It used to be a window.confirm on every load. Its "Cancel" only skipped the restore and kept
+ * the session as the current one, so the same question came back on the next reload, forever,
+ * and neither button said what it did. Now "Resume" reopens it, and "Start over" forgets it in
+ * this browser (the session itself stays saved in the dashboard), so the bar does not return.
+ */
+function showSessionRestoreBar(saved) {
+  document.getElementById("sessionRestoreBar")?.remove();
+  const label = `${saved.client?.name || "Unnamed client"} - ${saved.returnType || "Return"} ${saved.taxYear || ""}`.trim();
+  const bar = document.createElement("div");
+  bar.id = "sessionRestoreBar";
+  bar.className = "session-restore-bar";
+  bar.setAttribute("role", "status");
+  const text = document.createElement("span");
+  text.textContent = `Unfinished session: ${label}`;
+  const resume = document.createElement("button");
+  resume.type = "button";
+  resume.className = "primary-button small-button";
+  resume.textContent = "Resume";
+  resume.addEventListener("click", async () => {
+    bar.remove();
+    await openSavedSession(saved.id);
+  });
+  const startOver = document.createElement("button");
+  startOver.type = "button";
+  startOver.className = "ghost-button small-button";
+  startOver.textContent = "Start over";
+  startOver.addEventListener("click", () => {
+    bar.remove();
+    currentSessionId = "";
+    try { localStorage.removeItem("taxapp_current_session_id"); } catch (_) { /* private mode */ }
+    showToast("Starting over. The saved session stays in the dashboard.", "success");
+  });
+  bar.append(text, resume, startOver);
+  document.body.append(bar);
 }
 
 async function autosaveSession(update = {}) {
@@ -9004,6 +9040,21 @@ async function imageForReview(file) {
   }
 }
 
+/**
+ * A loose picture ready to attach, like imageForReview. Files imported from Google Drive or
+ * OneDrive are plain objects with base64 `content`, not Blobs, so they are turned into one first.
+ */
+async function looseImageForReview(file) {
+  const blob = isBase64BackedFile(file)
+    ? new Blob([base64ToArrayBuffer(file.content || "")], { type: file.type || guessMediaType(file.name) })
+    : file;
+  const image = await imageForReview(blob);
+  return { ...image, name: displayFileName(file) };
+}
+
+/** The tabs (besides the Review, which passes zipImages) whose server reads `scannedImages`. */
+const LOOSE_IMAGE_TYPES = new Set(["preparationPackage"]);
+
 // `zipImages` lo pide solo la Review: las otras pestañas comparten esta funcion y su servidor
 // no lee imagenes, asi que para ellas un ZIP se prepara exactamente como antes.
 async function prepareFileForReview({ file, type, zipImages = false }) {
@@ -9076,6 +9127,18 @@ async function prepareFileForReview({ file, type, zipImages = false }) {
     } catch (error) {
       console.warn("DOCX parse failed:", error);
       return { ...base, encoding: "metadata-only" };
+    }
+  }
+
+  // A photo or screenshot uploaded on its own (from the computer, Drive or OneDrive). Review
+  // and Preparation used to read pictures only inside a ZIP; a loose JPG went as name only and
+  // the model never saw it. It now travels exactly like a ZIP's pictures, in `scannedImages`.
+  if ((zipImages || LOOSE_IMAGE_TYPES.has(type)) && ZIP_IMAGE_EXTENSIONS.includes(ext)) {
+    try {
+      return { ...base, encoding: "image", text: "", scannedImages: [await looseImageForReview(file)] };
+    } catch (error) {
+      console.warn("Image could not be prepared:", displayFileName(file), error);
+      return { ...base, encoding: "metadata-only", unreadEntries: [displayFileName(file)] };
     }
   }
 
