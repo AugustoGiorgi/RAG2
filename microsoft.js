@@ -126,8 +126,10 @@ window.MicrosoftConnection = (() => {
     for (const [zone, config] of Object.entries(DRIVE_ZONE_CONFIG)) {
       addButton("drive-btn-" + zone, "onedrive-btn-" + zone, "Add from OneDrive", () => pick(config, files => addFilesToZone(zone, files)));
     }
-    addButton("estAddDriveFiles", "estAddOneDriveFiles", "Add from OneDrive", () => pick({ title: "Select Estimated Tax Files", allowedTypes: ["pdf", "xlsx", "csv"], multiSelect: true }, addEstimatedDriveFiles));
-    addButton("deliverableAddDriveFiles", "deliverableAddOneDriveFiles", "Add from OneDrive", () => pick({ title: "Select Email Attachments", allowedTypes: ["pdf", "docx", "xlsx"], multiSelect: true }, files => addDeliverableFiles(files, "onedrive")));
+    // Same types as the Google Drive buttons of these tabs: everything the Estimated zones take,
+    // and any file at all as an email attachment (an empty list allows every type).
+    addButton("estAddDriveFiles", "estAddOneDriveFiles", "Add from OneDrive", () => pick({ title: "Select Estimated Tax Files", allowedTypes: typeof ESTIMATED_PICKER_TYPES !== "undefined" ? ESTIMATED_PICKER_TYPES : ["pdf", "xlsx", "xls", "csv", "docx", "doc", "txt", "image"], multiSelect: true }, addEstimatedDriveFiles));
+    addButton("deliverableAddDriveFiles", "deliverableAddOneDriveFiles", "Add from OneDrive", () => pick({ title: "Select Email Attachments", allowedTypes: [], multiSelect: true }, files => addDeliverableFiles(files, "onedrive")));
     addButton("deliverableSelectFolder", "deliverableOneDriveClient", "Client Info from OneDrive", () => pick({ title: "Select Client Info", allowedTypes: ["docx", "txt", "json", "pdf"], multiSelect: false }, files => loadDeliverableClientInfoFile(files[0])));
     if (!document.getElementById("microsoftHeaderStatus")) {
       const google = document.getElementById("driveHeaderStatus");

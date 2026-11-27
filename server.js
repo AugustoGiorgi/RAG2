@@ -381,6 +381,22 @@ const microsoftAuth = createMicrosoftAuth({
   encryptionReady: Boolean(TOKEN_ENCRYPTION_KEY_BYTES), encrypt: encryptSecretObject, decrypt: decryptSecretObject,
 });
 const microsoftGraph = createMicrosoftGraph({ auth: microsoftAuth });
+
+// www.ragtax-ia.com and ragtax-ia.com served the same app with separate sessions (the session
+// cookie is host-only). Microsoft and Google always return to the configured callback host, so a
+// user who signed in on www came back without a session and the popup closed on "Sign in to RAG
+// Tax AI before connecting Microsoft". Requests for "www." + a configured https callback host are
+// sent to that host. Nothing else is redirected, and /.well-known/ stays where it is.
+const CANONICAL_ORIGINS = [process.env.MICROSOFT_REDIRECT_URI, GOOGLE_REDIRECT_URI]
+  .map((value) => { try { const url = new URL(String(value || "")); return url.protocol === "https:" ? url : null; } catch { return null; } })
+  .filter(Boolean);
+function canonicalHostRedirect(req) {
+  const host = String(req.headers.host || "").toLowerCase();
+  const target = String(req.url || "/");
+  if (!host.startsWith("www.") || !target.startsWith("/") || target.startsWith("/.well-known/")) return "";
+  const origin = CANONICAL_ORIGINS.find((url) => `www.${url.host}` === host);
+  return origin ? `${origin.origin}${target}` : "";
+}
 const microsoftTransferLimiter = createConcurrencyLimiter({ maxActive: 4, maxQueue: 20, waitMs: 15000 });
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
@@ -905,6 +921,12 @@ const server = http.createServer((req, res) => requestScope.run(req, async () =>
     setSecurityHeaders(res);
     res.corsOrigin = getAllowedOrigin(req);
     const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+    const canonicalUrl = canonicalHostRedirect(req);
+    if (canonicalUrl) {
+      res.writeHead(["GET", "HEAD"].includes(req.method) ? 302 : 307, { location: canonicalUrl, "cache-control": "no-store" });
+      res.end();
+      return;
+    }
     if (req.method === "OPTIONS") { sendCorsPreflight(res); return; }
     if (req.method === "GET" && req.url === "/login") { await handleLoginPage(req, res); return; }
     if (req.method === "GET" && requestUrl.pathname === "/forgot-password") { sendHtml(res, 200, buildForgotPasswordPage()); return; }
@@ -5406,7 +5428,10 @@ async function handleAdminBudgetGroupsApi(req, res, requestUrl) {
 
 function microsoftCallbackHtml(ok, message) {
   const payload = JSON.stringify({ type: ok ? "microsoft_connected" : "microsoft_oauth_error", message }).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Microsoft connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);}setTimeout(function(){window.close();},200);</script></body></html>`;
+  if (ok) return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Microsoft connection</title></head><body><p>${escapeHtml(message)}</p><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);}setTimeout(function(){window.close();},200);</script></body></html>`;
+  // A failure stays open: it used to close itself after 200 ms, before anyone could read it, and
+  // when Microsoft has severed window.opener the app never hears about it either.
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Microsoft connection failed</title></head><body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:460px;margin:48px auto;padding:0 20px;color:#0f172a;line-height:1.5"><h1 style="font-size:20px;margin:0 0 12px">Microsoft connection failed</h1><p>${escapeHtml(message)}</p><p style="color:#475569;font-size:14px">Close this window and try again from RAG Tax AI.</p><button type="button" onclick="window.close()" style="background:#1d4ed8;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer">Close window</button><script>if(window.opener&&!window.opener.closed){window.opener.postMessage(${payload},window.location.origin);}</script></body></html>`;
 }
 
 async function handleMicrosoftAuth(req, res, url) {
@@ -5425,7 +5450,11 @@ async function handleMicrosoftAuth(req, res, url) {
     appendAuditLog(session, "microsoft.connected", {});
     sendHtml(res, 200, microsoftCallbackHtml(true, "Microsoft connected. You can return to RAG Tax AI."));
   } catch (error) {
-    const message = error.statusCode ? error.message : "Microsoft could not complete sign-in. Check the app registration and try again.";
+    const base = error.statusCode ? error.message : "Microsoft could not complete sign-in. Check the app registration and try again.";
+    // Microsoft's own reason (e.g. "AADSTS65004: User declined to consent..."), first line only.
+    const reason = url.pathname === "/auth/microsoft/callback" ? String(url.searchParams.get("error_description") || "").split(/\r?\n/)[0].trim().slice(0, 300) : "";
+    const message = reason ? `${base} Microsoft said: ${reason}` : base;
+    console.warn(`[Microsoft] ${url.pathname} failed (${error.statusCode || 502}): ${message}${error.statusCode ? "" : ` | ${String(error.errorCode || error.message || "").slice(0, 200)}`}`);
     sendHtml(res, error.statusCode || 502, microsoftCallbackHtml(false, message));
   }
 }
@@ -17405,7 +17434,9 @@ function buildDeliverableDraftPrompt(payload) {
     JSON.stringify(payload.preparer || {}, null, 2),
     "",
     "Attachments:",
-    JSON.stringify(payload.attachments || [], null, 2),
+    Array.isArray(payload.attachments) && payload.attachments.length
+      ? JSON.stringify(payload.attachments, null, 2)
+      : "None. This email goes without attachments: do not say anything is attached or enclosed.",
     "",
     "Return / filing context:",
     JSON.stringify(payload.context || {}, null, 2),

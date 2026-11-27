@@ -1344,6 +1344,10 @@ function setEstimatedZoneFiles(zone, files) {
   updateEstimatedCalculateAvailability();
 }
 
+// Everything the Estimated Taxes zones take from the computer, the additional-documents zone
+// included (photos, Word, text). Shared with the OneDrive button in microsoft.js.
+const ESTIMATED_PICKER_TYPES = ["pdf", "xlsx", "xls", "csv", "docx", "doc", "txt", "image"];
+
 function openEstimatedDrivePicker() {
   if (typeof DrivePicker === "undefined") {
     showToast("Google Drive picker is not available in this session.", "warning");
@@ -1354,8 +1358,8 @@ function openEstimatedDrivePicker() {
   // on exactly the tabs that skipped this check.
   openDriveWhenConnected(() => DrivePicker.open({
     title: "Select Estimated Tax Files",
-    subtitle: "Choose templates, P&L reports, balance sheets, and returns.",
-    allowedTypes: ["pdf", "xlsx", "csv"],
+    subtitle: "Choose templates, P&L reports, balance sheets, returns, W-2s, 1099s, notices or photos.",
+    allowedTypes: ESTIMATED_PICKER_TYPES,
     multiSelect: true,
     onFilesSelected: (files) => addEstimatedDriveFiles(files || []),
   }));
@@ -3499,19 +3503,21 @@ function qboReportToFile(report) {
 
 const DRIVE_SVG = `<svg viewBox="0 0 87.3 78" aria-hidden="true"><path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/><path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0 -1.2 4.5h27.5z" fill="#00ac47"/><path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.502l5.852 11.5z" fill="#ea4335"/><path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/><path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/><path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/></svg>`;
 
+// Each list matches what the same box accepts from the computer (its <input accept>): a file
+// type the computer upload takes must not be hidden in the Drive or OneDrive picker.
 const DRIVE_ZONE_CONFIG = {
-  "prep-package": { title: "Select Preparation Files", subtitle: "Select prior-year workpapers, current-year reports, or ZIP packages", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip"], multiSelect: true },
-  "review-package": { title: "Select Review Package Files", subtitle: "Select returns, workpapers, support documents, or ZIP packages", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip"], multiSelect: true },
-  "knowledge-base": { title: "Select Knowledge Base Files", subtitle: "Select client-specific technical references", allowedTypes: ["pdf", "docx", "xlsx", "txt", "csv", "zip"], multiSelect: true },
-  "review-examples": { title: "Select Review Example Files", subtitle: "Select sample reviews, notes, or formatting examples", allowedTypes: ["pdf", "docx", "txt", "zip"], multiSelect: true },
+  "prep-package": { title: "Select Preparation Files", subtitle: "Select prior-year workpapers, current-year reports, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
+  "review-package": { title: "Select Review Package Files", subtitle: "Select returns, workpapers, support documents, or ZIP packages", allowedTypes: ["pdf", "xlsx", "xls", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
+  "knowledge-base": { title: "Select Knowledge Base Files", subtitle: "Select client-specific technical references", allowedTypes: ["pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "json", "md", "zip"], multiSelect: true },
+  "review-examples": { title: "Select Review Example Files", subtitle: "Select sample reviews, notes, or formatting examples", allowedTypes: ["pdf", "docx", "doc", "txt", "csv", "json", "md", "zip"], multiSelect: true },
   "notice-document": { title: "Select Notice Document", subtitle: "Select the IRS or state notice", allowedTypes: ["pdf", "image"], multiSelect: false },
-  "notice-prior-return": { title: "Select Prior Return", subtitle: "Select the prior-year return for context", allowedTypes: ["pdf", "docx"], multiSelect: false },
+  "notice-prior-return": { title: "Select Prior Return", subtitle: "Select the prior-year return for context", allowedTypes: ["pdf", "docx", "doc", "xlsx", "xls", "txt", "csv", "json", "md"], multiSelect: false },
   "diagnostics-screenshot": { title: "Select Screenshot or Error File", subtitle: "Select an image, PDF, or text file with e-file errors", allowedTypes: ["image", "pdf", "txt"], multiSelect: false },
   "organizer-prior-return": { title: "Select Prior Year Return", subtitle: "Select the prior-year return to personalize the organizer", allowedTypes: ["pdf", "docx", "xlsx", "txt"], multiSelect: false },
-  "presentation": { title: "Select Presentation Source Files", subtitle: "Select source materials for the presentation", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
-  "calculation": { title: "Select Calculation Files", subtitle: "Select 1099s, W-2s, statements, financial reports, or PDFs", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
-  "estimated-reviewed-workbook": { title: "Select Reviewed Workbook", subtitle: "Select the reviewed Excel workpaper to attach to the email", allowedTypes: ["xlsx"], multiSelect: false },
-  "planning-client": { title: "Select Planning Files", subtitle: "Prior-year return, K-1s, statements, the Excel workpaper, or photos of documents", allowedTypes: ["pdf", "xlsx", "docx", "txt", "csv", "image", "zip"], multiSelect: true },
+  "presentation": { title: "Select Presentation Source Files", subtitle: "Select source materials for the presentation", allowedTypes: ["pdf", "xlsx", "xls", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
+  "calculation": { title: "Select Calculation Files", subtitle: "Select 1099s, W-2s, statements, financial reports, or PDFs", allowedTypes: ["pdf", "xlsx", "xls", "docx", "txt", "csv", "zip", "image"], multiSelect: true },
+  "estimated-reviewed-workbook": { title: "Select Reviewed Workbook", subtitle: "Select the reviewed Excel workpaper to attach to the email", allowedTypes: ["xlsx", "xls"], multiSelect: false },
+  "planning-client": { title: "Select Planning Files", subtitle: "Prior-year return, K-1s, statements, the Excel workpaper, or photos of documents", allowedTypes: ["pdf", "xlsx", "xls", "docx", "txt", "csv", "image", "zip"], multiSelect: true },
   "planning-library": { title: "Select Planning Template", subtitle: "Select a presentation, recommendation, or firm template", allowedTypes: ["pdf", "docx", "pptx", "txt"], multiSelect: false },
 };
 
@@ -3906,26 +3912,16 @@ class DrivePicker {
         throw error;
       }
       await loadGooglePickerApi();
-      const view = new google.picker.DocsView(config.folderOnly ? google.picker.ViewId.FOLDERS : google.picker.ViewId.DOCS);
-      if (config.folderOnly) {
-        view.setIncludeFolders(true);
-        view.setSelectFolderEnabled(true);
-        view.setMimeTypes("application/vnd.google-apps.folder");
-      } else {
-        const mimeTypes = drivePickerMimeTypes(config.allowedTypes || []);
-        if (mimeTypes) view.setMimeTypes(mimeTypes);
-        // Show folders for navigation while keeping the final selection limited to files.
-        view.setIncludeFolders(true);
-        view.setSelectFolderEnabled(false);
-      }
-      if (config.folderId && config.folderId !== "root" && typeof view.setParent === "function") view.setParent(config.folderId);
+      const views = drivePickerViews(google.picker, config);
       const builder = new google.picker.PickerBuilder()
         .setAppId(pickerConfig.appId)
         .setDeveloperKey(pickerConfig.apiKey)
         .setOAuthToken(pickerConfig.accessToken)
         .setOrigin(window.location.origin)
-        .addView(view)
         .setCallback((data) => this.handleGooglePickerResult(data, config));
+      views.forEach((view) => builder.addView(view));
+      if (config.title && typeof builder.setTitle === "function") builder.setTitle(config.title);
+      if (views.some((view) => view.__sharedDrives) && google.picker.Feature?.SUPPORT_DRIVES) builder.enableFeature(google.picker.Feature.SUPPORT_DRIVES);
       if (config.multiSelect !== false && !config.folderOnly) builder.enableFeature(google.picker.Feature.MULTISELECT_ENABLED);
       builder.build().setVisible(true);
     } catch (error) {
@@ -4363,8 +4359,12 @@ function drivePickerMimeTypes(allowedTypes) {
     docx: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.google-apps.document"],
     pptx: ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "application/vnd.google-apps.presentation"],
     xlsx: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.google-apps.spreadsheet"],
+    xls: ["application/vnd.ms-excel"],
+    doc: ["application/msword"],
     csv: ["text/csv"],
     txt: ["text/plain"],
+    json: ["application/json"],
+    md: ["text/markdown", "text/x-markdown"],
     zip: ["application/zip", "application/x-zip-compressed"],
     image: ["image/png", "image/jpeg", "image/webp", "image/gif"],
     png: ["image/png"],
@@ -4372,6 +4372,51 @@ function drivePickerMimeTypes(allowedTypes) {
     jpeg: ["image/jpeg"],
   };
   return Array.from(new Set((allowedTypes || []).flatMap((type) => map[String(type).toLowerCase()] || []))).join(",");
+}
+
+/**
+ * The views (tabs) of the Google Drive picker.
+ *
+ * It used to open on one flat grid of thumbnails with every file in the account mixed together,
+ * where a client's folder was hard to find. Now it opens as a list (name, owner, date) on the
+ * folders of My Drive, or on the client's folder when there is one, with tabs for Shared with me,
+ * Shared drives and Starred. If this Picker version cannot label tabs (unlabeled tabs would all
+ * read "Google Drive"), only the first view is used; any error falls back to the original view.
+ */
+function drivePickerViews(picker, config = {}) {
+  const folderOnly = Boolean(config.folderOnly);
+  const mimeTypes = folderOnly ? "application/vnd.google-apps.folder" : drivePickerMimeTypes(config.allowedTypes || []);
+  const original = (withClientFolder = true) => {
+    const view = new picker.DocsView(folderOnly ? picker.ViewId.FOLDERS : picker.ViewId.DOCS);
+    if (mimeTypes) view.setMimeTypes(mimeTypes);
+    view.setIncludeFolders(true);
+    view.setSelectFolderEnabled(folderOnly);
+    if (withClientFolder && config.folderId && config.folderId !== "root" && typeof view.setParent === "function") view.setParent(config.folderId);
+    return view;
+  };
+  try {
+    const make = (label, setup) => {
+      const view = original(false);
+      if (picker.DocsViewMode?.LIST && typeof view.setMode === "function") view.setMode(picker.DocsViewMode.LIST);
+      if (typeof view.setLabel === "function") view.setLabel(label);
+      setup(view);
+      return view;
+    };
+    const clientFolder = config.folderId && config.folderId !== "root" ? config.folderId : "";
+    const first = make(clientFolder ? "Client folder" : "My Drive", (view) => view.setParent(clientFolder || "root"));
+    if (typeof first.setLabel !== "function") return [first];
+    const views = [first];
+    if (clientFolder) views.push(make("My Drive", (view) => view.setParent("root")));
+    views.push(make("Shared with me", (view) => view.setOwnedByMe(false)));
+    const sharedDrives = make("Shared drives", (view) => view.setEnableDrives(true));
+    sharedDrives.__sharedDrives = true;
+    views.push(sharedDrives);
+    views.push(make("Starred", (view) => view.setStarred(true)));
+    return views;
+  } catch (error) {
+    console.warn("Google Drive picker: using the basic view.", error);
+    return [original()];
+  }
 }
 
 async function loadAuthStatus() {
@@ -8404,7 +8449,8 @@ function updateDeliverableFlow() {
   els.deliverableFilesSection?.classList.toggle("complete", filesReady);
   if (els.deliverableFilesCheck) els.deliverableFilesCheck.hidden = !filesReady;
   els.deliverableFileStatus.innerHTML = filesReady ? `<div class="validation-success">${deliverableState.files.length} file(s) ready to attach.</div>` : "";
-  els.deliverableEmailSection?.classList.toggle("locked", !(emailReady && filesReady));
+  // Attachments are optional: an email can go without files (a follow-up, a request).
+  els.deliverableEmailSection?.classList.toggle("locked", !emailReady);
   if (els.generateEmailDraft) els.generateEmailDraft.disabled = false;
   if (els.gmailTo && !els.gmailTo.value.trim()) els.gmailTo.value = els.deliverableClientEmail?.value || "";
 }
@@ -8552,7 +8598,8 @@ function openDeliverableDriveFiles() {
   const config = {
     title: "Select Files to Send to Client",
     subtitle: "Select the documents you want to attach to the email",
-    allowedTypes: ["pdf", "docx", "xlsx"],
+    // Any file can go as an email attachment (a photo, a PDF, a spreadsheet...).
+    allowedTypes: [],
     multiSelect: true,
     onFilesSelected: (files) => addDeliverableFiles(files, "google_drive"),
   };
@@ -8674,7 +8721,6 @@ async function generateDeliverableEmailDraft() {
 function validateDeliverableEmailInputs() {
   const errors = [];
   if (!isValidEmail(els.deliverableClientEmail?.value || "")) errors.push("Enter a valid client email.");
-  if (!deliverableState.files.length) errors.push("Select at least one file to attach.");
   if (!els.deliverableClientName?.value.trim()) errors.push("Enter the client name.");
   if (!errors.length) {
     updateDeliverableFlow();
@@ -8742,7 +8788,9 @@ function renderGmailStatus() {
   if (els.gmailNotConnected) els.gmailNotConnected.hidden = Boolean(status.authorized);
   if (els.gmailSendForm) els.gmailSendForm.hidden = !status.authorized;
   if (els.gmailAttachmentsSummary) {
-    els.gmailAttachmentsSummary.innerHTML = `<strong>Attachments</strong><ul>${deliverableState.files.map((item) => `<li>${escapeHtml(item.name)} - ${escapeHtml(item.source === "google_drive" ? "Drive" : item.source === "onedrive" ? "OneDrive" : "Computer")}</li>`).join("")}</ul>`;
+    els.gmailAttachmentsSummary.innerHTML = deliverableState.files.length
+      ? `<strong>Attachments</strong><ul>${deliverableState.files.map((item) => `<li>${escapeHtml(item.name)} - ${escapeHtml(item.source === "google_drive" ? "Drive" : item.source === "onedrive" ? "OneDrive" : "Computer")}</li>`).join("")}</ul>`
+      : "<strong>Attachments</strong><p>No attachments. The email goes without files.</p>";
   }
   const service = emailProvider("deliverable") === "outlook" ? "Outlook" : "Gmail";
   if (els.connectGmailButton) els.connectGmailButton.textContent = `Connect ${service}`;
@@ -8773,7 +8821,7 @@ function copyDeliverableEmail() {
 function openDeliverableMailto() {
   const to = els.gmailTo?.value || els.deliverableClientEmail.value.trim();
   const subject = els.emailSubjectDraft.value || "";
-  const body = `${els.emailBodyDraft.value || ""}\n\nNote: attachments must be added manually in Gmail.`;
+  const body = `${els.emailBodyDraft.value || ""}${deliverableState.files.length ? "\n\nNote: attachments must be added manually in Gmail." : ""}`;
   window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
