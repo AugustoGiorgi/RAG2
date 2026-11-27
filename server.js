@@ -18405,15 +18405,37 @@ async function serveWebManifest(req, res) {
   res.end(body);
 }
 
+/**
+ * The only files the app serves as static files: the page, its scripts and styles, and the
+ * /assets folder. Add a new front-end file here.
+ *
+ * It used to serve anything inside the app folder. A signed-in user of any firm could download
+ * /data/*.json (every firm's users and clients) or /.env, and /assets/ — served without a
+ * session — let an encoded "../" (/assets/..%2Fpackage.json) climb out of the folder.
+ */
+const PUBLIC_ROOT_FILES = new Set(["/index.html", "/app.js", "/microsoft.js", "/styles.css", "/microsoft.css", "/landing.html"]);
+const PUBLIC_ASSETS_DIR = path.join(ROOT, "assets");
+
+/** The file on disk for a static URL path, or "" when it is not one of the public files. */
+function staticFilePath(pathname) {
+  let decoded;
+  try { decoded = decodeURIComponent(String(pathname || "")); } catch (_) { return ""; }
+  if (decoded === "/") decoded = "/index.html";
+  if (!decoded.startsWith("/") || /[\\\0]/.test(decoded)) return "";
+  const segments = decoded.split("/").slice(1);
+  // No empty, "." or ".." segment and no hidden file anywhere in the path.
+  if (segments.some((segment) => !segment || segment.startsWith("."))) return "";
+  if (PUBLIC_ROOT_FILES.has(decoded)) return path.join(ROOT, decoded);
+  if (segments[0] !== "assets" || segments.length < 2) return "";
+  const filePath = path.join(PUBLIC_ASSETS_DIR, ...segments.slice(1));
+  const relative = path.relative(PUBLIC_ASSETS_DIR, filePath);
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? filePath : "";
+}
+
 async function serveStatic(req, res) {
   const requestedUrl = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = requestedUrl.pathname === "/" ? "/index.html" : requestedUrl.pathname;
-  const normalizedPath = path.normalize(decodeURIComponent(pathname)).replace(/^(\.\.[\\/])+/, "");
-  const filePath = path.join(ROOT, normalizedPath);
-  const relativePath = path.relative(ROOT, filePath);
-  const microsoftPrivatePath = path.relative(path.resolve(DATA_DIR, "microsoft-tokens"), path.resolve(filePath));
-  if (!microsoftPrivatePath.startsWith("..") && !path.isAbsolute(microsoftPrivatePath)) { sendText(res, 403, "Forbidden"); return; }
-  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) { sendText(res, 403, "Forbidden"); return; }
+  const filePath = staticFilePath(requestedUrl.pathname);
+  if (!filePath) { sendText(res, 404, "Not found"); return; }
   try {
     const file = await fs.readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
